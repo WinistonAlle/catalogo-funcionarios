@@ -6,13 +6,16 @@ import { componentTagger } from "lovable-tagger";
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   server: {
-    host: "::",
-    port: 8080,
+    host: "0.0.0.0",   // permite acesso local e externo
+    port: 4174,        // 🔒 porta fixa
+    strictPort: true,  // ❌ não deixa o Vite trocar de porta
+    allowedHosts: [
+    "funcionarios.gostinhomineiro.com"
+    ],
   },
   plugins: [
     react(),
-    mode === 'development' &&
-    componentTagger(),
+    mode === "production" && componentTagger(),
   ].filter(Boolean),
   resolve: {
     alias: {

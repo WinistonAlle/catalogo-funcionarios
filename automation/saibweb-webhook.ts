@@ -1,126 +1,232 @@
-// automation/saibweb-webhook.ts
 import dotenv from "dotenv";
 dotenv.config();
 
 import express from "express";
-import { exec } from "child_process";
+import { spawn } from "child_process";
+import path from "path";
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
 const PORT = Number(process.env.SAIBWEB_WEBHOOK_PORT ?? 3333);
-
-// Em produção você quer somente:
-// SAIBWEB_SLOWMO=250 npx tsx automation/saibweb-runner.ts
-// Em teste, se quiser abrir:
-// SAIBWEB_KEEP_OPEN=1 (e opcional SAIBWEB_PAUSE=1)
 const DEFAULT_SLOWMO = process.env.SAIBWEB_SLOWMO ?? "250";
 
-// 🔒 lock simples (um pedido por vez por processo)
-// (depois a gente evolui pra fila + lock no banco)
+/**
+ * =====================
+ * FILA EM MEMÓRIA (FIFO)
+ * =====================
+ */
+const queue: string[] = [];
+const queuedOrRunning = new Set<string>();
 let isRunning = false;
 let lastRunAt: number | null = null;
 
+/**
+ * =====================
+ * GOOGLE SHEETS SYNC
+ * =====================
+ */
+const SHEET_SYNC_INTERVAL_MS = 60 * 1000; // 1 hora
+const SHEET_SCRIPT_PATH =
+  "C:\\Users\\JULIO\\Desktop\\catalogo-funcionario\\catalogo-funcionarios\\scripts\\syncEmployeesFromSheet.mjs";
+
+let sheetSyncRunning = false;
+let lastSheetSyncAt: number | null = null;
+
+/**
+ * =====================
+ * HELPERS
+ * =====================
+ */
 function extractOrderId(payload: any): string | null {
-  // Webhook Supabase geralmente manda { record: {...}, old_record: null, ... }
   const id = payload?.record?.id ?? payload?.id ?? payload?.order_id ?? null;
-  if (!id) return null;
-  return String(id);
+  return id ? String(id) : null;
 }
 
-function buildRunnerCommand(orderId?: string) {
-  // A automação atual pega o próximo PENDING, então ORDER_ID é opcional.
-  // Se no futuro você adaptar seu runner para processar um id específico,
-  // este env já fica pronto.
-  const envParts: string[] = [];
-
-  // Mantém o slowMo default (pode sobrescrever pelo .env)
-  envParts.push(`SAIBWEB_SLOWMO=${DEFAULT_SLOWMO}`);
-
-  // Se estiver em modo teste (KEEP_OPEN=1), ele abre UI e pode pausar
-  if (process.env.SAIBWEB_KEEP_OPEN === "1") {
-    envParts.push(`SAIBWEB_KEEP_OPEN=1`);
-  }
-  if (process.env.SAIBWEB_PAUSE === "1") {
-    envParts.push(`SAIBWEB_PAUSE=1`);
+function buildCommand() {
+  if (process.platform === "win32") {
+    return {
+      command: "cmd.exe",
+      args: ["/c", "npx", "tsx", "automation/saibweb-runner.ts"],
+      printable: "cmd.exe /c npx tsx automation/saibweb-runner.ts",
+    };
   }
 
-  // Opcional: passar ORDER_ID (mesmo que hoje você não use no runner)
-  if (orderId) envParts.push(`ORDER_ID=${orderId}`);
-
-  // Comando final
-  return `${envParts.join(" ")} npx tsx automation/saibweb-runner.ts`;
+  return {
+    command: "npx",
+    args: ["tsx", "automation/saibweb-runner.ts"],
+    printable: "npx tsx automation/saibweb-runner.ts",
+  };
 }
 
-async function runAutomation(orderId: string | null) {
-  if (isRunning) {
-    console.log("🟡 Já existe uma execução em andamento. Ignorando gatilho.");
-    return { started: false, reason: "already_running" as const };
+function buildChildEnv(orderId?: string | null): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    SAIBWEB_SLOWMO: String(process.env.SAIBWEB_SLOWMO ?? DEFAULT_SLOWMO),
+    ...(process.env.SAIBWEB_KEEP_OPEN === "1" ? { SAIBWEB_KEEP_OPEN: "1" } : {}),
+    ...(process.env.SAIBWEB_PAUSE === "1" ? { SAIBWEB_PAUSE: "1" } : {}),
+    ...(orderId ? { ORDER_ID: String(orderId) } : {}),
+  };
+}
+
+/**
+ * =====================
+ * FILA SAIBWEB
+ * =====================
+ */
+function enqueue(orderId: string | null) {
+  const id = orderId ?? "__NO_ID__";
+
+  if (queuedOrRunning.has(id)) {
+    console.log("🟠 Gatilho duplicado ignorado:", id);
+    return { enqueued: false };
   }
 
-  isRunning = true;
-  lastRunAt = Date.now();
+  queuedOrRunning.add(id);
+  queue.push(id);
 
-  const cmd = buildRunnerCommand(orderId ?? undefined);
+  console.log("📥 Enfileirado:", id, "| fila:", queue.length);
+  return { enqueued: true };
+}
 
-  console.log("🚀 Disparando automação SAIBWEB");
-  if (orderId) console.log("🧾 order_id recebido:", orderId);
-  console.log("▶️", cmd);
+function runOne(orderId: string) {
+  return new Promise<{ ok: boolean; code: number | null }>((resolve) => {
+    const { command, args, printable } = buildCommand();
 
-  return await new Promise<{ started: true }>((resolve) => {
-    const child = exec(cmd, { env: process.env }, (error, stdout, stderr) => {
-      if (error) {
-        console.error("❌ Automação terminou com erro:", error.message);
-      }
-      if (stdout?.trim()) console.log("📄 stdout:\n", stdout);
-      if (stderr?.trim()) console.log("📄 stderr:\n", stderr);
+    const realOrderId = orderId === "__NO_ID__" ? null : orderId;
+    const childEnv = buildChildEnv(realOrderId);
 
-      isRunning = false;
-      console.log("✅ Execução finalizada. Liberando lock.");
-      resolve({ started: true });
+    console.log("🚀 Iniciando automação SAIBWEB");
+    console.log("🧾 order_id:", realOrderId ?? "(sem id)");
+    console.log("▶️", printable);
+
+    const child = spawn(command, args, {
+      env: childEnv,
+      cwd: process.cwd(),
+      stdio: "inherit",
+      shell: false,
     });
 
-    // Se quiser ver logs em tempo real
-    child.stdout?.on("data", (d) => process.stdout.write(String(d)));
-    child.stderr?.on("data", (d) => process.stderr.write(String(d)));
+    child.on("close", (code) => {
+      resolve({ ok: code === 0, code: code ?? null });
+    });
+
+    child.on("error", (err) => {
+      console.error("❌ Falha ao iniciar automação:", err);
+      resolve({ ok: false, code: null });
+    });
   });
 }
 
-// Healthcheck simples
+async function processQueue() {
+  if (isRunning) return;
+  isRunning = true;
+
+  try {
+    while (queue.length > 0) {
+      const next = queue.shift()!;
+      lastRunAt = Date.now();
+
+      console.log("➡️ Processando:", next, "| restante:", queue.length);
+
+      const result = await runOne(next);
+      queuedOrRunning.delete(next);
+
+      if (result.ok) {
+        console.log("✅ Finalizado com sucesso.");
+      } else {
+        console.log("⚠️ Finalizado com erro.");
+      }
+    }
+  } finally {
+    isRunning = false;
+    console.log("🏁 Fila SAIBWEB vazia.");
+  }
+}
+
+/**
+ * =====================
+ * GOOGLE SHEETS JOB
+ * =====================
+ */
+function runSheetSync() {
+  if (sheetSyncRunning) {
+    console.log("🟡 Sync Google Sheets já em execução. Pulando.");
+    return;
+  }
+
+  sheetSyncRunning = true;
+  lastSheetSyncAt = Date.now();
+
+  console.log("📊 Iniciando sync Google Sheets");
+  console.log("▶️ node", SHEET_SCRIPT_PATH);
+
+  const child = spawn("node", [SHEET_SCRIPT_PATH], {
+    cwd: path.dirname(SHEET_SCRIPT_PATH),
+    stdio: "inherit",
+    shell: false,
+  });
+
+  child.on("close", (code) => {
+    sheetSyncRunning = false;
+    console.log("✅ Sync Google Sheets finalizado. code =", code);
+  });
+
+  child.on("error", (err) => {
+    sheetSyncRunning = false;
+    console.error("❌ Erro no sync Google Sheets:", err);
+  });
+}
+
+/**
+ * =====================
+ * ROTAS
+ * =====================
+ */
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
-    running: isRunning,
-    lastRunAt,
+    saibweb: {
+      running: isRunning,
+      queued: queue.length,
+      lastRunAt,
+    },
+    sheetSync: {
+      running: sheetSyncRunning,
+      lastRunAt: lastSheetSyncAt,
+      intervalMs: SHEET_SYNC_INTERVAL_MS,
+    },
     now: Date.now(),
   });
 });
 
-// Endpoint de webhook (Supabase -> aqui)
-app.post("/webhook/new-order", async (req, res) => {
-  try {
-    const orderId = extractOrderId(req.body);
+app.post("/webhook/new-order", (req, res) => {
+  const orderId = extractOrderId(req.body);
+  const r = enqueue(orderId);
 
-    // ✅ sempre responde rápido pro Supabase (evita retries desnecessários)
-    res.status(200).json({ ok: true, received: true, order_id: orderId });
+  res.status(200).json({
+    ok: true,
+    order_id: orderId,
+    enqueued: r.enqueued,
+    queue_size: queue.length,
+    running: isRunning,
+  });
 
-    // Se não veio id, ainda dá pra rodar o runner (ele pega o próximo PENDING)
-    await runAutomation(orderId);
-  } catch (err: any) {
-    console.error("❌ Erro no webhook:", err?.message ?? String(err));
-    // Mesmo em erro, responda com 200 se você não quiser retry.
-    // Mas aqui vou mandar 500 pra ficar evidente durante testes.
-    // Em produção, podemos decidir a estratégia.
-    // (Se preferir 200 sempre, me fala.)
-    // Nota: se já respondeu acima, não dá pra mudar status.
-    try {
-      res.status(500).json({ ok: false, error: err?.message ?? String(err) });
-    } catch {}
-  }
+  void processQueue();
 });
 
+/**
+ * =====================
+ * BOOT
+ * =====================
+ */
 app.listen(PORT, () => {
   console.log(`🧩 SAIBWEB webhook rodando em http://localhost:${PORT}`);
-  console.log(`✅ Endpoint: POST /webhook/new-order`);
-  console.log(`✅ Health:   GET  /health`);
+  console.log("⏱️ Google Sheets sync a cada 1 hora");
 });
+
+// ⏱️ inicia o job após subir o servidor
+setTimeout(() => {
+  runSheetSync(); // primeira execução
+  setInterval(runSheetSync, SHEET_SYNC_INTERVAL_MS);
+}, 5_000);

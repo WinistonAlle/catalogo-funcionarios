@@ -54,17 +54,12 @@ const Checkout: React.FC = () => {
   const [spentCents, setSpentCents] = useState(0);
 
   // ✅ employee_id resolvido (vem do session OU da view employee_wallet_view)
-  const [resolvedEmployeeId, setResolvedEmployeeId] = useState<string | null>(
-    null
-  );
+  const [resolvedEmployeeId, setResolvedEmployeeId] = useState<string | null>(null);
 
   const employee: any = useMemo(() => safeGetEmployee(), []);
 
   const safeCartTotal = Number.isFinite(cartTotal) ? cartTotal : 0;
-  const totalCents = useMemo(
-    () => Math.round(safeCartTotal * 100),
-    [safeCartTotal]
-  );
+  const totalCents = useMemo(() => Math.round(safeCartTotal * 100), [safeCartTotal]);
 
   const monthKey = useMemo(() => getMonthKeySaoPaulo(), []);
 
@@ -79,6 +74,7 @@ const Checkout: React.FC = () => {
   }, [payMode, totalCents, availableCents]);
 
   const payOnPickupCents = useMemo(() => {
+    // se pagar na retirada, tudo vai pra retirada (walletUsedCents será 0)
     return Math.max(totalCents - walletUsedCents, 0);
   }, [totalCents, walletUsedCents]);
 
@@ -97,8 +93,7 @@ const Checkout: React.FC = () => {
         setWalletError(null);
 
         const employeeCpf = (employee?.cpf ?? "").toString().trim();
-        const employeeIdFromSession =
-          employee?.user_id || employee?.id || employee?.employee_id;
+        const employeeIdFromSession = employee?.user_id || employee?.id || employee?.employee_id;
 
         if (!employeeCpf) {
           setMonthlyLimitCents(0);
@@ -120,16 +115,13 @@ const Checkout: React.FC = () => {
         const limit = Number(walletRow?.credito_mensal_cents ?? 0) || 0;
 
         // ✅ resolve employee_id: prefere view, senão session
-        const resolvedId = (walletRow?.employee_id ||
-          employeeIdFromSession) as string | undefined;
+        const resolvedId = (walletRow?.employee_id || employeeIdFromSession) as string | undefined;
 
         if (!resolvedId) {
           setMonthlyLimitCents(limit);
           setSpentCents(0);
           setResolvedEmployeeId(null);
-          setWalletError(
-            "Não foi possível identificar seu cadastro. Faça login novamente."
-          );
+          setWalletError("Não foi possível identificar seu cadastro. Faça login novamente.");
           return;
         }
 
@@ -186,11 +178,7 @@ const Checkout: React.FC = () => {
 
     // ✅ usa employee_id resolvido (view > session)
     const employeeId =
-      resolvedEmployeeId ||
-      employee?.user_id ||
-      employee?.id ||
-      employee?.employee_id ||
-      null;
+      resolvedEmployeeId || employee?.user_id || employee?.id || employee?.employee_id || null;
 
     if (!employeeId) {
       toast.error("Erro ao identificar funcionário", {
@@ -214,11 +202,9 @@ const Checkout: React.FC = () => {
         })),
       });
 
-      if (!orderId) {
-        throw new Error("Falha ao criar pedido (orderId vazio).");
-      }
+      if (!orderId) throw new Error("Falha ao criar pedido (orderId vazio).");
 
-      // 2) aplica split via RPC ✅ (SOMENTE v2)
+      // 2) aplica split via RPC (debita saldo e calcula gasto)
       const { data, error } = await supabase.rpc("place_order_with_wallet_v2", {
         p_order_id: orderId,
         p_employee_id: employeeId,
@@ -233,26 +219,17 @@ const Checkout: React.FC = () => {
       // ✅ ATUALIZA SALDO PELO RETORNO DA RPC (new_spent_cents)
       const row: any = Array.isArray(data) ? data[0] : data;
 
-      if (
-        row &&
-        row.new_spent_cents !== undefined &&
-        row.new_spent_cents !== null
-      ) {
+      if (row && row.new_spent_cents !== undefined && row.new_spent_cents !== null) {
         const newSpent = Number(row.new_spent_cents) || 0;
         setSpentCents(newSpent);
       } else {
         // fallback local
         if (payMode === "wallet" && walletUsedCents > 0) {
-          setSpentCents(
-            (prev) => (Number.isFinite(prev) ? prev : 0) + walletUsedCents
-          );
+          setSpentCents((prev) => (Number.isFinite(prev) ? prev : 0) + walletUsedCents);
         }
       }
 
-      // ✅ SALVA MÉTODO DE PAGAMENTO + SPLIT NO PEDIDO (orders)
-      // - pickup => tudo na retirada
-      // - wallet => tudo no saldo
-      // - split  => parte saldo + parte retirada
+      // ✅ CALCULA MÉTODO REAL (pickup / wallet / split)
       const paymentMethod =
         payMode === "pickup"
           ? "pickup"
@@ -260,18 +237,27 @@ const Checkout: React.FC = () => {
           ? "split"
           : "wallet";
 
-      const { error: upErr } = await supabase
+      // ✅ CAMPOS QUE O RUNNER LÊ (IMPORTANTÍSSIMO)
+      const walletDebited = payMode === "wallet" && walletUsedCents > 0;
+
+      // ✅ SALVA NO PEDIDO: payment_method + wallet_debited + spent_from_balance_cents + pay_on_pickup_cents
+      const { data: updated, error: upErr } = await supabase
         .from("orders")
         .update({
-          payment_method: paymentMethod,
-          wallet_used_cents: walletUsedCents,
-          pay_on_pickup_cents: payOnPickupCents,
+          payment_method: paymentMethod, // opcional (mas útil)
+          wallet_debited: walletDebited, // ✅ runner usa
+          spent_from_balance_cents: walletUsedCents, // ✅ runner usa
+          pay_on_pickup_cents: payOnPickupCents, // ✅ runner usa
         })
-        .eq("id", orderId);
+        .eq("id", orderId)
+        .select("id, payment_method, wallet_debited, spent_from_balance_cents, pay_on_pickup_cents")
+        .maybeSingle();
 
       if (upErr) {
-        console.error("Erro ao salvar payment_method no pedido:", upErr);
+        console.error("Erro ao salvar pagamento no pedido (orders.update):", upErr);
         // Não trava o usuário, mas fica registrado no console.
+      } else {
+        console.log("✅ Pedido atualizado com pagamento:", updated);
       }
 
       clearCart();
@@ -279,22 +265,12 @@ const Checkout: React.FC = () => {
       // mensagem mais informativa
       const descParts: string[] = [];
       if (payMode === "wallet") {
-        descParts.push(
-          `Abatido do saldo: ${formatBRLFromCents(walletUsedCents)}`
-        );
-        descParts.push(
-          `Pagar na retirada: ${formatBRLFromCents(payOnPickupCents)}`
-        );
-        descParts.push(
-          `Saldo após: ${formatBRLFromCents(afterOrderAvailableCents)}`
-        );
+        descParts.push(`Abatido do saldo: ${formatBRLFromCents(walletUsedCents)}`);
+        descParts.push(`Pagar na retirada: ${formatBRLFromCents(payOnPickupCents)}`);
+        descParts.push(`Saldo após: ${formatBRLFromCents(afterOrderAvailableCents)}`);
       } else {
-        descParts.push(
-          `Pagamento na retirada: ${formatBRLFromCents(totalCents)}`
-        );
-        descParts.push(
-          `Saldo após: ${formatBRLFromCents(afterOrderAvailableCents)}`
-        );
+        descParts.push(`Pagamento na retirada: ${formatBRLFromCents(totalCents)}`);
+        descParts.push(`Saldo após: ${formatBRLFromCents(afterOrderAvailableCents)}`);
       }
 
       toast.success("Pedido confirmado!", {
@@ -322,21 +298,13 @@ const Checkout: React.FC = () => {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
         <div className="max-w-md w-full bg-white rounded-2xl shadow-sm border p-6 text-center">
-          <img
-            src={logo}
-            alt="Logo"
-            className="mx-auto mb-4 h-16 w-auto select-none"
-          />
-          <h1 className="text-xl font-semibold mb-2">
-            Nenhum item para revisar
-          </h1>
+          <img src={logo} alt="Logo" className="mx-auto mb-4 h-16 w-auto select-none" />
+          <h1 className="text-xl font-semibold mb-2">Nenhum item para revisar</h1>
           <p className="text-sm text-gray-600 mb-6">
-            Seu carrinho está vazio. Adicione produtos no catálogo para revisar e
-            confirmar o pedido.
+            Seu carrinho está vazio. Adicione produtos no catálogo para revisar e confirmar o
+            pedido.
           </p>
-          <Button onClick={() => navigate("/catalogo")}>
-            Voltar para o catálogo
-          </Button>
+          <Button onClick={() => navigate("/catalogo")}>Voltar para o catálogo</Button>
         </div>
       </div>
     );
@@ -352,8 +320,8 @@ const Checkout: React.FC = () => {
 
         <h1 className="text-2xl font-bold mb-2">Revisão do pedido</h1>
         <p className="text-sm text-gray-600 mb-6">
-          Confira os itens abaixo antes de confirmar. Após a confirmação, o pedido
-          segue para separação interna.
+          Confira os itens abaixo antes de confirmar. Após a confirmação, o pedido segue para
+          separação interna.
         </p>
 
         {/* BLOCO SALDO + PAGAMENTO */}
@@ -375,21 +343,14 @@ const Checkout: React.FC = () => {
                 <>
                   <p className="text-sm text-gray-600">
                     Limite:{" "}
-                    <span className="font-semibold">
-                      {formatBRLFromCents(monthlyLimitCents)}
-                    </span>
+                    <span className="font-semibold">{formatBRLFromCents(monthlyLimitCents)}</span>
                   </p>
                   <p className="text-sm text-gray-600">
-                    Usado:{" "}
-                    <span className="font-semibold">
-                      {formatBRLFromCents(spentCents)}
-                    </span>
+                    Usado: <span className="font-semibold">{formatBRLFromCents(spentCents)}</span>
                   </p>
                   <p className="text-base">
                     Disponível:{" "}
-                    <span className="font-bold">
-                      {formatBRLFromCents(availableCents)}
-                    </span>
+                    <span className="font-bold">{formatBRLFromCents(availableCents)}</span>
                   </p>
                 </>
               )}
@@ -397,18 +358,12 @@ const Checkout: React.FC = () => {
           </div>
 
           {/* ✅ Radio visual */}
-          <div
-            className="mt-4 grid gap-2"
-            role="radiogroup"
-            aria-label="Forma de pagamento"
-          >
+          <div className="mt-4 grid gap-2" role="radiogroup" aria-label="Forma de pagamento">
             <button
               type="button"
               onClick={() => setPayMode("wallet")}
               className={`w-full rounded-xl border p-3 text-left transition ${
-                payMode === "wallet"
-                  ? "border-gray-900 bg-white"
-                  : "border-gray-200 bg-white"
+                payMode === "wallet" ? "border-gray-900 bg-white" : "border-gray-200 bg-white"
               }`}
               disabled={walletLoading}
               role="radio"
@@ -429,9 +384,7 @@ const Checkout: React.FC = () => {
                 </span>
 
                 <div className="flex-1">
-                  <p className="text-sm font-semibold">
-                    Usar saldo do mês (desconto automático)
-                  </p>
+                  <p className="text-sm font-semibold">Usar saldo do mês (desconto automático)</p>
                   <p className="text-xs text-gray-600">
                     Se não for suficiente, o restante fica para pagar na retirada.
                   </p>
@@ -443,9 +396,7 @@ const Checkout: React.FC = () => {
               type="button"
               onClick={() => setPayMode("pickup")}
               className={`w-full rounded-xl border p-3 text-left transition ${
-                payMode === "pickup"
-                  ? "border-gray-900 bg-white"
-                  : "border-gray-200 bg-white"
+                payMode === "pickup" ? "border-gray-900 bg-white" : "border-gray-200 bg-white"
               }`}
               role="radio"
               aria-checked={payMode === "pickup"}
@@ -453,9 +404,7 @@ const Checkout: React.FC = () => {
               <div className="flex items-start gap-3">
                 <span
                   className={`mt-1 h-4 w-4 rounded-full border flex-shrink-0 grid place-items-center ${
-                    payMode === "pickup"
-                      ? "border-gray-900"
-                      : "border-gray-300"
+                    payMode === "pickup" ? "border-gray-900" : "border-gray-300"
                   }`}
                   aria-hidden
                 >
@@ -468,9 +417,7 @@ const Checkout: React.FC = () => {
 
                 <div className="flex-1">
                   <p className="text-sm font-semibold">Pagar tudo na retirada</p>
-                  <p className="text-xs text-gray-600">
-                    Não utiliza seu saldo mensal.
-                  </p>
+                  <p className="text-xs text-gray-600">Não utiliza seu saldo mensal.</p>
                 </div>
               </div>
             </button>
@@ -480,58 +427,41 @@ const Checkout: React.FC = () => {
           <div className="mt-4 rounded-xl bg-white border p-3">
             <div className="flex justify-between text-sm">
               <span className="text-gray-600">Total do pedido</span>
-              <span className="font-semibold">
-                {formatBRLFromCents(totalCents)}
-              </span>
+              <span className="font-semibold">{formatBRLFromCents(totalCents)}</span>
             </div>
 
             <div className="flex justify-between text-sm mt-1">
               <span className="text-gray-600">Abatido do saldo</span>
-              <span className="font-semibold">
-                {formatBRLFromCents(walletUsedCents)}
-              </span>
+              <span className="font-semibold">{formatBRLFromCents(walletUsedCents)}</span>
             </div>
 
             <div className="flex justify-between text-sm mt-1">
               <span className="text-gray-600">Pagar na retirada</span>
-              <span className="font-semibold">
-                {formatBRLFromCents(payOnPickupCents)}
-              </span>
+              <span className="font-semibold">{formatBRLFromCents(payOnPickupCents)}</span>
             </div>
 
             {/* ✅ saldo após pedido */}
             <div className="flex justify-between text-sm mt-1">
               <span className="text-gray-600">Saldo após este pedido</span>
               <span className="font-semibold">
-                {walletLoading || walletError
-                  ? "—"
-                  : formatBRLFromCents(afterOrderAvailableCents)}
+                {walletLoading || walletError ? "—" : formatBRLFromCents(afterOrderAvailableCents)}
               </span>
             </div>
 
-            {payMode === "wallet" &&
-              !walletLoading &&
-              !walletError &&
-              availableCents === 0 && (
-                <p className="mt-2 text-xs text-amber-700">
-                  Seu saldo disponível está zerado. O pedido ficará 100% para pagar na
-                  retirada.
-                </p>
-              )}
+            {payMode === "wallet" && !walletLoading && !walletError && availableCents === 0 && (
+              <p className="mt-2 text-xs text-amber-700">
+                Seu saldo disponível está zerado. O pedido ficará 100% para pagar na retirada.
+              </p>
+            )}
           </div>
         </div>
 
         {/* ITENS */}
         <div className="space-y-4 mb-6">
           {cartItems.map((item) => (
-            <div
-              key={item.product.id}
-              className="flex justify-between items-center border-b pb-3"
-            >
+            <div key={item.product.id} className="flex justify-between items-center border-b pb-3">
               <div>
-                <p className="font-medium text-sm md:text-base">
-                  {item.product.name}
-                </p>
+                <p className="font-medium text-sm md:text-base">{item.product.name}</p>
                 <p className="text-xs md:text-sm text-gray-600">
                   {item.quantity} ×{" "}
                   {Number(item.product.employee_price ?? 0).toLocaleString("pt-BR", {
@@ -542,9 +472,10 @@ const Checkout: React.FC = () => {
               </div>
 
               <p className="font-semibold text-sm md:text-base">
-                {(
-                  Number(item.product.employee_price ?? 0) * item.quantity
-                ).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+                {(Number(item.product.employee_price ?? 0) * item.quantity).toLocaleString(
+                  "pt-BR",
+                  { style: "currency", currency: "BRL" }
+                )}
               </p>
             </div>
           ))}
