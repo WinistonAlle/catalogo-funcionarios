@@ -70,7 +70,7 @@ type DbItem = {
   product_code: string; // aqui vai o product_old_id (código SAIBWEB)
   qty: number; // quantity original do pedido (mantido pra validação)
   weight: number | null; // weight do produto no supabase
-  saibweb_qty: number; // ✅ quantidade que será enviada pro SAIBWEB (regra do peso)
+  saibweb_qty: number; // ✅ quantidade que será enviada pro SAIBWEB (qty * peso quando peso>1)
 };
 
 // =====================
@@ -112,17 +112,28 @@ function toFiniteNumberOrNull(v: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function computeSaibwebQtyFromWeight(weight: number | null): number {
-  // ✅ Regra solicitada:
-  // - se weight > 1 => qty = weight
-  // - se weight <= 1 (ou null) => qty = 1
+/**
+ * ✅ REGRA NOVA (o que você pediu):
+ * - fator = (weight > 1 ? weight : 1)
+ * - qty_saibweb = qty_pedido * fator
+ *
+ * Ex: pão de queijo 5kg x2 => 2 * 5 = 10
+ */
+function computeSaibwebQtyFromWeightAndQty(weight: number | null, orderQty: number): number {
   const w = weight ?? 0;
-  return w > 1 ? w : 1;
+  const fator = w > 1 ? w : 1;
+
+  const q = Number(orderQty);
+  const qtyPedido = Number.isFinite(q) && q > 0 ? q : 0;
+
+  const result = qtyPedido * fator;
+  return Number.isFinite(result) ? result : 0;
 }
 
 function formatQtyForInput(q: number): string {
-  // Mantém ponto como separador decimal (ex: 1.5)
-  return String(q);
+  // Mantém ponto como separador decimal (ex: 1.5) e evita 2.000000
+  if (!Number.isFinite(q)) return "0";
+  return q.toFixed(3).replace(/\.?0+$/, "");
 }
 
 // =====================
@@ -219,11 +230,9 @@ async function pickNextOrderToProcess(): Promise<{ order: DbOrder; items: DbItem
   const uniqueCodes = Array.from(new Set(baseItems.map((i) => i.product_code)));
 
   // Se o old_id for numérico no banco, converte pra number pra bater melhor.
-  const uniqueOldIdsAsNumber = uniqueCodes
-    .map((c) => Number(c))
-    .filter((n) => Number.isFinite(n));
+  const uniqueOldIdsAsNumber = uniqueCodes.map((c) => Number(c)).filter((n) => Number.isFinite(n));
 
-  let weightByOldId = new Map<string, number | null>();
+  const weightByOldId = new Map<string, number | null>();
 
   if (uniqueOldIdsAsNumber.length > 0) {
     const { data: products, error: prodErr } = await supabase
@@ -260,7 +269,9 @@ async function pickNextOrderToProcess(): Promise<{ order: DbOrder; items: DbItem
 
   const items: DbItem[] = baseItems.map((it) => {
     const weight = weightByOldId.get(it.product_code) ?? null;
-    const saibweb_qty = computeSaibwebQtyFromWeight(weight);
+
+    // ✅ AQUI É A MUDANÇA: qty SAIBWEB = qty pedido * (peso se >1 senão 1)
+    const saibweb_qty = computeSaibwebQtyFromWeightAndQty(weight, it.qty);
 
     return {
       product_code: it.product_code,
@@ -355,20 +366,21 @@ async function fillByXPathAndEnter(page: Page, clickXpath: string, value: string
   await page.waitForTimeout(90);
 }
 
-// ✅ NOVO: clicar no campo e selecionar sempre a PRIMEIRA opção (ArrowDown + Enter)
-async function selectFirstOptionFromDropdownByXPath(page: Page, clickXpath: string) {
+// ✅ NOVO: Operação sem seta.
+// Clica, espera 0.5s e confirma com Enter.
+async function selectOperationByEnterOnly(page: Page, clickXpath: string) {
   await clickByXPathPreferButton(page, clickXpath, { timeout: 15000 });
-  await page.waitForTimeout(120);
 
-  // garante que abre lista e seleciona a primeira opção
-  await page.keyboard.press("ArrowDown").catch(() => {});
-  await page.waitForTimeout(80);
+  // espera meio segundo pro dropdown estabilizar
+  await page.waitForTimeout(500);
+
+  // confirma (sem ArrowDown)
   await page.keyboard.press("Enter").catch(() => {});
-  await page.waitForTimeout(140);
+  await page.waitForTimeout(150);
 
   // blur/tab pra salvar
   await page.keyboard.press("Tab").catch(() => {});
-  await page.waitForTimeout(90);
+  await page.waitForTimeout(100);
 }
 
 // =====================
@@ -395,8 +407,7 @@ async function loginSaibweb(page: Page) {
 async function clickHamburgerMenu(page: Page) {
   console.log("🍔 Menu hamburger");
 
-  const hamburgerSvgXPath =
-    '//*[@id="root"]/div/main/div/div[1]/div[1]/nav/div/button/span[1]/svg';
+  const hamburgerSvgXPath = '//*[@id="root"]/div/main/div/div[1]/div[1]/nav/div/button/span[1]/svg';
   const hamburgerButtonXPath = '//*[@id="root"]/div/main/div/div[1]/div[1]/nav/div/button';
 
   await clickByXPath(page, hamburgerButtonXPath).catch(async () => {
@@ -414,9 +425,24 @@ async function clickSFA(page: Page) {
   console.log("✅ SFA clicado");
 }
 
+// ✅ NOVO (SAIBWEB mudou): depois de SFA, precisa clicar em Movimentações
+async function clickMovimentacoes(page: Page) {
+  console.log("📦 Movimentações");
+  await clickByXPath(
+    page,
+    '//*[@id="root"]/div/main/div/div[1]/div[1]/nav/div/aside/div[1]/div[2]/div[3]/a[4]'
+  );
+  await sleep(220);
+  console.log("✅ Movimentações clicado");
+}
+
+// ✅ Atualizado: agora vem depois de Movimentações
 async function clickSFAPedidoFaturamento(page: Page) {
   console.log("🧾 SFA - Pedido de Faturamento");
-  await clickByXPath(page, '//*[@id="root"]/div/main/div/div[1]/div[1]/nav/div/aside/div[1]/div[2]/div[3]/a[1]');
+  await clickByXPath(
+    page,
+    '//*[@id="root"]/div/main/div/div[1]/div[1]/nav/div/aside/div[1]/div[2]/div[3]/a[1]'
+  );
   await sleep(650);
   console.log("✅ Tela Pedido de Faturamento aberta");
 }
@@ -467,8 +493,8 @@ async function preencherNovoCadastro(page: Page, cpf: string, obs: string) {
 
   await fillByXPathAndEnter(page, clienteXPath, cpf);
 
-  // ✅ ALTERAÇÃO: em vez de digitar "1", seleciona sempre a PRIMEIRA opção do dropdown
-  await selectFirstOptionFromDropdownByXPath(page, operacaoXPath);
+  // ✅ Agora: sem seta. Clica, espera meio segundo e Enter.
+  await selectOperationByEnterOnly(page, operacaoXPath);
 
   const obsEl = page.locator("#obs_nota").first();
   await obsEl.waitFor({ state: "visible", timeout: 15000 });
@@ -578,10 +604,11 @@ async function main() {
     return;
   }
 
-  // Log extra pra conferir regra do peso
+  // Log extra pra conferir regra do peso (agora multiplicando)
   for (const it of items) {
+    const fator = (it.weight ?? 0) > 1 ? it.weight : 1;
     console.log(
-      `⚖️ item ${it.product_code} -> weight=${it.weight ?? "null"} | qtyPedido=${it.qty} | qtySAIBWEB=${it.saibweb_qty}`
+      `⚖️ item ${it.product_code} -> weight=${it.weight ?? "null"} | qtyPedido=${it.qty} | fator=${fator} | qtySAIBWEB=${it.saibweb_qty}`
     );
   }
 
@@ -593,7 +620,11 @@ async function main() {
     await loginSaibweb(page);
     await clickHamburgerMenu(page);
     await clickSFA(page);
+
+    // ✅ NOVO caminho do menu (SAIBWEB mudou)
+    await clickMovimentacoes(page);
     await clickSFAPedidoFaturamento(page);
+
     await clickNovoCadastro(page);
 
     await preencherNovoCadastro(page, order.employee_cpf, obs);
@@ -601,7 +632,7 @@ async function main() {
     await abrirItensDoPedido(page);
 
     for (const it of items) {
-      // ✅ Aqui aplica a regra do peso
+      // ✅ Aqui aplica a regra nova: qtyPedido * (peso se > 1 senão 1)
       await adicionarItemDoPedido(page, it.product_code, it.saibweb_qty);
     }
 

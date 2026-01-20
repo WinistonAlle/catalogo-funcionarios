@@ -8,8 +8,7 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
-    "preview": "vite preview --port=4174",
-    "sync:employees": "nodemon --watch scripts --exec \"node scripts/syncEmployeesFromSheet.mjs --watch\""
+    "preview": "vite preview --port=4174"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",

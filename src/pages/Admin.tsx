@@ -1,5 +1,5 @@
 // src/pages/Admin.tsx
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import type { Product } from "@/types/products";
 
@@ -51,17 +51,32 @@ const CATEGORY_LABELS: Record<string, string> = {
 
 type Editable = Product & {
   images?: string[];
+
+  // ✅ mantém o texto enquanto digita (pra aceitar 3,5 / 3.5)
+  weight_input?: string;
+  employee_price_input?: string;
 };
+
+function parseBRNumber(v: any, fallback = 0): number {
+  if (v === null || v === undefined) return fallback;
+  if (typeof v === "number") return Number.isFinite(v) ? v : fallback;
+
+  const s = String(v).trim();
+  if (!s) return fallback;
+
+  const normalized = s.replace(",", ".");
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : fallback;
+}
 
 function safeNumberOrNull(v: any): number | null {
   if (v === null || v === undefined || v === "") return null;
-  const n = Number(v);
+  const n = parseBRNumber(v, NaN);
   return Number.isFinite(n) ? n : null;
 }
 
 function safeNumber(v: any, fallback = 0): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
+  return parseBRNumber(v, fallback);
 }
 
 function normalizeImages(row: any): string[] {
@@ -104,47 +119,49 @@ function mapRowToProduct(row: any): Product {
 
     isPackage: row.isPackage ?? row.is_package ?? false,
     featured: row.featured ?? row.isFeatured ?? false,
-    inStock: row.inStock ?? row.in_stock ?? true,
-    isLaunch: row.isLaunch ?? row.is_launch ?? false,
 
+    // mantém no UI (mesmo que seu banco não tenha coluna)
+    inStock: row.inStock ?? row.in_stock ?? true,
+
+    isLaunch: row.isLaunch ?? row.is_launch ?? false,
     extraInfo: row.extraInfo ?? row.extra_info ?? null,
   } as Product;
 }
 
+/**
+ * ✅ Payload SOMENTE da tabela products
+ * - NÃO inclui images (sua tabela não tem)
+ * - NÃO inclui weight (vai pra tabela weight)
+ * - NÃO inclui in_stock (seu banco não tem)
+ * - NÃO inclui extra_info (se não existir)
+ */
 function mapEditingToDbPayload(editing: Editable) {
-  const employeePrice = safeNumber((editing as any).employee_price, 0);
+  const employeePrice = parseBRNumber(
+    editing.employee_price_input ?? (editing as any).employee_price,
+    0
+  );
 
   const firstImage =
     editing.images && editing.images.length > 0 ? editing.images[0].trim() : null;
 
   const payload: any = {
-    // ids
-    id: editing.id, // se seu banco usa uuid DEFAULT e você NÃO quer setar id, remova essa linha
+    id: editing.id,
     old_id: safeNumberOrNull((editing as any).old_id),
 
-    // básicos
     name: editing.name?.trim() ?? "",
     employee_price: employeePrice,
     unit: "un",
 
-    // categoria e peso
     category_id: editing.category ? Number(editing.category) : null,
-    weight: safeNumber((editing as any).weight, 0),
 
-    // imagem
+    // ✅ coluna certa
     image_path: (editing as any).image_path ?? firstImage,
 
-    // ✅ campos do formulário (persistência real no banco)
     description: (editing as any).description ?? "",
     package_info: (editing as any).packageInfo ?? "",
     is_package: !!(editing as any).isPackage,
     featured: !!(editing as any).featured,
-    in_stock: (editing as any).inStock !== false,
     is_launch: !!(editing as any).isLaunch,
-    extra_info: (editing as any).extraInfo ?? null,
-
-    // ✅ se sua tabela tiver coluna `images` (array/text), salva a lista também
-    images: (editing.images ?? []).filter(Boolean),
   };
 
   return payload;
@@ -153,6 +170,12 @@ function mapEditingToDbPayload(editing: Editable) {
 function mapPayloadBackToProduct(editing: Editable, payload: any): Product {
   const employeePrice = safeNumber(payload.employee_price, 0);
   const images = (editing.images ?? []).filter(Boolean);
+
+  // peso final convertido (pra exibir corretamente)
+  const weightFinal = parseBRNumber(
+    editing.weight_input ?? (editing as any).weight,
+    0
+  );
 
   return {
     id: editing.id,
@@ -165,10 +188,13 @@ function mapPayloadBackToProduct(editing: Editable, payload: any): Product {
     category: (editing.category ?? "8") as any,
     description: editing.description ?? "",
     packageInfo: editing.packageInfo ?? "",
-    weight: safeNumber(editing.weight, 0),
+    weight: weightFinal,
     isPackage: !!editing.isPackage,
     featured: !!editing.featured,
+
+    // permanece no estado (mesmo sem coluna no banco)
     inStock: editing.inStock !== false,
+
     isLaunch: !!editing.isLaunch,
     extraInfo: editing.extraInfo ?? null,
   } as Product;
@@ -215,14 +241,39 @@ export default function Admin() {
     const fetchProducts = async () => {
       setLoading(true);
       try {
-        const { data, error } = await supabase
+        // 1) Produtos
+        const { data: productsData, error: pErr } = await supabase
           .from("products")
           .select("*")
           .order("name", { ascending: true });
 
-        if (error) throw error;
+        if (pErr) throw pErr;
 
-        const mapped = (data ?? []).map(mapRowToProduct) as Product[];
+        const mapped = (productsData ?? []).map(mapRowToProduct) as Product[];
+
+        // 2) Pesos (tabela weight) -> merge por product_id
+        const ids = mapped.map((p) => p.id).filter(Boolean);
+        if (ids.length) {
+          const { data: wData, error: wErr } = await supabase
+            .from("weight")
+            .select("product_id, weight")
+            .in("product_id", ids);
+
+          if (wErr) {
+            console.warn("Aviso: erro ao carregar pesos da tabela weight:", wErr);
+          } else {
+            const byId = new Map<string, number>();
+            (wData ?? []).forEach((r: any) => {
+              if (r?.product_id) byId.set(String(r.product_id), safeNumber(r.weight, 0));
+            });
+
+            for (const p of mapped) {
+              const w = byId.get(String(p.id));
+              if (w !== undefined) (p as any).weight = w;
+            }
+          }
+        }
+
         setItems(mapped);
       } catch (err) {
         console.error("Erro ao carregar produtos:", err);
@@ -281,12 +332,14 @@ export default function Admin() {
       name: "",
       price: 0,
       employee_price: 0,
+      employee_price_input: "",
       images: [],
       image_path: null,
       category: "8" as any,
       description: "",
       packageInfo: "",
       weight: 0,
+      weight_input: "",
       isPackage: false,
       isLaunch: false,
       featured: false,
@@ -297,11 +350,20 @@ export default function Admin() {
   };
 
   const startEdit = (p: Product) => {
+    const weightNum = safeNumber((p as any).weight, 0);
+    const priceNum = safeNumber((p as any).employee_price, 0);
+
     setEditing({
       ...(p as Editable),
       old_id: safeNumberOrNull((p as any).old_id),
       images: (p.images ?? []).filter(Boolean),
       image_path: (p as any).image_path ?? (p.images?.[0] ?? null),
+
+      weight: weightNum,
+      weight_input: String(weightNum).replace(".", ","),
+
+      employee_price: priceNum,
+      employee_price_input: String(priceNum).replace(".", ","),
     });
     setOpenForm(true);
   };
@@ -321,8 +383,6 @@ export default function Admin() {
       const productId = editing?.id ?? "unknown";
       const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
       const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-
-      // ✅ organiza por produto
       const filePath = `${productId}/${fileName}`;
 
       const { data, error } = await supabase.storage.from(STORAGE_BUCKET).upload(
@@ -415,42 +475,46 @@ export default function Admin() {
     try {
       const existsInState = items.some((p) => p.id === editing.id);
 
-      // ✅ monta payload completo (persistindo tudo que o form edita)
+      // payload apenas do products (sem in_stock)
       const payload = mapEditingToDbPayload(editing);
 
       if (existsInState) {
-        const { error } = await supabase.from("products").update(payload).eq("id", editing.id);
-        if (error) throw error;
-
-        const saved = mapPayloadBackToProduct(editing, payload);
-
-        setItems((prev) => {
-          const idx = prev.findIndex((p) => p.id === saved.id);
-          if (idx >= 0) {
-            const next = [...prev];
-            next[idx] = saved;
-            return next;
-          }
-          return prev;
-        });
-      } else {
-        // ✅ INSERT de novo produto
-        const { data, error } = await supabase
+        const { error } = await supabase
           .from("products")
-          .insert(payload)
-          .select("*")
-          .single();
-
+          .update(payload)
+          .eq("id", editing.id);
         if (error) throw error;
-
-        const inserted = mapRowToProduct(data);
-
-        setItems((prev) => {
-          const next = [inserted, ...prev];
-          next.sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
-          return next;
-        });
+      } else {
+        const { error } = await supabase.from("products").insert(payload);
+        if (error) throw error;
       }
+
+      // ✅ peso -> tabela weight
+      const weightValue = parseBRNumber(
+        editing.weight_input ?? (editing as any).weight,
+        0
+      );
+
+      const { error: wErr } = await supabase
+        .from("weight")
+        .upsert({ product_id: editing.id, weight: weightValue }, { onConflict: "product_id" });
+
+      if (wErr) throw wErr;
+
+      // ✅ atualiza estado local
+      const saved = mapPayloadBackToProduct(editing, payload);
+
+      setItems((prev) => {
+        const idx = prev.findIndex((p) => p.id === saved.id);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = saved;
+          return next;
+        }
+        const next = [saved, ...prev];
+        next.sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
+        return next;
+      });
 
       closeForm();
     } catch (err: any) {
@@ -471,6 +535,8 @@ export default function Admin() {
     if (!toDelete) return;
 
     try {
+      await supabase.from("weight").delete().eq("product_id", toDelete.id);
+
       const { error } = await supabase.from("products").delete().eq("id", toDelete.id);
       if (error) throw error;
 
@@ -552,6 +618,8 @@ export default function Admin() {
                 (p as any).image_path ||
                 FALLBACK_IMG;
 
+              const w = safeNumber((p as any).weight, 0);
+
               return (
                 <Card key={p.id} className="overflow-hidden">
                   <CardHeader className="p-0">
@@ -585,7 +653,7 @@ export default function Admin() {
 
                     <div className="text-xs text-muted-foreground">
                       ID: {p.old_id !== null ? p.old_id : p.id} •{" "}
-                      {p.packageInfo || "—"} • {p.weight ? `${p.weight}kg` : ""}
+                      {p.packageInfo || "—"} • {w ? `${w}kg` : ""}
                     </div>
 
                     <div className="mt-3 flex gap-2">
@@ -634,7 +702,10 @@ export default function Admin() {
                   </div>
                   <div className="text-sm text-muted-foreground">
                     ID: {editing.old_id !== null ? editing.old_id : editing.id} • R${" "}
-                    {safeNumber((editing as any).employee_price, 0).toFixed(2)}
+                    {parseBRNumber(
+                      editing.employee_price_input ?? (editing as any).employee_price,
+                      0
+                    ).toFixed(2)}
                   </div>
                 </div>
               </div>
@@ -644,12 +715,8 @@ export default function Admin() {
                   value={editing.old_id !== null ? String(editing.old_id) : ""}
                   onChange={(e) => {
                     const raw = e.target.value;
-                    const n = raw === "" ? null : Number(raw);
-
-                    setEditing({
-                      ...editing,
-                      old_id: n !== null && Number.isFinite(n) ? n : null,
-                    });
+                    const n = raw === "" ? null : safeNumberOrNull(raw);
+                    setEditing({ ...editing, old_id: n });
                   }}
                   placeholder="ID numérico do produto"
                 />
@@ -683,17 +750,16 @@ export default function Admin() {
 
               <Field label="Preço funcionário (R$)">
                 <Input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={String(safeNumber((editing as any).employee_price, 0))}
+                  type="text"
+                  inputMode="decimal"
+                  value={editing.employee_price_input ?? ""}
                   onChange={(e) =>
                     setEditing({
                       ...editing,
-                      employee_price: safeNumber(e.target.value, 0),
-                      price: safeNumber(e.target.value, 0),
+                      employee_price_input: e.target.value,
                     })
                   }
+                  placeholder="Ex.: 48,50"
                 />
               </Field>
 
@@ -715,18 +781,22 @@ export default function Admin() {
 
               <Field label="Peso (kg)">
                 <Input
-                  type="number"
-                  step="0.001"
-                  min="0"
-                  value={String(safeNumber((editing as any).weight, 0))}
-                  onChange={(e) => setEditing({ ...editing, weight: safeNumber(e.target.value, 0) })}
+                  type="text"
+                  inputMode="decimal"
+                  value={editing.weight_input ?? ""}
+                  onChange={(e) =>
+                    setEditing({
+                      ...editing,
+                      weight_input: e.target.value,
+                    })
+                  }
+                  placeholder="Ex.: 3,5 ou 3.5"
                 />
               </Field>
 
               {/* Dropzone + preview + edição manual */}
               <Field label="Imagens do produto" full>
                 <div className="space-y-2">
-                  {/* Dropzone */}
                   <div
                     onDrop={handleImageDrop}
                     onDragOver={handleImageDragOver}
@@ -761,7 +831,6 @@ export default function Admin() {
                     )}
                   </div>
 
-                  {/* Lista / preview */}
                   {editing.images && editing.images.length > 0 && (
                     <div className="flex flex-wrap gap-2 mt-2">
                       {editing.images.map((img, index) => (
@@ -787,18 +856,20 @@ export default function Admin() {
                     </div>
                   )}
 
-                  {/* Edição manual via URLs */}
                   <Input
                     value={editing.images?.join(", ") ?? ""}
-                    onChange={(e) =>
+                    onChange={(e) => {
+                      const imgs = e.target.value
+                        .split(",")
+                        .map((s) => s.trim())
+                        .filter(Boolean);
+
                       setEditing({
                         ...editing,
-                        images: e.target.value
-                          .split(",")
-                          .map((s) => s.trim())
-                          .filter(Boolean),
-                      })
-                    }
+                        images: imgs,
+                        image_path: editing.image_path ?? imgs[0] ?? null,
+                      });
+                    }}
                     placeholder={`https://.../storage/v1/object/public/${STORAGE_BUCKET}/P123/arquivo.jpg, https://...`}
                   />
                 </div>
@@ -840,7 +911,6 @@ export default function Admin() {
         </DialogContent>
       </Dialog>
 
-      {/* Confirmação de exclusão controlada via estado toDelete */}
       <AlertDialog open={!!toDelete} onOpenChange={(o) => !o && setToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -861,7 +931,6 @@ export default function Admin() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Botão Voltar ao Topo */}
       {showScroll && (
         <Button
           onClick={scrollTop}
