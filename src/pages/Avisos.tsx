@@ -1,3 +1,4 @@
+// src/pages/Avisos.tsx
 import React, { useEffect, useState, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
@@ -56,6 +57,125 @@ type Notice = {
   created_at: string;
   created_by_employee_id: string | null;
   image_url?: string | null;
+};
+
+/* --------------------------------------------------------
+   LOADER UIVERSE (JkHuger) - FULLSCREEN OVERLAY
+-------------------------------------------------------- */
+const PageLoader: React.FC<{ show: boolean }> = ({ show }) => {
+  if (!show) return null;
+  return (
+    <div className="fixed inset-0 z-[999] flex items-center justify-center bg-black/25 backdrop-blur-sm">
+      <div className="uiverse-frame" aria-label="Carregando" role="status">
+        <div className="uiverse-center">
+          <div className="uiverse-dot-1" />
+          <div className="uiverse-dot-2" />
+          <div className="uiverse-dot-3" />
+        </div>
+      </div>
+
+      {/* CSS scoped (não vaza pro resto da página) */}
+      <style>{`
+        .uiverse-frame {
+          position: relative;
+          width: 400px;
+          height: 400px;
+        }
+
+        .uiverse-center {
+          position: absolute;
+          width: 220px;
+          height: 220px;
+          top: 90px;
+          left: 90px;
+        }
+
+        .uiverse-dot-1 {
+          position: absolute;
+          z-index: 3;
+          width: 30px;
+          height: 30px;
+          top: 95px;
+          left: 95px;
+          background: #fff;
+          border-radius: 50%;
+          -webkit-animation-fill-mode: both;
+          animation-fill-mode: both;
+          -webkit-animation: uiverse-jump-jump-1 2s cubic-bezier(0.21, 0.98, 0.6, 0.99) infinite alternate;
+          animation: uiverse-jump-jump-1 2s cubic-bezier(0.21, 0.98, 0.6, 0.99) infinite alternate;
+        }
+
+        .uiverse-dot-2 {
+          position: absolute;
+          z-index: 2;
+          width: 60px;
+          height: 60px;
+          top: 80px;
+          left: 80px;
+          background: #fff;
+          border-radius: 50%;
+          -webkit-animation-fill-mode: both;
+          animation-fill-mode: both;
+          -webkit-animation: uiverse-jump-jump-2 2s cubic-bezier(0.21, 0.98, 0.6, 0.99) infinite alternate;
+          animation: uiverse-jump-jump-2 2s cubic-bezier(0.21, 0.98, 0.6, 0.99) infinite alternate;
+        }
+
+        .uiverse-dot-3 {
+          position: absolute;
+          z-index: 1;
+          width: 90px;
+          height: 90px;
+          top: 65px;
+          left: 65px;
+          background: #fff;
+          border-radius: 50%;
+          -webkit-animation-fill-mode: both;
+          animation-fill-mode: both;
+          -webkit-animation: uiverse-jump-jump-3 2s cubic-bezier(0.21, 0.98, 0.6, 0.99) infinite alternate;
+          animation: uiverse-jump-jump-3 2s cubic-bezier(0.21, 0.98, 0.6, 0.99) infinite alternate;
+        }
+
+        @keyframes uiverse-jump-jump-1 {
+          0%, 70% {
+            box-shadow: 2px 2px 3px 2px rgba(0, 0, 0, 0.2);
+            -webkit-transform: scale(0);
+            transform: scale(0);
+          }
+          100% {
+            box-shadow: 10px 10px 15px 0 rgba(0, 0, 0, 0.3);
+            -webkit-transform: scale(1);
+            transform: scale(1);
+          }
+        }
+
+        @keyframes uiverse-jump-jump-2 {
+          0%, 40% {
+            box-shadow: 2px 2px 3px 2px rgba(0, 0, 0, 0.2);
+            -webkit-transform: scale(0);
+            transform: scale(0);
+          }
+          100% {
+            box-shadow: 10px 10px 15px 0 rgba(0, 0, 0, 0.3);
+            -webkit-transform: scale(1);
+            transform: scale(1);
+          }
+        }
+
+        @keyframes uiverse-jump-jump-3 {
+          0%, 10% {
+            box-shadow: 2px 2px 3px 2px rgba(0, 0, 0, 0.2);
+            -webkit-transform: scale(0);
+            transform: scale(0);
+          }
+          100% {
+            box-shadow: 10px 10px 15px 0 rgba(0, 0, 0, 0.3);
+            -webkit-transform: scale(1);
+            transform: scale(1);
+          }
+        }
+      `}</style>
+    </div>
+  );
 };
 
 /* --------------------------------------------------------
@@ -182,18 +302,25 @@ const Avisos: React.FC = () => {
 
   async function loadNotices() {
     try {
+      setLoadError(null);
       setLoading(true);
+
       const { data, error } = await supabase
         .from("notices")
         .select("id, title, body, created_at, created_by_employee_id, image_url")
         .eq("is_published", true)
         .order("created_at", { ascending: false });
 
-      if (error) return setLoadError(error.message);
+      if (error) {
+        setLoadError(error.message);
+        setNotices([]);
+        return;
+      }
 
       setNotices((data as Notice[]) ?? []);
     } catch (err: any) {
-      setLoadError(String(err.message));
+      setLoadError(String(err?.message ?? err));
+      setNotices([]);
     } finally {
       setLoading(false);
     }
@@ -285,17 +412,13 @@ const Avisos: React.FC = () => {
   }
 
   async function handleSaveNotice() {
-    // ✅ só o título é obrigatório
     if (!newTitle.trim()) return;
 
     try {
       setSaving(true);
 
       const imageUrlToSave = await uploadImageIfNeeded();
-      if (selectedImageFile && !imageUrlToSave) {
-        setSaving(false);
-        return;
-      }
+      if (selectedImageFile && !imageUrlToSave) return;
 
       if (editingNotice) {
         const { error } = await supabase
@@ -338,6 +461,7 @@ const Avisos: React.FC = () => {
 
     try {
       setDeletingId(notice.id);
+
       const { error } = await supabase
         .from("notices")
         .delete()
@@ -371,8 +495,13 @@ const Avisos: React.FC = () => {
     navigate("/login", { replace: true });
   };
 
+  const showLoader = loading || saving || !!deletingId;
+
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col relative pb-4">
+      {/* ✅ LOADER FULLSCREEN (Uiverse) */}
+      <PageLoader show={showLoader} />
+
       {/* Mesma faixa atrás do header */}
       <div
         className="w-full h-24"
@@ -392,7 +521,6 @@ const Avisos: React.FC = () => {
       "
       >
         <div className="container mx-auto px-4 flex items-center justify-between gap-4">
-          {/* ✅ LOGO NO LUGAR DO TEXTO (mesmas proporções do Index) */}
           <button
             onClick={() => goTo("/catalogo")}
             className="text-left flex items-center"
@@ -401,16 +529,10 @@ const Avisos: React.FC = () => {
             <img
               src={logoGostinho}
               alt="Gostinho Mineiro"
-              className="
-                h-8 sm:h-9 md:h-10
-                w-auto
-                object-contain
-                select-none
-              "
+              className="h-8 sm:h-9 md:h-10 w-auto object-contain select-none"
             />
           </button>
 
-          {/* Menu e Nome */}
           <div className="flex items-center gap-3">
             <div className="flex flex-col text-right leading-tight">
               <span className="text-base font-semibold">
@@ -427,7 +549,6 @@ const Avisos: React.FC = () => {
               </span>
             </div>
 
-            {/* ✅ HAMBURGER IGUAL AO INDEX (animado) */}
             <button
               type="button"
               className="relative flex h-10 w-10 items-center justify-center rounded-full border border-red-300/50 bg-red-500/80"
@@ -484,7 +605,6 @@ const Avisos: React.FC = () => {
             </span>
           </div>
 
-          {/* ✅ botão fechar igual ao Index */}
           <button
             onClick={() => setMenuOpen(false)}
             className="relative flex h-9 w-9 items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200"
@@ -497,9 +617,7 @@ const Avisos: React.FC = () => {
           </button>
         </div>
 
-        {/* ✅ ORDEM PADRONIZADA IGUAL AO INDEX */}
         <nav className="px-2 py-3 flex flex-col gap-1 text-sm">
-          {/* 1) Catálogo */}
           <button
             onClick={() => goTo("/catalogo")}
             className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-red-50 text-gray-800"
@@ -510,7 +628,6 @@ const Avisos: React.FC = () => {
             <span>Catálogo</span>
           </button>
 
-          {/* 2) Alertas (Avisos) */}
           <button
             onClick={() => goTo("/avisos")}
             className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-red-50 text-gray-800"
@@ -521,7 +638,6 @@ const Avisos: React.FC = () => {
             <span>Alertas</span>
           </button>
 
-          {/* 3) Favoritos */}
           <button
             onClick={() => goTo("/favoritos")}
             className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-red-50 text-gray-800"
@@ -532,7 +648,6 @@ const Avisos: React.FC = () => {
             <span>Favoritos</span>
           </button>
 
-          {/* 4) Pedidos */}
           <button
             onClick={() => goTo("/meus-pedidos")}
             className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-red-50 text-gray-800"
@@ -543,7 +658,6 @@ const Avisos: React.FC = () => {
             <span>Pedidos</span>
           </button>
 
-          {/* 5) Relatórios (Admin/RH) */}
           {(isAdmin || isRH) && (
             <button
               onClick={() => goTo("/relatorios")}
@@ -556,7 +670,6 @@ const Avisos: React.FC = () => {
             </button>
           )}
 
-          {/* 6) RH (RH) */}
           {isRH && (
             <button
               onClick={() => goTo("/rh")}
@@ -569,7 +682,6 @@ const Avisos: React.FC = () => {
             </button>
           )}
 
-          {/* 7) Destaques (Admin) */}
           {isAdmin && (
             <button
               onClick={() => goTo("/destaques")}
@@ -582,7 +694,6 @@ const Avisos: React.FC = () => {
             </button>
           )}
 
-          {/* 8) Pedidos (Admin) ✅ NOVO */}
           {isAdmin && (
             <button
               onClick={() => goTo("/admin/pedidos")}
@@ -595,7 +706,6 @@ const Avisos: React.FC = () => {
             </button>
           )}
 
-          {/* 9) Editar (Admin) */}
           {isAdmin && (
             <button
               onClick={() => goTo("/admin")}
@@ -655,14 +765,9 @@ const Avisos: React.FC = () => {
           )}
 
           {/* AVISOS */}
-          {loading ? (
-            <div className="py-10 flex items-center justify-center gap-2 text-gray-500">
-              <Loader2 className="h-5 w-5 animate-spin" />
-              Carregando avisos...
-            </div>
-          ) : loadError ? (
+          {loadError ? (
             <div className="py-10 text-center text-red-600">{loadError}</div>
-          ) : notices.length === 0 ? (
+          ) : notices.length === 0 && !loading ? (
             <div className="py-10 text-center text-gray-500">
               Nenhum aviso cadastrado.
             </div>
@@ -671,8 +776,7 @@ const Avisos: React.FC = () => {
               {notices.map((notice) => (
                 <article
                   key={notice.id}
-                  className="bg-white/70 backdrop-blur-md border border-red-50
-                             rounded-2xl p-4 md:p-5 shadow-sm flex flex-col gap-3"
+                  className="bg-white/70 backdrop-blur-md border border-red-50 rounded-2xl p-4 md:p-5 shadow-sm flex flex-col gap-3"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex items-center gap-2">
@@ -716,7 +820,6 @@ const Avisos: React.FC = () => {
                     )}
                   </div>
 
-                  {/* só renderiza a descrição se existir */}
                   {notice.body?.trim() ? (
                     <p className="text-sm text-gray-700 whitespace-pre-line">
                       {notice.body}
@@ -820,6 +923,7 @@ const Avisos: React.FC = () => {
                 setIsNewOpen(false);
                 resetModalState();
               }}
+              disabled={saving}
             >
               Cancelar
             </Button>

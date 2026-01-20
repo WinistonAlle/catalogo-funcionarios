@@ -35,6 +35,9 @@ import { Switch } from "@/components/ui/switch";
 
 const FALLBACK_IMG = "/placeholder.png";
 
+// ✅ bucket criado no Supabase Storage via SQL
+const STORAGE_BUCKET = "products";
+
 const CATEGORY_LABELS: Record<string, string> = {
   "1": "Pão de Queijo",
   "2": "Salgados Assados",
@@ -49,6 +52,127 @@ const CATEGORY_LABELS: Record<string, string> = {
 type Editable = Product & {
   images?: string[];
 };
+
+function safeNumberOrNull(v: any): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function safeNumber(v: any, fallback = 0): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeImages(row: any): string[] {
+  if (Array.isArray(row?.images)) return row.images.filter(Boolean);
+  if (typeof row?.images === "string" && row.images.trim())
+    return row.images
+      .split(",")
+      .map((s: string) => s.trim())
+      .filter(Boolean);
+
+  if (row?.image && typeof row.image === "string") return [row.image];
+  if (row?.image_path && typeof row.image_path === "string") return [row.image_path];
+  return [];
+}
+
+function mapRowToProduct(row: any): Product {
+  const employeePrice = safeNumber(row.employee_price ?? row.price, 0);
+
+  const categoryId =
+    row.category_id ?? row.category ?? row.category_name ?? row.categoryId ?? null;
+
+  const oldId = safeNumberOrNull(row.old_id);
+
+  const images = normalizeImages(row);
+
+  return {
+    id: row.id,
+    old_id: oldId,
+    name: row.name ?? "",
+    price: employeePrice,
+    employee_price: employeePrice,
+    images,
+    image_path: row.image_path ?? (images[0] ?? null),
+
+    category: categoryId != null ? String(categoryId) : ("8" as any),
+
+    description: row.description ?? "",
+    packageInfo: row.packageInfo ?? row.package_info ?? "",
+    weight: safeNumber(row.weight, 0),
+
+    isPackage: row.isPackage ?? row.is_package ?? false,
+    featured: row.featured ?? row.isFeatured ?? false,
+    inStock: row.inStock ?? row.in_stock ?? true,
+    isLaunch: row.isLaunch ?? row.is_launch ?? false,
+
+    extraInfo: row.extraInfo ?? row.extra_info ?? null,
+  } as Product;
+}
+
+function mapEditingToDbPayload(editing: Editable) {
+  const employeePrice = safeNumber((editing as any).employee_price, 0);
+
+  const firstImage =
+    editing.images && editing.images.length > 0 ? editing.images[0].trim() : null;
+
+  const payload: any = {
+    // ids
+    id: editing.id, // se seu banco usa uuid DEFAULT e você NÃO quer setar id, remova essa linha
+    old_id: safeNumberOrNull((editing as any).old_id),
+
+    // básicos
+    name: editing.name?.trim() ?? "",
+    employee_price: employeePrice,
+    unit: "un",
+
+    // categoria e peso
+    category_id: editing.category ? Number(editing.category) : null,
+    weight: safeNumber((editing as any).weight, 0),
+
+    // imagem
+    image_path: (editing as any).image_path ?? firstImage,
+
+    // ✅ campos do formulário (persistência real no banco)
+    description: (editing as any).description ?? "",
+    package_info: (editing as any).packageInfo ?? "",
+    is_package: !!(editing as any).isPackage,
+    featured: !!(editing as any).featured,
+    in_stock: (editing as any).inStock !== false,
+    is_launch: !!(editing as any).isLaunch,
+    extra_info: (editing as any).extraInfo ?? null,
+
+    // ✅ se sua tabela tiver coluna `images` (array/text), salva a lista também
+    images: (editing.images ?? []).filter(Boolean),
+  };
+
+  return payload;
+}
+
+function mapPayloadBackToProduct(editing: Editable, payload: any): Product {
+  const employeePrice = safeNumber(payload.employee_price, 0);
+  const images = (editing.images ?? []).filter(Boolean);
+
+  return {
+    id: editing.id,
+    old_id: payload.old_id ?? null,
+    name: (payload.name ?? editing.name ?? "").trim(),
+    price: employeePrice,
+    employee_price: employeePrice,
+    images,
+    image_path: payload.image_path ?? null,
+    category: (editing.category ?? "8") as any,
+    description: editing.description ?? "",
+    packageInfo: editing.packageInfo ?? "",
+    weight: safeNumber(editing.weight, 0),
+    isPackage: !!editing.isPackage,
+    featured: !!editing.featured,
+    inStock: editing.inStock !== false,
+    isLaunch: !!editing.isLaunch,
+    extraInfo: editing.extraInfo ?? null,
+  } as Product;
+}
 
 export default function Admin() {
   const [items, setItems] = useState<Product[]>([]);
@@ -74,22 +198,16 @@ export default function Admin() {
   const [showScroll, setShowScroll] = useState(false);
 
   const checkScrollTop = () => {
-    if (!showScroll && window.pageYOffset > 400) {
-      setShowScroll(true);
-    } else if (showScroll && window.pageYOffset <= 400) {
-      setShowScroll(false);
-    }
+    if (!showScroll && window.pageYOffset > 400) setShowScroll(true);
+    else if (showScroll && window.pageYOffset <= 400) setShowScroll(false);
   };
 
-  const scrollTop = () => {
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  };
+  const scrollTop = () => window.scrollTo({ top: 0, behavior: "smooth" });
 
   useEffect(() => {
     window.addEventListener("scroll", checkScrollTop);
-    return () => {
-      window.removeEventListener("scroll", checkScrollTop);
-    };
+    return () => window.removeEventListener("scroll", checkScrollTop);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showScroll]);
 
   // --------- Carregar produtos do Supabase ----------
@@ -104,36 +222,7 @@ export default function Admin() {
 
         if (error) throw error;
 
-        const mapped = (data ?? []).map((row: any) => {
-          const employeePrice = Number(row.employee_price ?? 0);
-
-          const categoryId =
-            row.category_id ??
-            row.category ??
-            row.category_name ??
-            null;
-
-          return {
-            id: row.id,
-            old_id: row.old_id ?? null,
-            name: row.name,
-            price: employeePrice,
-            employee_price: employeePrice,
-            images: row.images ?? (row.image ? [row.image] : []),
-            image_path: row.image_path ?? null,
-            category:
-              categoryId != null ? String(categoryId) : ("8" as any),
-            description: row.description ?? "",
-            packageInfo: row.packageInfo ?? row.package_info ?? "",
-            weight: Number(row.weight ?? 0),
-            isPackage: row.isPackage ?? row.is_package ?? false,
-            featured: row.featured ?? row.isFeatured ?? false,
-            inStock: row.inStock ?? row.in_stock ?? true,
-            isLaunch: row.isLaunch ?? row.is_launch ?? false,
-            extraInfo: row.extraInfo ?? row.extra_info ?? null,
-          } as Product;
-        }) as Product[];
-
+        const mapped = (data ?? []).map(mapRowToProduct) as Product[];
         setItems(mapped);
       } catch (err) {
         console.error("Erro ao carregar produtos:", err);
@@ -150,9 +239,7 @@ export default function Admin() {
   const categoryOptions = useMemo(() => {
     const set = new Set<string>();
     items.forEach((p) => {
-      if (p.category != null) {
-        set.add(String(p.category));
-      }
+      if (p.category != null) set.add(String(p.category));
     });
     return Array.from(set).sort();
   }, [items]);
@@ -162,11 +249,8 @@ export default function Admin() {
     return [...items].sort((a, b) => {
       const catA = String(a.category ?? "");
       const catB = String(b.category ?? "");
-
-      if (catA !== catB) {
-        return catA.localeCompare(catB);
-      }
-      return a.name.localeCompare(b.name);
+      if (catA !== catB) return catA.localeCompare(catB);
+      return (a.name ?? "").localeCompare(b.name ?? "");
     });
   }, [items]);
 
@@ -176,20 +260,11 @@ export default function Admin() {
     return ordenados.filter((p) => {
       const catId = String(p.category ?? "");
       const catLabel = CATEGORY_LABELS[catId] ?? catId;
-
-      const byCat =
-        categoria === "todas" || catId === categoria;
+      const byCat = categoria === "todas" || catId === categoria;
 
       if (!termo) return byCat;
 
-      const haystack = [
-        p.name,
-        catId,
-        catLabel,
-        p.description,
-        p.id,
-        p.old_id,
-      ]
+      const haystack = [p.name, catId, catLabel, p.description, p.id, p.old_id]
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
@@ -202,7 +277,7 @@ export default function Admin() {
   const startAdd = () => {
     setEditing({
       id: generateId(),
-      old_id: undefined,
+      old_id: null,
       name: "",
       price: 0,
       employee_price: 0,
@@ -224,7 +299,9 @@ export default function Admin() {
   const startEdit = (p: Product) => {
     setEditing({
       ...(p as Editable),
-      images: p.images ?? [],
+      old_id: safeNumberOrNull((p as any).old_id),
+      images: (p.images ?? []).filter(Boolean),
+      image_path: (p as any).image_path ?? (p.images?.[0] ?? null),
     });
     setOpenForm(true);
   };
@@ -232,6 +309,7 @@ export default function Admin() {
   const closeForm = () => {
     setOpenForm(false);
     setEditing(null);
+    setUploadError(null);
   };
 
   // --------- Upload de imagem p/ Supabase ----------
@@ -240,23 +318,27 @@ export default function Admin() {
     setUploadError(null);
 
     try {
-      const ext = file.name.split(".").pop() || "jpg";
-      const fileName = `${Date.now()}-${Math.random()
-        .toString(36)
-        .substring(2)}.${ext}`;
+      const productId = editing?.id ?? "unknown";
+      const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+      const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
 
-      // ajuste o bucket aqui se o nome for outro
-      const { data, error } = await supabase.storage
-        .from("product_images")
-        .upload(fileName, file, {
+      // ✅ organiza por produto
+      const filePath = `${productId}/${fileName}`;
+
+      const { data, error } = await supabase.storage.from(STORAGE_BUCKET).upload(
+        filePath,
+        file,
+        {
           cacheControl: "3600",
-          upsert: false,
-        });
+          upsert: true,
+          contentType: file.type || "image/jpeg",
+        }
+      );
 
       if (error) throw error;
 
       const { data: publicData } = supabase.storage
-        .from("product_images")
+        .from(STORAGE_BUCKET)
         .getPublicUrl(data.path);
 
       const url = publicData?.publicUrl;
@@ -265,9 +347,7 @@ export default function Admin() {
       return url;
     } catch (err: any) {
       console.error("Erro ao enviar imagem:", err);
-      setUploadError(
-        err?.message || "Erro ao enviar imagem. Tente novamente."
-      );
+      setUploadError(err?.message || "Erro ao enviar imagem. Tente novamente.");
       throw err;
     } finally {
       setUploadingImage(false);
@@ -286,14 +366,12 @@ export default function Admin() {
             ? {
                 ...prev,
                 images: [url, ...(prev.images ?? [])],
-                image_path: url,
+                image_path: prev.image_path ?? url,
               }
             : prev
         );
       })
-      .catch(() => {
-        // erro já tratado em uploadProductImage
-      });
+      .catch(() => {});
   }
 
   function handleImageDrop(e: React.DragEvent<HTMLDivElement>) {
@@ -311,14 +389,12 @@ export default function Admin() {
             ? {
                 ...prev,
                 images: [url, ...(prev.images ?? [])],
-                image_path: url,
+                image_path: prev.image_path ?? url,
               }
             : prev
         );
       })
-      .catch(() => {
-        // erro já tratado em uploadProductImage
-      });
+      .catch(() => {});
   }
 
   function handleImageDragOver(e: React.DragEvent<HTMLDivElement>) {
@@ -326,7 +402,7 @@ export default function Admin() {
     e.stopPropagation();
   }
 
-  // --------- Salvar (UPDATE em produtos existentes) ----------
+  // --------- Salvar (INSERT/UPDATE) ----------
   const onSubmitForm = async () => {
     if (!editing) return;
 
@@ -335,73 +411,46 @@ export default function Admin() {
       return;
     }
 
-    const existsInState = items.some((p) => p.id === editing.id);
-    if (!existsInState) {
-      alert(
-        "Por enquanto o painel de admin só edita produtos já existentes. Cadastro novo vamos implementar depois."
-      );
-      return;
-    }
-
     setSaving(true);
     try {
-      const employeePrice = Number(editing.employee_price ?? 0);
+      const existsInState = items.some((p) => p.id === editing.id);
 
-      const firstImage =
-        editing.images && editing.images.length > 0
-          ? editing.images[0].trim()
-          : null;
+      // ✅ monta payload completo (persistindo tudo que o form edita)
+      const payload = mapEditingToDbPayload(editing);
 
-      // 🔧 AQUI ESTÁ A CORREÇÃO IMPORTANTE:
-      // Enviar para o Supabase APENAS as colunas que existem na tabela `products`
-      const payload: any = {
-        name: editing.name.trim(),
-        employee_price: employeePrice,
-        old_id: editing.old_id ?? null,
-        image_path: editing.image_path ?? firstImage,
-        category_id: editing.category
-          ? Number(editing.category)
-          : null,
-        unit: "un",
-      };
+      if (existsInState) {
+        const { error } = await supabase.from("products").update(payload).eq("id", editing.id);
+        if (error) throw error;
 
-      const { error } = await supabase
-        .from("products")
-        .update(payload)
-        .eq("id", editing.id);
+        const saved = mapPayloadBackToProduct(editing, payload);
 
-      if (error) throw error;
+        setItems((prev) => {
+          const idx = prev.findIndex((p) => p.id === saved.id);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = saved;
+            return next;
+          }
+          return prev;
+        });
+      } else {
+        // ✅ INSERT de novo produto
+        const { data, error } = await supabase
+          .from("products")
+          .insert(payload)
+          .select("*")
+          .single();
 
-      const savedEmployeePrice = employeePrice;
+        if (error) throw error;
 
-      const saved: Product = {
-        id: editing.id,
-        old_id: editing.old_id ?? null,
-        name: editing.name.trim(),
-        price: savedEmployeePrice,
-        employee_price: savedEmployeePrice,
-        images: editing.images ?? [],
-        image_path: payload.image_path ?? null,
-        category: (editing.category ?? "8") as any,
-        description: editing.description ?? "",
-        packageInfo: editing.packageInfo ?? "",
-        weight: Number(editing.weight ?? 0),
-        isPackage: !!editing.isPackage,
-        featured: !!editing.featured,
-        inStock: editing.inStock !== false,
-        isLaunch: !!editing.isLaunch,
-        extraInfo: editing.extraInfo ?? null,
-      };
+        const inserted = mapRowToProduct(data);
 
-      setItems((prev) => {
-        const idx = prev.findIndex((p) => p.id === saved.id);
-        if (idx >= 0) {
-          const next = [...prev];
-          next[idx] = saved;
+        setItems((prev) => {
+          const next = [inserted, ...prev];
+          next.sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
           return next;
-        }
-        return prev;
-      });
+        });
+      }
 
       closeForm();
     } catch (err: any) {
@@ -422,11 +471,7 @@ export default function Admin() {
     if (!toDelete) return;
 
     try {
-      const { error } = await supabase
-        .from("products")
-        .delete()
-        .eq("id", toDelete.id);
-
+      const { error } = await supabase.from("products").delete().eq("id", toDelete.id);
       if (error) throw error;
 
       setItems((prev) => prev.filter((p) => p.id !== toDelete.id));
@@ -482,9 +527,7 @@ export default function Admin() {
       </header>
 
       {loading ? (
-        <div className="text-sm text-muted-foreground">
-          Carregando produtos...
-        </div>
+        <div className="text-sm text-muted-foreground">Carregando produtos...</div>
       ) : filtrados.length === 0 ? (
         <Card>
           <CardContent className="p-6 text-sm text-muted-foreground">
@@ -496,16 +539,13 @@ export default function Admin() {
           <div className="text-sm text-muted-foreground">
             {filtrados.length} produto(s)
             {busca ? ` • filtro: “${busca}”` : ""}
-            {categoria !== "todas"
-              ? ` • ${CATEGORY_LABELS[categoria] ?? categoria}`
-              : ""}
+            {categoria !== "todas" ? ` • ${CATEGORY_LABELS[categoria] ?? categoria}` : ""}
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {filtrados.map((p) => {
               const catId = String(p.category ?? "");
-              const catLabel =
-                CATEGORY_LABELS[catId] || catId || "Sem categoria";
+              const catLabel = CATEGORY_LABELS[catId] || catId || "Sem categoria";
 
               const thumb =
                 (p.images?.length ? p.images[0] : null) ||
@@ -520,8 +560,7 @@ export default function Admin() {
                       alt={p.name}
                       className="h-40 w-full object-cover"
                       onError={(e) => {
-                        (e.currentTarget as HTMLImageElement).src =
-                          FALLBACK_IMG;
+                        (e.currentTarget as HTMLImageElement).src = FALLBACK_IMG;
                       }}
                     />
                   </CardHeader>
@@ -531,26 +570,22 @@ export default function Admin() {
                     </CardTitle>
 
                     <div className="flex items-center gap-2 text-sm flex-wrap">
-                      <Badge variant="secondary">
-                        {catLabel || "Sem categoria"}
-                      </Badge>
+                      <Badge variant="secondary">{catLabel || "Sem categoria"}</Badge>
                       {p.isPackage && <Badge>Pacote</Badge>}
                       {p.featured && <Badge>⭐ Destaque</Badge>}
                       {p.inStock === false && (
                         <Badge variant="destructive">Sem estoque</Badge>
                       )}
-                      {p.isLaunch && (
-                        <Badge variant="outline">Lançamento</Badge>
-                      )}
+                      {p.isLaunch && <Badge variant="outline">Lançamento</Badge>}
                     </div>
 
                     <div className="text-lg font-semibold">
-                      R$ {Number(p.employee_price ?? 0).toFixed(2)}
+                      R$ {safeNumber(p.employee_price, 0).toFixed(2)}
                     </div>
 
                     <div className="text-xs text-muted-foreground">
-                      ID: {p.old_id ?? p.id} • {p.packageInfo || "—"} •{" "}
-                      {p.weight ? `${p.weight}kg` : ""}
+                      ID: {p.old_id !== null ? p.old_id : p.id} •{" "}
+                      {p.packageInfo || "—"} • {p.weight ? `${p.weight}kg` : ""}
                     </div>
 
                     <div className="mt-3 flex gap-2">
@@ -575,15 +610,10 @@ export default function Admin() {
       )}
 
       {/* Dialog do formulário */}
-      <Dialog
-        open={openForm}
-        onOpenChange={(o) => (o ? setOpenForm(true) : closeForm())}
-      >
+      <Dialog open={openForm} onOpenChange={(o) => (o ? setOpenForm(true) : closeForm())}>
         <DialogContent className="sm:max-w-[780px]">
           <DialogHeader>
-            <DialogTitle>
-              {editing ? "Editar produto" : "Novo produto"}
-            </DialogTitle>
+            <DialogTitle>{editing ? "Editar produto" : "Novo produto"}</DialogTitle>
           </DialogHeader>
 
           {editing && (
@@ -591,11 +621,7 @@ export default function Admin() {
               {/* Resumo + preview */}
               <div className="sm:col-span-2 flex items-center gap-4 border rounded-lg p-3">
                 <img
-                  src={
-                    (editing.images && editing.images[0]) ||
-                    editing.image_path ||
-                    FALLBACK_IMG
-                  }
+                  src={(editing.images && editing.images[0]) || editing.image_path || FALLBACK_IMG}
                   alt={editing.name}
                   className="h-16 w-16 rounded-md object-cover border"
                   onError={(e) => {
@@ -607,23 +633,24 @@ export default function Admin() {
                     {editing.name || "Produto sem nome"}
                   </div>
                   <div className="text-sm text-muted-foreground">
-                    ID: {editing.old_id ?? editing.id} • R${" "}
-                    {Number(editing.employee_price ?? 0).toFixed(2)}
+                    ID: {editing.old_id !== null ? editing.old_id : editing.id} • R${" "}
+                    {safeNumber((editing as any).employee_price, 0).toFixed(2)}
                   </div>
                 </div>
               </div>
 
-              <Field label="ID/SKU (old_id numérico)">
+              <Field label="ID (old_id)">
                 <Input
-                  value={editing.old_id?.toString() ?? ""}
-                  onChange={(e) =>
+                  value={editing.old_id !== null ? String(editing.old_id) : ""}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    const n = raw === "" ? null : Number(raw);
+
                     setEditing({
                       ...editing,
-                      old_id: e.target.value
-                        ? Number(e.target.value)
-                        : undefined,
-                    })
-                  }
+                      old_id: n !== null && Number.isFinite(n) ? n : null,
+                    });
+                  }}
                   placeholder="ID numérico do produto"
                 />
               </Field>
@@ -631,12 +658,7 @@ export default function Admin() {
               <Field label="Nome">
                 <Input
                   value={editing.name}
-                  onChange={(e) =>
-                    setEditing({
-                      ...editing,
-                      name: e.target.value,
-                    })
-                  }
+                  onChange={(e) => setEditing({ ...editing, name: e.target.value })}
                   placeholder="Nome do produto"
                 />
               </Field>
@@ -644,12 +666,7 @@ export default function Admin() {
               <Field label="Categoria">
                 <Select
                   value={String(editing.category ?? "8")}
-                  onValueChange={(v) =>
-                    setEditing({
-                      ...editing,
-                      category: v as any,
-                    })
-                  }
+                  onValueChange={(v) => setEditing({ ...editing, category: v as any })}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Categoria" />
@@ -669,12 +686,12 @@ export default function Admin() {
                   type="number"
                   step="0.01"
                   min="0"
-                  value={String(editing.employee_price ?? 0)}
+                  value={String(safeNumber((editing as any).employee_price, 0))}
                   onChange={(e) =>
                     setEditing({
                       ...editing,
-                      employee_price: Number(e.target.value || 0),
-                      price: Number(e.target.value || 0),
+                      employee_price: safeNumber(e.target.value, 0),
+                      price: safeNumber(e.target.value, 0),
                     })
                   }
                 />
@@ -683,12 +700,7 @@ export default function Admin() {
               <Field label="Descrição" full>
                 <Textarea
                   value={editing.description ?? ""}
-                  onChange={(e) =>
-                    setEditing({
-                      ...editing,
-                      description: e.target.value,
-                    })
-                  }
+                  onChange={(e) => setEditing({ ...editing, description: e.target.value })}
                   rows={3}
                 />
               </Field>
@@ -696,12 +708,7 @@ export default function Admin() {
               <Field label="Package info">
                 <Input
                   value={editing.packageInfo ?? ""}
-                  onChange={(e) =>
-                    setEditing({
-                      ...editing,
-                      packageInfo: e.target.value,
-                    })
-                  }
+                  onChange={(e) => setEditing({ ...editing, packageInfo: e.target.value })}
                   placeholder="Ex.: Pacote 1kg, Pote 200g..."
                 />
               </Field>
@@ -711,13 +718,8 @@ export default function Admin() {
                   type="number"
                   step="0.001"
                   min="0"
-                  value={String(editing.weight ?? 0)}
-                  onChange={(e) =>
-                    setEditing({
-                      ...editing,
-                      weight: Number(e.target.value || 0),
-                    })
-                  }
+                  value={String(safeNumber((editing as any).weight, 0))}
+                  onChange={(e) => setEditing({ ...editing, weight: safeNumber(e.target.value, 0) })}
                 />
               </Field>
 
@@ -752,14 +754,10 @@ export default function Admin() {
                     </span>
 
                     {uploadingImage && (
-                      <span className="text-xs text-blue-500">
-                        Enviando imagem...
-                      </span>
+                      <span className="text-xs text-blue-500">Enviando imagem...</span>
                     )}
                     {uploadError && (
-                      <span className="text-xs text-red-500">
-                        {uploadError}
-                      </span>
+                      <span className="text-xs text-red-500">{uploadError}</span>
                     )}
                   </div>
 
@@ -776,9 +774,7 @@ export default function Admin() {
                             alt={`Imagem ${index + 1}`}
                             className="w-full h-full object-cover"
                             onError={(e) => {
-                              (
-                                e.currentTarget as HTMLImageElement
-                              ).src = FALLBACK_IMG;
+                              (e.currentTarget as HTMLImageElement).src = FALLBACK_IMG;
                             }}
                           />
                           {index === 0 && (
@@ -803,7 +799,7 @@ export default function Admin() {
                           .filter(Boolean),
                       })
                     }
-                    placeholder="/products/50732.jpg, https://..."
+                    placeholder={`https://.../storage/v1/object/public/${STORAGE_BUCKET}/P123/arquivo.jpg, https://...`}
                   />
                 </div>
               </Field>
@@ -812,42 +808,22 @@ export default function Admin() {
                 <Flag
                   label="Pacote"
                   checked={!!editing.isPackage}
-                  onCheckedChange={(v) =>
-                    setEditing({
-                      ...editing,
-                      isPackage: v,
-                    })
-                  }
+                  onCheckedChange={(v) => setEditing({ ...editing, isPackage: v })}
                 />
                 <Flag
                   label="Destaque"
                   checked={!!editing.featured}
-                  onCheckedChange={(v) =>
-                    setEditing({
-                      ...editing,
-                      featured: v,
-                    })
-                  }
+                  onCheckedChange={(v) => setEditing({ ...editing, featured: v })}
                 />
                 <Flag
                   label="Em estoque"
                   checked={editing.inStock !== false}
-                  onCheckedChange={(v) =>
-                    setEditing({
-                      ...editing,
-                      inStock: v,
-                    })
-                  }
+                  onCheckedChange={(v) => setEditing({ ...editing, inStock: v })}
                 />
                 <Flag
                   label="Lançamento"
                   checked={!!editing.isLaunch}
-                  onCheckedChange={(v) =>
-                    setEditing({
-                      ...editing,
-                      isLaunch: v,
-                    })
-                  }
+                  onCheckedChange={(v) => setEditing({ ...editing, isLaunch: v })}
                 />
               </div>
             </div>
@@ -865,10 +841,7 @@ export default function Admin() {
       </Dialog>
 
       {/* Confirmação de exclusão controlada via estado toDelete */}
-      <AlertDialog
-        open={!!toDelete}
-        onOpenChange={(o) => !o && setToDelete(null)}
-      >
+      <AlertDialog open={!!toDelete} onOpenChange={(o) => !o && setToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Excluir produto?</AlertDialogTitle>
@@ -877,9 +850,7 @@ export default function Admin() {
             {toDelete?.name} (ID: {toDelete?.old_id ?? toDelete?.id})
           </div>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setToDelete(null)}>
-              Cancelar
-            </AlertDialogCancel>
+            <AlertDialogCancel onClick={() => setToDelete(null)}>Cancelar</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={doDelete}
@@ -905,11 +876,7 @@ export default function Admin() {
             stroke="currentColor"
             strokeWidth={2}
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M5 10l7-7m0 0l7 7m-7-7v18"
-            />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 10l7-7m0 0l7 7m-7-7v18" />
           </svg>
         </Button>
       )}

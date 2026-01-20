@@ -39,6 +39,66 @@ function getMonthKeySaoPaulo() {
   return `${y}-${m}`;
 }
 
+/** ✅ Checkbox UI (Uiverse 31) mas usado como "radio" (seleção única) */
+function CheckRadio31({
+  checked,
+  onChange,
+  disabled,
+  label,
+  subLabel,
+  warn,
+  title,
+}: {
+  checked: boolean;
+  onChange: () => void;
+  disabled?: boolean;
+  label: string;
+  subLabel?: string;
+  warn?: string;
+  title?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        if (!disabled) onChange();
+      }}
+      className={`w-full rounded-xl border p-3 text-left transition bg-white ${
+        checked ? "border-gray-900" : "border-gray-200"
+      } ${disabled ? "opacity-60 cursor-not-allowed" : "hover:border-gray-400"}`}
+      role="radio"
+      aria-checked={checked}
+      aria-disabled={disabled ? "true" : "false"}
+      title={title}
+      disabled={disabled}
+    >
+      <div className="flex items-start gap-3">
+        <div className="checkbox-wrapper-31 mt-0.5" aria-hidden>
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={() => {
+              if (!disabled) onChange();
+            }}
+            disabled={disabled}
+          />
+          <svg viewBox="0 0 35.6 35.6">
+            <circle className="background" cx="17.8" cy="17.8" r="17.8" />
+            <circle className="stroke" cx="17.8" cy="17.8" r="14.37" />
+            <polyline className="check" points="11.78 18.12 15.55 22.23 25.17 12.87" />
+          </svg>
+        </div>
+
+        <div className="flex-1">
+          <p className="text-sm font-semibold">{label}</p>
+          {subLabel ? <p className="text-xs text-gray-600">{subLabel}</p> : null}
+          {warn ? <p className="mt-1 text-xs text-amber-700">{warn}</p> : null}
+        </div>
+      </div>
+    </button>
+  );
+}
+
 const Checkout: React.FC = () => {
   const { cartItems, cartTotal, clearCart } = useCart();
   const navigate = useNavigate();
@@ -68,21 +128,40 @@ const Checkout: React.FC = () => {
     return Math.max(avail, 0);
   }, [monthlyLimitCents, spentCents]);
 
+  // ✅ NOVA REGRA: só permite pagar com saldo se cobrir 100% do total
+  const canPayWithWallet = useMemo(() => {
+    if (walletLoading) return false;
+    if (walletError) return false;
+    return availableCents >= totalCents && totalCents > 0;
+  }, [walletLoading, walletError, availableCents, totalCents]);
+
+  // ✅ se não puder pagar com saldo, força "pagar na retirada"
+  useEffect(() => {
+    if (payMode === "wallet" && !canPayWithWallet) {
+      setPayMode("pickup");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canPayWithWallet]);
+
+  // ✅ SEM HÍBRIDO:
+  // - walletUsedCents só existe se wallet puder pagar o total (100%)
   const walletUsedCents = useMemo(() => {
     if (payMode !== "wallet") return 0;
-    return Math.min(totalCents, availableCents);
-  }, [payMode, totalCents, availableCents]);
+    if (!canPayWithWallet) return 0;
+    return totalCents; // 100% do pedido
+  }, [payMode, canPayWithWallet, totalCents]);
 
+  // - payOnPickupCents é 100% quando pickup; 0 quando wallet
   const payOnPickupCents = useMemo(() => {
-    // se pagar na retirada, tudo vai pra retirada (walletUsedCents será 0)
-    return Math.max(totalCents - walletUsedCents, 0);
-  }, [totalCents, walletUsedCents]);
+    return payMode === "pickup" ? totalCents : 0;
+  }, [payMode, totalCents]);
 
   // ✅ saldo após o pedido (preview)
   const afterOrderAvailableCents = useMemo(() => {
     if (payMode !== "wallet") return availableCents;
-    return Math.max(availableCents - walletUsedCents, 0);
-  }, [payMode, availableCents, walletUsedCents]);
+    // wallet sempre debita 100% do pedido
+    return Math.max(availableCents - totalCents, 0);
+  }, [payMode, availableCents, totalCents]);
 
   useEffect(() => {
     let alive = true;
@@ -115,7 +194,9 @@ const Checkout: React.FC = () => {
         const limit = Number(walletRow?.credito_mensal_cents ?? 0) || 0;
 
         // ✅ resolve employee_id: prefere view, senão session
-        const resolvedId = (walletRow?.employee_id || employeeIdFromSession) as string | undefined;
+        const resolvedId = (walletRow?.employee_id || employeeIdFromSession) as
+          | string
+          | undefined;
 
         if (!resolvedId) {
           setMonthlyLimitCents(limit);
@@ -188,6 +269,15 @@ const Checkout: React.FC = () => {
       return;
     }
 
+    // ✅ trava se tentar wallet sem saldo suficiente (proteção extra)
+    if (payMode === "wallet" && !canPayWithWallet) {
+      toast.error("Saldo insuficiente para pagar com saldo", {
+        description: "Este pedido deve ser pago na retirada.",
+      });
+      setPayMode("pickup");
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
@@ -204,11 +294,14 @@ const Checkout: React.FC = () => {
 
       if (!orderId) throw new Error("Falha ao criar pedido (orderId vazio).");
 
-      // 2) aplica split via RPC (debita saldo e calcula gasto)
+      // ✅ 2) aplica pagamento via RPC:
+      // - wallet só quando pode pagar 100%
+      const useWallet = payMode === "wallet" && canPayWithWallet;
+
       const { data, error } = await supabase.rpc("place_order_with_wallet_v2", {
         p_order_id: orderId,
         p_employee_id: employeeId,
-        p_use_wallet: payMode === "wallet",
+        p_use_wallet: useWallet,
       });
 
       if (error) {
@@ -223,31 +316,30 @@ const Checkout: React.FC = () => {
         const newSpent = Number(row.new_spent_cents) || 0;
         setSpentCents(newSpent);
       } else {
-        // fallback local
-        if (payMode === "wallet" && walletUsedCents > 0) {
-          setSpentCents((prev) => (Number.isFinite(prev) ? prev : 0) + walletUsedCents);
+        // fallback local (wallet sempre 100% do total)
+        if (useWallet && totalCents > 0) {
+          setSpentCents((prev) => (Number.isFinite(prev) ? prev : 0) + totalCents);
         }
       }
 
-      // ✅ CALCULA MÉTODO REAL (pickup / wallet / split)
-      const paymentMethod =
-        payMode === "pickup"
-          ? "pickup"
-          : walletUsedCents > 0 && payOnPickupCents > 0
-          ? "split"
-          : "wallet";
+      // ✅ MÉTODO: apenas wallet OU pickup (sem split)
+      const paymentMethod = useWallet ? "wallet" : "pickup";
 
       // ✅ CAMPOS QUE O RUNNER LÊ (IMPORTANTÍSSIMO)
-      const walletDebited = payMode === "wallet" && walletUsedCents > 0;
+      const walletDebited = useWallet;
 
-      // ✅ SALVA NO PEDIDO: payment_method + wallet_debited + spent_from_balance_cents + pay_on_pickup_cents
+      // ✅ valores finais (sem híbrido)
+      const spentFromBalance = useWallet ? totalCents : 0;
+      const payOnPickup = useWallet ? 0 : totalCents;
+
+      // ✅ SALVA NO PEDIDO
       const { data: updated, error: upErr } = await supabase
         .from("orders")
         .update({
-          payment_method: paymentMethod, // opcional (mas útil)
-          wallet_debited: walletDebited, // ✅ runner usa
-          spent_from_balance_cents: walletUsedCents, // ✅ runner usa
-          pay_on_pickup_cents: payOnPickupCents, // ✅ runner usa
+          payment_method: paymentMethod,
+          wallet_debited: walletDebited,
+          spent_from_balance_cents: spentFromBalance,
+          pay_on_pickup_cents: payOnPickup,
         })
         .eq("id", orderId)
         .select("id, payment_method, wallet_debited, spent_from_balance_cents, pay_on_pickup_cents")
@@ -255,18 +347,15 @@ const Checkout: React.FC = () => {
 
       if (upErr) {
         console.error("Erro ao salvar pagamento no pedido (orders.update):", upErr);
-        // Não trava o usuário, mas fica registrado no console.
       } else {
         console.log("✅ Pedido atualizado com pagamento:", updated);
       }
 
       clearCart();
 
-      // mensagem mais informativa
       const descParts: string[] = [];
-      if (payMode === "wallet") {
-        descParts.push(`Abatido do saldo: ${formatBRLFromCents(walletUsedCents)}`);
-        descParts.push(`Pagar na retirada: ${formatBRLFromCents(payOnPickupCents)}`);
+      if (useWallet) {
+        descParts.push(`Pago com saldo: ${formatBRLFromCents(totalCents)}`);
         descParts.push(`Saldo após: ${formatBRLFromCents(afterOrderAvailableCents)}`);
       } else {
         descParts.push(`Pagamento na retirada: ${formatBRLFromCents(totalCents)}`);
@@ -312,6 +401,99 @@ const Checkout: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4 py-8">
+      {/* ✅ CSS Uiverse (checkbox 31 + botão confirmar NOVO) */}
+      <style>{`
+        /* Uiverse checkbox 31 (scoped via className) */
+        .checkbox-wrapper-31:hover .check { stroke-dashoffset: 0; }
+
+        .checkbox-wrapper-31 {
+          position: relative;
+          display: inline-block;
+          width: 28px;
+          height: 28px;
+          flex: 0 0 auto;
+        }
+
+        .checkbox-wrapper-31 .background {
+          fill: #ccc;
+          transition: ease all 0.6s;
+          -webkit-transition: ease all 0.6s;
+        }
+
+        .checkbox-wrapper-31 .stroke {
+          fill: none;
+          stroke: #fff;
+          stroke-miterlimit: 10;
+          stroke-width: 2px;
+          stroke-dashoffset: 100;
+          stroke-dasharray: 100;
+          transition: ease all 0.6s;
+          -webkit-transition: ease all 0.6s;
+        }
+
+        .checkbox-wrapper-31 .check {
+          fill: none;
+          stroke: #fff;
+          stroke-linecap: round;
+          stroke-linejoin: round;
+          stroke-width: 2px;
+          stroke-dashoffset: 22;
+          stroke-dasharray: 22;
+          transition: ease all 0.6s;
+          -webkit-transition: ease all 0.6s;
+        }
+
+        .checkbox-wrapper-31 input[type=checkbox] {
+          position: absolute;
+          width: 100%;
+          height: 100%;
+          left: 0;
+          top: 0;
+          margin: 0;
+          opacity: 0;
+          appearance: none;
+          -webkit-appearance: none;
+        }
+
+        .checkbox-wrapper-31 input[type=checkbox]:hover { cursor: pointer; }
+
+        /* cor do "checked" (ajustei pra combinar com o tema) */
+        .checkbox-wrapper-31 input[type=checkbox]:checked + svg .background { fill: #111827; }
+        .checkbox-wrapper-31 input[type=checkbox]:checked + svg .stroke { stroke-dashoffset: 0; }
+        .checkbox-wrapper-31 input[type=checkbox]:checked + svg .check { stroke-dashoffset: 0; }
+
+        /* ✅ Uiverse button (arieshiphop) - ESCOPADO */
+        .uiverse-aries {
+          font-size: 17px;
+          padding: 0.5em 2em;
+          border: transparent;
+          box-shadow: 2px 2px 4px rgba(0,0,0,0.4);
+          background: dodgerblue;
+          color: white;
+          border-radius: 4px;
+          transition: all 0.2s ease;
+          width: 100%;
+        }
+
+        .uiverse-aries:hover {
+          background: rgb(2,0,36);
+          background: linear-gradient(
+            90deg,
+            rgba(30,144,255,1) 0%,
+            rgba(0,212,255,1) 100%
+          );
+        }
+
+        .uiverse-aries:active {
+          transform: translate(0em, 0.2em);
+        }
+
+        .uiverse-aries:disabled {
+          opacity: 0.65;
+          cursor: not-allowed;
+        }
+      `}</style>
+
       <div className="w-full max-w-3xl bg-white rounded-2xl shadow-sm border p-6 md:p-8">
         {/* LOGO CENTRALIZADA */}
         <div className="flex justify-center mb-6">
@@ -357,73 +539,32 @@ const Checkout: React.FC = () => {
             </div>
           </div>
 
-          {/* ✅ Radio visual */}
+          {/* ✅ Troca dos "radios" pelos checkboxes do Uiverse */}
           <div className="mt-4 grid gap-2" role="radiogroup" aria-label="Forma de pagamento">
-            <button
-              type="button"
-              onClick={() => setPayMode("wallet")}
-              className={`w-full rounded-xl border p-3 text-left transition ${
-                payMode === "wallet" ? "border-gray-900 bg-white" : "border-gray-200 bg-white"
-              }`}
+            <CheckRadio31
+              checked={payMode === "wallet"}
+              onChange={() => setPayMode("wallet")}
+              disabled={walletLoading || !canPayWithWallet}
+              label="Usar saldo do mês"
+              subLabel="Disponível precisa cobrir 100% do total do pedido."
+              warn={
+                !walletLoading && !walletError && !canPayWithWallet
+                  ? "Saldo insuficiente para este pedido — pagamento será na retirada."
+                  : undefined
+              }
+              title={!canPayWithWallet ? "Saldo insuficiente para pagar este pedido com saldo." : ""}
+            />
+
+            <CheckRadio31
+              checked={payMode === "pickup"}
+              onChange={() => setPayMode("pickup")}
               disabled={walletLoading}
-              role="radio"
-              aria-checked={payMode === "wallet"}
-            >
-              <div className="flex items-start gap-3">
-                <span
-                  className={`mt-1 h-4 w-4 rounded-full border flex-shrink-0 grid place-items-center ${
-                    payMode === "wallet" ? "border-gray-900" : "border-gray-300"
-                  }`}
-                  aria-hidden
-                >
-                  <span
-                    className={`h-2 w-2 rounded-full transition ${
-                      payMode === "wallet" ? "bg-gray-900" : "bg-transparent"
-                    }`}
-                  />
-                </span>
-
-                <div className="flex-1">
-                  <p className="text-sm font-semibold">Usar saldo do mês (desconto automático)</p>
-                  <p className="text-xs text-gray-600">
-                    Se não for suficiente, o restante fica para pagar na retirada.
-                  </p>
-                </div>
-              </div>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setPayMode("pickup")}
-              className={`w-full rounded-xl border p-3 text-left transition ${
-                payMode === "pickup" ? "border-gray-900 bg-white" : "border-gray-200 bg-white"
-              }`}
-              role="radio"
-              aria-checked={payMode === "pickup"}
-            >
-              <div className="flex items-start gap-3">
-                <span
-                  className={`mt-1 h-4 w-4 rounded-full border flex-shrink-0 grid place-items-center ${
-                    payMode === "pickup" ? "border-gray-900" : "border-gray-300"
-                  }`}
-                  aria-hidden
-                >
-                  <span
-                    className={`h-2 w-2 rounded-full transition ${
-                      payMode === "pickup" ? "bg-gray-900" : "bg-transparent"
-                    }`}
-                  />
-                </span>
-
-                <div className="flex-1">
-                  <p className="text-sm font-semibold">Pagar tudo na retirada</p>
-                  <p className="text-xs text-gray-600">Não utiliza seu saldo mensal.</p>
-                </div>
-              </div>
-            </button>
+              label="Pagar tudo na retirada"
+              subLabel="Não utiliza seu saldo mensal."
+            />
           </div>
 
-          {/* PREVIEW DO SPLIT */}
+          {/* PREVIEW (sem split) */}
           <div className="mt-4 rounded-xl bg-white border p-3">
             <div className="flex justify-between text-sm">
               <span className="text-gray-600">Total do pedido</span>
@@ -431,7 +572,7 @@ const Checkout: React.FC = () => {
             </div>
 
             <div className="flex justify-between text-sm mt-1">
-              <span className="text-gray-600">Abatido do saldo</span>
+              <span className="text-gray-600">Pago com saldo</span>
               <span className="font-semibold">{formatBRLFromCents(walletUsedCents)}</span>
             </div>
 
@@ -440,19 +581,12 @@ const Checkout: React.FC = () => {
               <span className="font-semibold">{formatBRLFromCents(payOnPickupCents)}</span>
             </div>
 
-            {/* ✅ saldo após pedido */}
             <div className="flex justify-between text-sm mt-1">
               <span className="text-gray-600">Saldo após este pedido</span>
               <span className="font-semibold">
                 {walletLoading || walletError ? "—" : formatBRLFromCents(afterOrderAvailableCents)}
               </span>
             </div>
-
-            {payMode === "wallet" && !walletLoading && !walletError && availableCents === 0 && (
-              <p className="mt-2 text-xs text-amber-700">
-                Seu saldo disponível está zerado. O pedido ficará 100% para pagar na retirada.
-              </p>
-            )}
           </div>
         </div>
 
@@ -501,18 +635,21 @@ const Checkout: React.FC = () => {
             Voltar para o catálogo
           </Button>
 
-          <Button
-            className="flex-1 bg-green-600 hover:bg-green-700 text-white"
+          {/* ✅ Botão confirmar (Uiverse arieshiphop) */}
+          <button
+            type="button"
+            className="uiverse-aries flex-1"
             onClick={handleConfirm}
             disabled={isSubmitting}
+            aria-busy={isSubmitting ? "true" : "false"}
           >
             {isSubmitting ? "Enviando..." : "Confirmar pedido"}
-          </Button>
+          </button>
         </div>
 
         <p className="mt-4 text-xs text-gray-500">
-          O desconto do saldo é aplicado automaticamente no momento da confirmação. Se o saldo não
-          for suficiente, o restante fica para pagar na retirada.
+          O pagamento com saldo só é liberado quando o saldo disponível cobre 100% do pedido. Caso
+          contrário, o pedido deve ser pago na retirada.
         </p>
       </div>
     </div>

@@ -68,7 +68,9 @@ type DbOrder = {
 
 type DbItem = {
   product_code: string; // aqui vai o product_old_id (código SAIBWEB)
-  qty: number; // quantity
+  qty: number; // quantity original do pedido (mantido pra validação)
+  weight: number | null; // weight do produto no supabase
+  saibweb_qty: number; // ✅ quantidade que será enviada pro SAIBWEB (regra do peso)
 };
 
 // =====================
@@ -103,6 +105,24 @@ function waitForEnter(prompt: string) {
 
 function centsToBRL(cents: number) {
   return (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+function toFiniteNumberOrNull(v: any): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function computeSaibwebQtyFromWeight(weight: number | null): number {
+  // ✅ Regra solicitada:
+  // - se weight > 1 => qty = weight
+  // - se weight <= 1 (ou null) => qty = 1
+  const w = weight ?? 0;
+  return w > 1 ? w : 1;
+}
+
+function formatQtyForInput(q: number): string {
+  // Mantém ponto como separador decimal (ex: 1.5)
+  return String(q);
 }
 
 // =====================
@@ -169,7 +189,7 @@ async function pickNextOrderToProcess(): Promise<{ order: DbOrder; items: DbItem
   if (lockErr) throw lockErr;
   if (!locked || locked.length === 0) return null;
 
-  // ✅ ITENS (public.order_items)
+  // ✅ ITENS
   const { data: rawItems, error: itemsErr } = await supabase
     .from("order_items")
     .select("product_old_id, quantity")
@@ -177,7 +197,7 @@ async function pickNextOrderToProcess(): Promise<{ order: DbOrder; items: DbItem
 
   if (itemsErr) throw itemsErr;
 
-  const items: DbItem[] = (rawItems ?? [])
+  const baseItems = (rawItems ?? [])
     .map((it: any) => {
       const code = it.product_old_id;
       const qty = Number(it.quantity);
@@ -188,6 +208,67 @@ async function pickNextOrderToProcess(): Promise<{ order: DbOrder; items: DbItem
       };
     })
     .filter((it) => it.product_code && it.qty > 0);
+
+  if (baseItems.length === 0) {
+    return { order, items: [] };
+  }
+
+  // =====================
+  // ✅ Buscar weight na tabela products (assumindo products.old_id = order_items.product_old_id)
+  // =====================
+  const uniqueCodes = Array.from(new Set(baseItems.map((i) => i.product_code)));
+
+  // Se o old_id for numérico no banco, converte pra number pra bater melhor.
+  const uniqueOldIdsAsNumber = uniqueCodes
+    .map((c) => Number(c))
+    .filter((n) => Number.isFinite(n));
+
+  let weightByOldId = new Map<string, number | null>();
+
+  if (uniqueOldIdsAsNumber.length > 0) {
+    const { data: products, error: prodErr } = await supabase
+      .from("products")
+      .select("old_id, weight")
+      .in("old_id", uniqueOldIdsAsNumber);
+
+    if (prodErr) throw prodErr;
+
+    for (const p of products ?? []) {
+      const oldId = (p as any)?.old_id;
+      const w = toFiniteNumberOrNull((p as any)?.weight);
+      if (oldId !== null && oldId !== undefined) {
+        weightByOldId.set(String(oldId), w);
+      }
+    }
+  } else {
+    // fallback: tenta como string (caso old_id seja text no banco)
+    const { data: products, error: prodErr } = await supabase
+      .from("products")
+      .select("old_id, weight")
+      .in("old_id", uniqueCodes as any);
+
+    if (prodErr) throw prodErr;
+
+    for (const p of products ?? []) {
+      const oldId = (p as any)?.old_id;
+      const w = toFiniteNumberOrNull((p as any)?.weight);
+      if (oldId !== null && oldId !== undefined) {
+        weightByOldId.set(String(oldId), w);
+      }
+    }
+  }
+
+  const items: DbItem[] = baseItems.map((it) => {
+    const weight = weightByOldId.get(it.product_code) ?? null;
+    const saibweb_qty = computeSaibwebQtyFromWeight(weight);
+
+    return {
+      product_code: it.product_code,
+      qty: it.qty,
+      weight,
+      saibweb_qty,
+    };
+  });
 
   return { order, items };
 }
@@ -274,6 +355,22 @@ async function fillByXPathAndEnter(page: Page, clickXpath: string, value: string
   await page.waitForTimeout(90);
 }
 
+// ✅ NOVO: clicar no campo e selecionar sempre a PRIMEIRA opção (ArrowDown + Enter)
+async function selectFirstOptionFromDropdownByXPath(page: Page, clickXpath: string) {
+  await clickByXPathPreferButton(page, clickXpath, { timeout: 15000 });
+  await page.waitForTimeout(120);
+
+  // garante que abre lista e seleciona a primeira opção
+  await page.keyboard.press("ArrowDown").catch(() => {});
+  await page.waitForTimeout(80);
+  await page.keyboard.press("Enter").catch(() => {});
+  await page.waitForTimeout(140);
+
+  // blur/tab pra salvar
+  await page.keyboard.press("Tab").catch(() => {});
+  await page.waitForTimeout(90);
+}
+
 // =====================
 // Login SAIBWEB
 // =====================
@@ -300,8 +397,7 @@ async function clickHamburgerMenu(page: Page) {
 
   const hamburgerSvgXPath =
     '//*[@id="root"]/div/main/div/div[1]/div[1]/nav/div/button/span[1]/svg';
-  const hamburgerButtonXPath =
-    '//*[@id="root"]/div/main/div/div[1]/div[1]/nav/div/button';
+  const hamburgerButtonXPath = '//*[@id="root"]/div/main/div/div[1]/div[1]/nav/div/button';
 
   await clickByXPath(page, hamburgerButtonXPath).catch(async () => {
     await clickByXPathPreferButton(page, hamburgerSvgXPath);
@@ -370,7 +466,9 @@ async function preencherNovoCadastro(page: Page, cpf: string, obs: string) {
     '//*[@id="scrollable-force-tabpanel-1"]/div/div/div[2]/form/div[2]/div[1]/div/div[2]/div/div/div[1]/div[2]';
 
   await fillByXPathAndEnter(page, clienteXPath, cpf);
-  await fillByXPathAndEnter(page, operacaoXPath, "1");
+
+  // ✅ ALTERAÇÃO: em vez de digitar "1", seleciona sempre a PRIMEIRA opção do dropdown
+  await selectFirstOptionFromDropdownByXPath(page, operacaoXPath);
 
   const obsEl = page.locator("#obs_nota").first();
   await obsEl.waitFor({ state: "visible", timeout: 15000 });
@@ -395,8 +493,8 @@ async function abrirItensDoPedido(page: Page) {
   console.log("✅ Aba Itens do Pedido aberta");
 }
 
-async function adicionarItemDoPedido(page: Page, itemCode: string, qtd: number) {
-  console.log(`🧩 Adicionando item: código=${itemCode} qtd=${qtd}`);
+async function adicionarItemDoPedido(page: Page, itemCode: string, qtdSaibweb: number) {
+  console.log(`🧩 Adicionando item: código=${itemCode} qtd_saibweb=${qtdSaibweb}`);
 
   const pesquisarItemXPath =
     '//*[@id="scrollable-force-tabpanel-2"]/div/div/div[2]/span/form/div/div[2]/div/div[2]/div/div/div[1]/div[2]';
@@ -411,7 +509,7 @@ async function adicionarItemDoPedido(page: Page, itemCode: string, qtd: number) 
   await qtdEl.scrollIntoViewIfNeeded().catch(() => {});
   await qtdEl.click({ delay: 30 }).catch(() => {});
   await qtdEl.fill("").catch(() => {});
-  await qtdEl.fill(String(qtd));
+  await qtdEl.fill(formatQtyForInput(qtdSaibweb));
 
   await page.waitForTimeout(120);
 
@@ -424,8 +522,7 @@ async function adicionarItemDoPedido(page: Page, itemCode: string, qtd: number) 
 async function confirmarPedido(page: Page) {
   console.log("✅ Confirmando pedido");
 
-  const confirmarXPath =
-    '//*[@id="scrollable-force-tabpanel-2"]/div/div/div[1]/div[1]/button[2]';
+  const confirmarXPath = '//*[@id="scrollable-force-tabpanel-2"]/div/div/div[1]/div[1]/button[2]';
 
   await clickByXPath(page, confirmarXPath, { timeout: 20000 });
   await sleep(900);
@@ -481,6 +578,13 @@ async function main() {
     return;
   }
 
+  // Log extra pra conferir regra do peso
+  for (const it of items) {
+    console.log(
+      `⚖️ item ${it.product_code} -> weight=${it.weight ?? "null"} | qtyPedido=${it.qty} | qtySAIBWEB=${it.saibweb_qty}`
+    );
+  }
+
   const browser = await chromium.launch({ headless: HEADLESS, slowMo: SLOW_MO });
   const context = await browser.newContext({ viewport: { width: 1366, height: 768 } });
   const page = await context.newPage();
@@ -497,7 +601,8 @@ async function main() {
     await abrirItensDoPedido(page);
 
     for (const it of items) {
-      await adicionarItemDoPedido(page, it.product_code, it.qty);
+      // ✅ Aqui aplica a regra do peso
+      await adicionarItemDoPedido(page, it.product_code, it.saibweb_qty);
     }
 
     await confirmarPedido(page);

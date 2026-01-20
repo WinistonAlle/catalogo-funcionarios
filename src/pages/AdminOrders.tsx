@@ -277,21 +277,49 @@ export default function AdminOrders() {
   const [cancelLogsLoading, setCancelLogsLoading] = useState(false);
   const [cancelLogsErr, setCancelLogsErr] = useState<string | null>(null);
 
-  const isMobile = useMemo(() => (typeof window !== "undefined" ? window.innerWidth < 940 : false), []);
+  // ✅ FIX: isMobile reativo a resize
+  const [isMobile, setIsMobile] = useState(() => (typeof window !== "undefined" ? window.innerWidth < 940 : false));
+  useEffect(() => {
+    function onResize() {
+      setIsMobile(window.innerWidth < 940);
+    }
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
+  // ✅ FIX: pega CPF do ator do localStorage (inclui employee_session)
   function actorCpfFromLocalStorage() {
     const possible =
       localStorage.getItem("gm_employee_cpf") ||
       localStorage.getItem("employee_cpf") ||
       localStorage.getItem("cpf") ||
       "";
-    return onlyDigits(possible);
+
+    const digits = onlyDigits(possible);
+    if (digits) return digits;
+
+    const raw = localStorage.getItem("employee_session") || localStorage.getItem("gm_employee_session") || "";
+    if (!raw) return "";
+
+    try {
+      const obj = JSON.parse(raw);
+      const cpf =
+        obj?.cpf ||
+        obj?.employee_cpf ||
+        obj?.employeeCpf ||
+        obj?.document ||
+        obj?.employee?.cpf ||
+        obj?.employee?.employee_cpf ||
+        "";
+      return onlyDigits(String(cpf || ""));
+    } catch {
+      return "";
+    }
   }
 
   async function fetchEmployeeMap(): Promise<Map<string, string>> {
     const map = new Map<string, string>();
 
-    // tenta RPC (se você tiver)
     const { data: rpcData } = await supabase.rpc("admin_get_employees_basic");
     if (Array.isArray(rpcData)) {
       for (const r of rpcData as any[]) {
@@ -302,7 +330,6 @@ export default function AdminOrders() {
       return map;
     }
 
-    // fallback (tabela direta)
     const { data } = await supabase.from("employees").select("cpf, full_name");
     if (Array.isArray(data)) {
       for (const r of data as any[]) {
@@ -354,10 +381,8 @@ export default function AdminOrders() {
       return;
     }
 
-    // ✅ FIX: garante array de verdade + cast seguro pro TS (via unknown)
     const list = (Array.isArray(data) ? data : []) as unknown as OrderRow[];
 
-    // garante nome do funcionário (se vier vazio)
     const needName = list.some((o) => !o.employee_name && o.employee_cpf);
     if (needName) {
       const cpfMap = await fetchEmployeeMap();
@@ -390,7 +415,18 @@ export default function AdminOrders() {
   async function cancelOrder() {
     if (!selected) return;
 
-    const actorCpf = actorCpfFromLocalStorage();
+    let actorCpf = actorCpfFromLocalStorage();
+
+    // ✅ fallback via Supabase Auth (se existir)
+    if (!actorCpf) {
+      const { data } = await supabase.auth.getUser();
+      const metaCpf =
+        (data?.user?.user_metadata as any)?.cpf ||
+        (data?.user?.user_metadata as any)?.employee_cpf ||
+        "";
+      actorCpf = onlyDigits(String(metaCpf || ""));
+    }
+
     if (!actorCpf) {
       alert("Não encontrei seu CPF de login no navegador (localStorage).");
       return;
@@ -483,10 +519,12 @@ export default function AdminOrders() {
 
   useEffect(() => {
     loadOrders();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (selected) loadHistory(selected.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
   const summary = useMemo(() => {
@@ -683,7 +721,8 @@ export default function AdminOrders() {
                               </div>
                             </td>
 
-                            <td style={styles.td}>{o.total_cents ? brlFromCents(o.total_cents) : brlFromReais(o.total_value)}</td>
+                            {/* ✅ total consistente */}
+                            <td style={styles.td}>{brlFromCents(toCentsFromOrder(o))}</td>
 
                             <td style={styles.td}>
                               <span style={statusPill(o.status)}>{STATUS_LABEL[o.status || ""] || (o.status || "—")}</span>
@@ -732,7 +771,7 @@ export default function AdminOrders() {
 
                       <div style={styles.mobileBottom}>
                         <div>
-                          <div style={styles.mobileTotal}>{o.total_cents ? brlFromCents(o.total_cents) : brlFromReais(o.total_value)}</div>
+                          <div style={styles.mobileTotal}>{brlFromCents(toCentsFromOrder(o))}</div>
                           <div style={styles.payMini}>
                             {meta.wallet > 0 && <span style={styles.payLine}>Saldo: {brlFromCents(meta.wallet)}</span>}
                             {meta.pickup > 0 && <span style={styles.payLine}>Retirada: {brlFromCents(meta.pickup)}</span>}
@@ -799,9 +838,7 @@ export default function AdminOrders() {
 
                       <div style={styles.summaryItem}>
                         <div style={styles.summaryLabel}>Total</div>
-                        <div style={styles.summaryValue}>
-                          {selected.total_cents ? brlFromCents(selected.total_cents) : brlFromReais(selected.total_value)}
-                        </div>
+                        <div style={styles.summaryValue}>{brlFromCents(toCentsFromOrder(selected))}</div>
                       </div>
 
                       <div style={styles.summaryItem}>
@@ -981,7 +1018,7 @@ export default function AdminOrders() {
                       <tbody>
                         {cancelLogs.map((r) => {
                           const meta = getPaymentMeta(r as any);
-                          const total = r.total_cents ? brlFromCents(r.total_cents) : brlFromReais(r.total_value);
+                          const total = brlFromCents(toCentsFromOrder(r as any));
 
                           return (
                             <tr key={`${r.order_id}-${r.cancelled_at || ""}`} style={styles.tr}>
@@ -1239,7 +1276,7 @@ const styles: Record<string, CSSProperties> = {
     background: "rgba(255,255,255,0.92)",
     border: "1px solid rgba(0,0,0,0.06)",
     borderRadius: 18,
-    overflow: "hidden",
+    overflow: "visible", // ✅ não corta tooltip
     boxShadow: "0 10px 30px rgba(0,0,0,0.04)",
   },
   tableHeader: {
@@ -1252,7 +1289,12 @@ const styles: Record<string, CSSProperties> = {
   },
   tableTitle: { fontSize: 14, fontWeight: 950 },
   tableSub: { fontSize: 12, opacity: 0.7 },
-  tableScroll: { overflow: "auto" },
+
+  tableScroll: {
+    overflowX: "auto",
+    overflowY: "visible", // ✅ não corta tooltip
+  },
+
   table: { width: "100%", borderCollapse: "separate", borderSpacing: 0 },
   th: {
     textAlign: "left",

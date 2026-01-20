@@ -78,6 +78,10 @@ function normalizeHeader(h) {
     .replace(/\s+/g, "_");
 }
 
+function normalizeCpf(cpf) {
+  return (cpf || "").toString().trim();
+}
+
 // Aceita "350", "350,00", "R$ 350,00", "1.234,56", etc.
 function parseMoneyToCentsBR(value) {
   if (value === null || value === undefined) return 0;
@@ -95,6 +99,19 @@ function parseMoneyToCentsBR(value) {
   if (!Number.isFinite(num)) return 0;
 
   return Math.round(num * 100);
+}
+
+// Decide se hoje é “rodada mensal” (dia 1) ou diária.
+// Você pode FORÇAR o modo mensal para teste com: SYNC_CREDITO_MENSAL=1
+function shouldSyncMonthlyCredit() {
+  if (process.env.SYNC_CREDITO_MENSAL === "1") return true;
+
+  // timezone Brasil/São Paulo
+  const now = new Date();
+  const daySP = Number(
+    new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", day: "2-digit" }).format(now)
+  );
+  return daySP === 1;
 }
 
 // -------------------------
@@ -143,7 +160,7 @@ async function readEmployeesFromSheet() {
     .filter((row) => row[iName] && row[iCpf])
     .map((row) => {
       const full_name = row[iName].toString().trim();
-      const cpf = (row[iCpf] || "").toString().trim();
+      const cpf = normalizeCpf(row[iCpf]);
 
       const roleRaw = iRole !== -1 ? (row[iRole] || "").toString().trim() : "";
       const role = roleRaw || "employee";
@@ -157,7 +174,8 @@ async function readEmployeesFromSheet() {
         role,
         credito_mensal_cents,
       };
-    });
+    })
+    .filter((e) => e.cpf && e.full_name);
 
   console.log(`✅ Funcionários lidos da planilha: ${employees.length}`);
   return employees;
@@ -185,10 +203,42 @@ async function syncEmployees() {
       return;
     }
 
-    const cpfsInDb = (dbEmployees || []).map((e) => e.cpf);
+    const cpfsInDb = (dbEmployees || []).map((e) => normalizeCpf(e.cpf));
+    const cpfsInDbSet = new Set(cpfsInDb);
+
+    // ✅ Regra:
+    // - Todo dia: só cadastra/atualiza dados “cadastro”
+    // - Dia 1: atualiza o credito_mensal_cents de todo mundo
+    // - Qualquer dia: se for funcionário novo (CPF não existe ainda), insere já com crédito
+    const syncCredit = shouldSyncMonthlyCredit();
+
+    console.log(
+      syncCredit
+        ? "📅 Hoje é rodada MENSAL: vai sincronizar credito_mensal de todos."
+        : "🗓️ Rodada DIÁRIA: vai sincronizar cadastro; e crédito só para funcionários NOVOS."
+    );
+
+    const payload = sheetEmployees.map((e) => {
+      const base = {
+        cpf: e.cpf,
+        full_name: e.full_name,
+        role: e.role,
+      };
+
+      const isNew = !cpfsInDbSet.has(e.cpf);
+
+      if (syncCredit || isNew) {
+        return {
+          ...base,
+          credito_mensal_cents: e.credito_mensal_cents,
+        };
+      }
+
+      return base;
+    });
 
     console.log("⬆️ Fazendo upsert dos funcionários da planilha...");
-    const { error: upsertError } = await supabase.from("employees").upsert(sheetEmployees, {
+    const { error: upsertError } = await supabase.from("employees").upsert(payload, {
       onConflict: "cpf",
     });
 
@@ -197,7 +247,7 @@ async function syncEmployees() {
       return;
     }
 
-    const cpfsToDelete = cpfsInDb.filter((cpf) => !cpfsInSheet.includes(cpf));
+    const cpfsToDelete = cpfsInDb.filter((cpf) => cpf && !cpfsInSheet.includes(cpf));
 
     if (cpfsToDelete.length > 0) {
       console.log("🗑️ Removendo do Supabase (não estão mais na planilha):", cpfsToDelete);
@@ -214,6 +264,7 @@ async function syncEmployees() {
     console.log("🎉 Sincronização concluída com sucesso!");
     console.log(`   Total na planilha: ${sheetEmployees.length}`);
     console.log(`   Removidos: ${cpfsToDelete.length}`);
+    console.log(`   Crédito mensal sincronizado hoje? ${syncCredit ? "SIM (todos)" : "NÃO (só novos)"}`);
   } catch (err) {
     console.error("💥 Erro geral na sincronização:", err);
   }
