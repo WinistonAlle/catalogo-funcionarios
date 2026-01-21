@@ -519,6 +519,22 @@ async function abrirItensDoPedido(page: Page) {
   console.log("✅ Aba Itens do Pedido aberta");
 }
 
+// ✅ NOVO: Selecionar tabela de preço antes de adicionar itens
+async function selecionarTabelaPrecoAntesDosItens(page: Page) {
+  console.log("💲 Selecionando TABELA DE PREÇO: 18");
+
+  const tabelaPrecoXPath =
+    '//*[@id="scrollable-force-tabpanel-2"]/div/div/div[2]/span/form/div/div[1]/div/div[2]/div/div/div[1]/div[2]';
+
+  // clica no campo, digita 18 e Enter (com blur/tab pra salvar)
+  await fillByXPathAndEnter(page, tabelaPrecoXPath, "18");
+
+  // um respiro extra pra garantir que aplicou a tabela
+  await page.waitForTimeout(250);
+
+  console.log("✅ Tabela de preço definida: 18");
+}
+
 async function adicionarItemDoPedido(page: Page, itemCode: string, qtdSaibweb: number) {
   console.log(`🧩 Adicionando item: código=${itemCode} qtd_saibweb=${qtdSaibweb}`);
 
@@ -630,6 +646,9 @@ async function main() {
     await preencherNovoCadastro(page, order.employee_cpf, obs);
 
     await abrirItensDoPedido(page);
+
+    // ✅ AQUI entra sua nova regra: antes de adicionar itens, define a tabela de preço 18
+    await selecionarTabelaPrecoAntesDosItens(page);
 
     for (const it of items) {
       // ✅ Aqui aplica a regra nova: qtyPedido * (peso se > 1 senão 1)
