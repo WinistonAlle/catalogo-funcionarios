@@ -32,7 +32,7 @@ export default defineConfig(({ mode }) => ({
         description: "Sistema interno de pedidos e painéis",
         theme_color: "#9E0F14",
         background_color: "#9E0F14",
-        display: "browser",
+        display: "standalone",
         start_url: "/",
         scope: "/",
         icons: [
