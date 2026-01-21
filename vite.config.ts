@@ -4,7 +4,6 @@ import path from "path";
 import { componentTagger } from "lovable-tagger";
 import { VitePWA } from "vite-plugin-pwa";
 
-//meu ovo
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   server: {
