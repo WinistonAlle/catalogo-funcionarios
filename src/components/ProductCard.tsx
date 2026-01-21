@@ -30,7 +30,10 @@ async function getMyEmployeeId(): Promise<string> {
   return cachedEmployeeId;
 }
 
-const ProductCard: React.FC<ProductCardProps> = ({ product, hideImages = false }) => {
+const ProductCard: React.FC<ProductCardProps> = ({
+  product,
+  hideImages = false,
+}) => {
   const { addToCart, decreaseQuantity, updateQuantity, cartItems } = useCart();
   const [isDetailOpen, setIsDetailOpen] = useState(false);
 
@@ -45,6 +48,12 @@ const ProductCard: React.FC<ProductCardProps> = ({ product, hideImages = false }
   useEffect(() => {
     setInputValue(quantity.toString());
   }, [quantity]);
+
+  // ✅ IMPORTANTE: evita o Carousel/Drag “roubar” os cliques dos botões
+  const stop = (e: any) => {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
+  };
 
   const handleQuantityChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value.replace(/\D/g, "");
@@ -115,8 +124,7 @@ const ProductCard: React.FC<ProductCardProps> = ({ product, hideImages = false }
   }, [loadIsFavorite]);
 
   const toggleFavorite = async (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+    stop(e);
 
     if (favLoading) return;
     setFavLoading(true);
@@ -124,7 +132,6 @@ const ProductCard: React.FC<ProductCardProps> = ({ product, hideImages = false }
     try {
       const employeeId = await getMyEmployeeId();
 
-      // checa se já existe
       const { data: existing, error: existingError } = await supabase
         .from("favorites")
         .select("id")
@@ -166,25 +173,43 @@ const ProductCard: React.FC<ProductCardProps> = ({ product, hideImages = false }
   return (
     <>
       <Card
+        data-card
         className={`
           relative
           overflow-hidden
-          bg-white/40 backdrop-blur-sm shadow-sm rounded-2xl
+          shadow-sm rounded-2xl
           border transition-all
           min-w-0
+
+          bg-white/40 backdrop-blur-sm
           ${hideImages ? "flex flex-col" : "flex flex-row md:flex-col"}
           ${
             quantity > 0
               ? "border-red-200 shadow-md translate-y-[-1px]"
               : "border-white/20 hover:shadow-md"
           }
+
+          [[data-featured-card='true']_&]:flex-col
+          [[data-featured-card='true']_&]:bg-white
+          [[data-featured-card='true']_&]:backdrop-blur-0
+          [[data-featured-card='true']_&]:border-gray-200/80
+          [[data-featured-card='true']_&]:shadow-[0_10px_24px_rgba(0,0,0,0.12)]
+
+          md:[[data-featured-card='true']_&]:bg-white/40
+          md:[[data-featured-card='true']_&]:backdrop-blur-sm
+          md:[[data-featured-card='true']_&]:border-white/20
+          md:[[data-featured-card='true']_&]:shadow-sm
         `}
       >
-        {/* ❤️ FAVORITO (sempre visível) */}
+        {/* ❤️ FAVORITO */}
         <button
           type="button"
+          onPointerDown={stop}
+          onTouchStart={stop}
           onClick={toggleFavorite}
-          aria-label={isFavorite ? "Remover dos favoritos" : "Adicionar aos favoritos"}
+          aria-label={
+            isFavorite ? "Remover dos favoritos" : "Adicionar aos favoritos"
+          }
           className={`
             absolute top-2 right-2 z-30
             inline-flex items-center justify-center
@@ -196,6 +221,12 @@ const ProductCard: React.FC<ProductCardProps> = ({ product, hideImages = false }
             hover:scale-[1.03]
             active:scale-[0.98]
             ${favLoading ? "opacity-70" : ""}
+
+            [[data-featured-card='true']_&]:bg-white
+            [[data-featured-card='true']_&]:backdrop-blur-0
+            [[data-featured-card='true']_&]:border-gray-200/70
+            md:[[data-featured-card='true']_&]:bg-white/90
+            md:[[data-featured-card='true']_&]:backdrop-blur-sm
           `}
         >
           <Heart
@@ -206,35 +237,48 @@ const ProductCard: React.FC<ProductCardProps> = ({ product, hideImages = false }
           />
         </button>
 
-        {/* ✅ NO MODO LEVE: NÃO RENDERIZA NADA DE IMAGEM (ZERO ESPAÇO) */}
+        {/* ✅ IMAGEM */}
         {!hideImages && (
           <button
             type="button"
             onClick={handleOpenDetail}
-            className="
+            className={`
               relative
               bg-white
               overflow-hidden
               flex items-center justify-center
               flex-shrink-0
+              group
+
               w-24 h-24
               md:w-full md:h-auto md:aspect-square
               rounded-l-2xl md:rounded-t-2xl md:rounded-b-none
               mr-3 md:mr-0
-              group
-            "
+
+              [[data-featured-card='true']_&]:w-full
+              [[data-featured-card='true']_&]:h-[190px]
+              [[data-featured-card='true']_&]:mr-0
+              [[data-featured-card='true']_&]:rounded-t-2xl
+              [[data-featured-card='true']_&]:rounded-b-none
+
+              md:[[data-featured-card='true']_&]:h-auto
+              md:[[data-featured-card='true']_&]:aspect-square
+              md:[[data-featured-card='true']_&]:rounded-t-2xl
+              md:[[data-featured-card='true']_&]:rounded-b-none
+            `}
             aria-label={`Imagem do produto ${product.name}`}
           >
             {product.images && product.images.length > 0 ? (
               <ProductImageCarousel
                 images={product.images}
                 productName={product.name}
-                className="
+                className={`
                   w-full h-full
-                  object-contain md:object-cover
                   transition-transform duration-300
                   group-hover:scale-105
-                "
+                  object-contain md:object-cover
+                  [[data-featured-card='true']_&]:object-cover
+                `}
               />
             ) : product.image_path ? (
               <img
@@ -242,12 +286,13 @@ const ProductCard: React.FC<ProductCardProps> = ({ product, hideImages = false }
                 alt={product.name}
                 loading="lazy"
                 decoding="async"
-                className="
+                className={`
                   w-full h-full
-                  object-contain md:object-cover
                   transition-transform duration-300
                   group-hover:scale-105
-                "
+                  object-contain md:object-cover
+                  [[data-featured-card='true']_&]:object-cover
+                `}
               />
             ) : (
               <div className="w-full h-full bg-gray-200 flex items-center justify-center text-gray-400 text-xs md:text-sm">
@@ -255,19 +300,16 @@ const ProductCard: React.FC<ProductCardProps> = ({ product, hideImages = false }
               </div>
             )}
 
-            {/* Categoria – só no desktop (deslocado pra não brigar com o ❤️ do card) */}
             <div className="hidden md:inline-flex absolute top-2 right-12 bg-white/95 text-red-600 font-bold px-2 py-1 rounded-full text-[10px] shadow-sm">
               {product.category}
             </div>
 
-            {/* Em Breve */}
             {product.isLaunch && (
               <div className="absolute top-2 left-2 bg-green-600 text-white font-bold px-2 py-1 rounded-full text-[10px] shadow-sm">
                 Em Breve
               </div>
             )}
 
-            {/* Overlay indisponível */}
             {!isAvailable && !product.isLaunch && (
               <div className="absolute inset-0 bg-black/45 flex items-center justify-center">
                 <div className="bg-red-600 text-white font-bold px-3 py-2 rounded-md text-xs">
@@ -290,13 +332,26 @@ const ProductCard: React.FC<ProductCardProps> = ({ product, hideImages = false }
             className={`
               flex-grow
               min-w-0
-              ${hideImages ? "pt-2 pb-1 px-3" : "pt-2 md:pt-4 pb-1 md:pb-3 pr-3 md:pr-4 pl-1.5 md:pl-4"}
+              ${
+                hideImages
+                  ? "pt-2 pb-1 px-3"
+                  : "pt-2 md:pt-4 pb-1 md:pb-3 pr-3 md:pr-4 pl-1.5 md:pl-4"
+              }
+
+              [[data-featured-card='true']_&]:px-3
+              [[data-featured-card='true']_&]:pt-3
+              [[data-featured-card='true']_&]:pb-2
+              md:[[data-featured-card='true']_&]:px-4
+              md:[[data-featured-card='true']_&]:pt-4
+              md:[[data-featured-card='true']_&]:pb-3
             `}
           >
             <h3
               className={`
                 font-semibold mb-1 line-clamp-2 min-w-0
                 ${hideImages ? "text-[13px]" : "text-[13px] md:text-base"}
+                [[data-featured-card='true']_&]:text-[14px]
+                md:[[data-featured-card='true']_&]:text-base
               `}
               title={product.name}
             >
@@ -307,7 +362,6 @@ const ProductCard: React.FC<ProductCardProps> = ({ product, hideImages = false }
               {product.packageInfo}
             </p>
 
-            {/* descrição só no desktop */}
             {product.description && (
               <p className="hidden md:block text-xs text-gray-500 mb-2 line-clamp-2">
                 {product.description}
@@ -342,13 +396,30 @@ const ProductCard: React.FC<ProductCardProps> = ({ product, hideImages = false }
           <CardFooter
             className={`
               pt-0 flex justify-start items-center
-              ${hideImages ? "pb-3 px-3" : "pb-2 md:pb-4 pr-3 md:pr-4 pl-1.5 md:pl-4"}
+              ${
+                hideImages
+                  ? "pb-3 px-3"
+                  : "pb-2 md:pb-4 pr-3 md:pr-4 pl-1.5 md:pl-4"
+              }
+
+              [[data-featured-card='true']_&]:px-3
+              [[data-featured-card='true']_&]:pb-3
+              md:[[data-featured-card='true']_&]:px-4
+              md:[[data-featured-card='true']_&]:pb-4
             `}
           >
             {isAvailable ? (
-              <div className="flex items-center gap-2">
+              <div
+                className="flex items-center gap-2"
+                onPointerDown={stop}
+                onTouchStart={stop}
+                onClick={stop}
+              >
                 <Button
-                  onClick={() => decreaseQuantity(product.id)}
+                  onClick={(e) => {
+                    stop(e);
+                    decreaseQuantity(product.id);
+                  }}
                   variant="outline"
                   size="icon"
                   className="rounded-full h-7 w-7 md:h-8 md:w-8"
@@ -357,20 +428,25 @@ const ProductCard: React.FC<ProductCardProps> = ({ product, hideImages = false }
                   <Minus className="h-4 w-4" />
                 </Button>
 
-                <div className="relative">
+                <div className="relative" onPointerDown={stop} onTouchStart={stop}>
                   <Input
                     type="text"
                     value={inputValue}
                     onChange={handleQuantityChange}
                     onBlur={applyQuantity}
                     onKeyDown={handleKeyDown}
+                    onClick={(e) => stop(e)}
+                    onPointerDown={(e) => stop(e)}
                     inputMode="numeric"
                     className="h-7 w-10 md:h-8 md:w-12 px-2 text-center text-xs md:text-sm"
                   />
 
                   {inputValue !== quantity.toString() && (
                     <Button
-                      onClick={applyQuantity}
+                      onClick={(e) => {
+                        stop(e);
+                        applyQuantity();
+                      }}
                       variant="outline"
                       size="sm"
                       className="absolute -right-11 top-0 h-7 px-2 md:h-8 md:px-2"
@@ -381,7 +457,10 @@ const ProductCard: React.FC<ProductCardProps> = ({ product, hideImages = false }
                 </div>
 
                 <Button
-                  onClick={handleAddToCart}
+                  onClick={(e) => {
+                    stop(e);
+                    handleAddToCart();
+                  }}
                   variant={quantity > 0 ? "default" : "outline"}
                   size="icon"
                   className={`rounded-full h-7 w-7 md:h-8 md:w-8 ${

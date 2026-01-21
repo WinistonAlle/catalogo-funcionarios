@@ -901,7 +901,9 @@ const Index: React.FC = () => {
   };
 
   /**
-   * ✅ padroniza SOMENTE a imagem do ProductCard DENTRO DO CARROSSEL
+   * ✅ Padroniza SOMENTE a imagem do ProductCard DENTRO DO CARROSSEL
+   * - Mobile: mais destaque pra imagem (object-cover + altura maior)
+   * - Desktop: mantém o comportamento atual (object-contain)
    */
   const featuredCards = useMemo(() => {
     if (!featuredProducts.length) return [];
@@ -909,17 +911,29 @@ const Index: React.FC = () => {
     return featuredProducts.map((p) => (
       <div
         key={String(p.id)}
+        data-featured-card="true"
         className={`
           w-[300px] md:w-[340px]
           shrink-0
+
+          /* Wrapper do card (mobile) — "não lavado" e mais destaque */
+          [&_[data-card]]:bg-white
+          [&_[data-card]]:shadow-[0_10px_24px_rgba(0,0,0,0.10)]
+          [&_[data-card]]:border-gray-200/80
+          md:[&_[data-card]]:shadow-none
+
+          /* Imagem do card */
           [&_button[aria-label^='Imagem do produto']]:w-full
-          [&_button[aria-label^='Imagem do produto']]:h-[170px]
-          [&_button[aria-label^='Imagem do produto']]:rounded-xl
+          [&_button[aria-label^='Imagem do produto']]:h-[190px]
+          [&_button[aria-label^='Imagem do produto']]:rounded-2xl
           [&_button[aria-label^='Imagem do produto']]:overflow-hidden
           md:[&_button[aria-label^='Imagem do produto']]:h-[190px]
+
+          /* Mobile = cover (mais impacto), Desktop = contain (como era) */
           [&_button[aria-label^='Imagem do produto']_img]:w-full
           [&_button[aria-label^='Imagem do produto']_img]:h-full
-          [&_button[aria-label^='Imagem do produto']_img]:object-contain
+          [&_button[aria-label^='Imagem do produto']_img]:object-cover
+          md:[&_button[aria-label^='Imagem do produto']_img]:object-contain
         `}
       >
         <ProductCard product={p} hideImages={lightMode} />
@@ -1337,14 +1351,20 @@ const Index: React.FC = () => {
 
         {/* ✅ DESTAQUES */}
         {featuredLoading ? (
-          <div className="mb-6 rounded-2xl border bg-white/60 backdrop-blur-md px-4 py-4 text-sm text-gray-600 flex items-center gap-2">
+          <div
+            className="
+              mb-6 rounded-2xl border px-4 py-4 text-sm text-gray-600 flex items-center gap-2
+              bg-white
+              md:bg-white/60 md:backdrop-blur-md
+            "
+          >
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-red-100 text-red-600">
               ★
             </span>
             Carregando destaques...
           </div>
         ) : featuredCards.length ? (
-          <div className="mb-7">
+          <div className="mb-7 gm-featured">
             <FeaturedProductsCarousel
               title="Produtos em destaque"
               items={featuredCards}
@@ -1461,7 +1481,7 @@ const Index: React.FC = () => {
                 <Pagination
                   currentPage={currentPage}
                   totalPages={totalPages}
-                  onPageChange={(p) => changePage(p)}
+                                    onPageChange={(p) => changePage(p)}
                   onPrev={() => changePage(currentPage - 1)}
                   onNext={() => changePage(currentPage + 1)}
                 />
@@ -1586,3 +1606,4 @@ const Footer: React.FC = () => {
 };
 
 export default Index;
+
