@@ -2,8 +2,6 @@
 import styled from "styled-components";
 import { useNavigate } from "react-router-dom";
 import { Bg } from "../../components/ui/app-surface";
-import { useState } from "react";
-import { supabase } from "@/lib/supabase";
 
 const Wrapper = styled.div`
   display: flex;
@@ -17,20 +15,24 @@ const Wrapper = styled.div`
 const Container = styled.div`
   width: 100%;
   max-width: 1200px;
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 40px;
-  justify-content: center;
-  align-items: center;
+  justify-items: center;
+
+  @media (max-width: 1024px) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 
   @media (max-width: 640px) {
-    flex-direction: column;
+    grid-template-columns: 1fr;
     gap: 20px;
   }
 `;
 
-const Box = styled.div<{ disabled?: boolean }>`
-  width: 380px;
+const Box = styled.div`
+  width: 100%;
+  max-width: 380px;
   height: 300px;
   background: #ffffff;
   border-radius: 32px;
@@ -41,19 +43,17 @@ const Box = styled.div<{ disabled?: boolean }>`
   align-items: center;
   gap: 14px;
   transition: all 0.25s ease;
-  cursor: ${({ disabled }) => (disabled ? "not-allowed" : "pointer")};
+  cursor: pointer;
   border: 2px solid transparent;
   padding: 26px;
-  opacity: ${({ disabled }) => (disabled ? 0.6 : 1)};
 
   &:hover {
-    transform: ${({ disabled }) => (disabled ? "none" : "translateY(-10px) scale(1.02)")};
-    border-color: ${({ disabled }) => (disabled ? "transparent" : "#b82626")};
-    background: ${({ disabled }) => (disabled ? "#fff" : "#faf7f7")};
+    transform: translateY(-10px) scale(1.02);
+    border-color: #b82626;
+    background: #faf7f7;
   }
 
   @media (max-width: 640px) {
-    width: 100%;
     height: 260px;
   }
 `;
@@ -75,59 +75,8 @@ const Subtitle = styled.p`
   line-height: 1.4;
 `;
 
-const Status = styled.span`
-  font-size: 0.9rem;
-  color: #777;
-  margin-top: 6px;
-  text-align: center;
-`;
-
 const RhHome: React.FC = () => {
   const navigate = useNavigate();
-  const [syncing, setSyncing] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-
-  async function handleSyncEmployees() {
-    if (syncing) return;
-
-    try {
-      setSyncing(true);
-      setStatus("Sincronizando funcionários...");
-
-      const { data } = await supabase.auth.getSession();
-      const token = data.session?.access_token;
-
-      if (!token) {
-        setStatus("Você precisa estar logado para sincronizar.");
-        return;
-      }
-
-      const res = await fetch("/api/sync-employees", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-
-      const json = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        const msg = json?.error || "Erro ao sincronizar";
-        setStatus(msg);
-        console.error("sync-employees error:", json);
-        return;
-      }
-
-      setStatus("Funcionários sincronizados com sucesso!");
-      console.log("sync result:", json);
-    } catch (err) {
-      console.error(err);
-      setStatus("Erro ao sincronizar funcionários");
-    } finally {
-      setSyncing(false);
-      setTimeout(() => setStatus(null), 5000);
-    }
-  }
 
   return (
     <Bg>
@@ -146,12 +95,6 @@ const RhHome: React.FC = () => {
           <Box onClick={() => navigate("/rh/relatorio-gastos")}>
             <Title>Relatório de Gastos</Title>
             <Subtitle>Quanto cada funcionário gastou do saldo</Subtitle>
-          </Box>
-
-          <Box onClick={handleSyncEmployees} disabled={syncing}>
-            <Title>{syncing ? "Sincronizando..." : "Sincronizar Funcionários"}</Title>
-            <Subtitle>Atualiza os dados executando a sincronização automática</Subtitle>
-            {status && <Status>{status}</Status>}
           </Box>
         </Container>
       </Wrapper>

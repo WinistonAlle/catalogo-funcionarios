@@ -327,6 +327,7 @@ export default function Admin() {
   // --------- Form: Add / Edit ----------
   const startAdd = () => {
     setEditing({
+      // ✅ AGORA É UUID DE VERDADE (evita erro "invalid input syntax for type uuid")
       id: generateId(),
       old_id: null,
       name: "",
@@ -497,7 +498,10 @@ export default function Admin() {
 
       const { error: wErr } = await supabase
         .from("weight")
-        .upsert({ product_id: editing.id, weight: weightValue }, { onConflict: "product_id" });
+        .upsert(
+          { product_id: editing.id, weight: weightValue },
+          { onConflict: "product_id" }
+        );
 
       if (wErr) throw wErr;
 
@@ -870,7 +874,7 @@ export default function Admin() {
                         image_path: editing.image_path ?? imgs[0] ?? null,
                       });
                     }}
-                    placeholder={`https://.../storage/v1/object/public/${STORAGE_BUCKET}/P123/arquivo.jpg, https://...`}
+                    placeholder={`https://.../storage/v1/object/public/${STORAGE_BUCKET}/<uuid>/arquivo.jpg, https://...`}
                   />
                 </div>
               </Field>
@@ -945,7 +949,11 @@ export default function Admin() {
             stroke="currentColor"
             strokeWidth={2}
           >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M5 10l7-7m0 0l7 7m-7-7v18" />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M5 10l7-7m0 0l7 7m-7-7v18"
+            />
           </svg>
         </Button>
       )}
@@ -989,6 +997,7 @@ function Flag({
   );
 }
 
+// ✅ CORREÇÃO PRINCIPAL: gerar UUID válido (compatível com coluna uuid do Postgres)
 function generateId() {
-  return "P" + Date.now().toString();
+  return crypto.randomUUID();
 }

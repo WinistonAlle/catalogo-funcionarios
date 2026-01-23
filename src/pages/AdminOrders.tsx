@@ -131,24 +131,14 @@ function getPaymentMeta(
 function IconWallet({ size = 14 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M3.5 7.5A3 3 0 0 1 6.5 4.5h11a3 3 0 0 1 3 3v1.25"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
+      <path d="M3.5 7.5A3 3 0 0 1 6.5 4.5h11a3 3 0 0 1 3 3v1.25" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
       <path
         d="M3.5 9.5h14.75a2.25 2.25 0 0 1 2.25 2.25v6.25A3.5 3.5 0 0 1 17 21.5H6.5a3 3 0 0 1-3-3v-9Z"
         stroke="currentColor"
         strokeWidth="1.8"
         strokeLinejoin="round"
       />
-      <path
-        d="M16.8 13.2h3.7v3.6h-3.7a1.8 1.8 0 0 1 0-3.6Z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
+      <path d="M16.8 13.2h3.7v3.6h-3.7a1.8 1.8 0 0 1 0-3.6Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
       <path d="M18.2 15h.01" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
     </svg>
   );
@@ -159,13 +149,7 @@ function IconPickup({ size = 14 }: { size?: number }) {
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path d="M7 18a2 2 0 1 0 0.001 0Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
       <path d="M17 18a2 2 0 1 0 0.001 0Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <path
-        d="M3.5 6.5h2l2.2 10.5h9.8l2-7H7.2"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
+      <path d="M3.5 6.5h2l2.2 10.5h9.8l2-7H7.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M7.2 9.5h14.3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   );
@@ -254,6 +238,23 @@ function statusPill(status?: string | null): CSSProperties {
   }
 }
 
+/** Hook: isMobile reativo */
+function useIsMobile(breakpoint = 940) {
+  const [isMobile, setIsMobile] = useState(() => (typeof window !== "undefined" ? window.innerWidth < breakpoint : false));
+
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < breakpoint);
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("orientationchange", onResize);
+    };
+  }, [breakpoint]);
+
+  return isMobile;
+}
+
 export default function AdminOrders() {
   const navigate = useNavigate();
 
@@ -277,44 +278,15 @@ export default function AdminOrders() {
   const [cancelLogsLoading, setCancelLogsLoading] = useState(false);
   const [cancelLogsErr, setCancelLogsErr] = useState<string | null>(null);
 
-  // ✅ FIX: isMobile reativo a resize
-  const [isMobile, setIsMobile] = useState(() => (typeof window !== "undefined" ? window.innerWidth < 940 : false));
-  useEffect(() => {
-    function onResize() {
-      setIsMobile(window.innerWidth < 940);
-    }
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
+  const isMobile = useIsMobile(940);
 
-  // ✅ FIX: pega CPF do ator do localStorage (inclui employee_session)
   function actorCpfFromLocalStorage() {
     const possible =
       localStorage.getItem("gm_employee_cpf") ||
       localStorage.getItem("employee_cpf") ||
       localStorage.getItem("cpf") ||
       "";
-
-    const digits = onlyDigits(possible);
-    if (digits) return digits;
-
-    const raw = localStorage.getItem("employee_session") || localStorage.getItem("gm_employee_session") || "";
-    if (!raw) return "";
-
-    try {
-      const obj = JSON.parse(raw);
-      const cpf =
-        obj?.cpf ||
-        obj?.employee_cpf ||
-        obj?.employeeCpf ||
-        obj?.document ||
-        obj?.employee?.cpf ||
-        obj?.employee?.employee_cpf ||
-        "";
-      return onlyDigits(String(cpf || ""));
-    } catch {
-      return "";
-    }
+    return onlyDigits(possible);
   }
 
   async function fetchEmployeeMap(): Promise<Map<string, string>> {
@@ -415,18 +387,7 @@ export default function AdminOrders() {
   async function cancelOrder() {
     if (!selected) return;
 
-    let actorCpf = actorCpfFromLocalStorage();
-
-    // ✅ fallback via Supabase Auth (se existir)
-    if (!actorCpf) {
-      const { data } = await supabase.auth.getUser();
-      const metaCpf =
-        (data?.user?.user_metadata as any)?.cpf ||
-        (data?.user?.user_metadata as any)?.employee_cpf ||
-        "";
-      actorCpf = onlyDigits(String(metaCpf || ""));
-    }
-
+    const actorCpf = actorCpfFromLocalStorage();
     if (!actorCpf) {
       alert("Não encontrei seu CPF de login no navegador (localStorage).");
       return;
@@ -519,12 +480,10 @@ export default function AdminOrders() {
 
   useEffect(() => {
     loadOrders();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (selected) loadHistory(selected.id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
   const summary = useMemo(() => {
@@ -538,66 +497,139 @@ export default function AdminOrders() {
     return { total, canceled, delivered, pending, withWallet };
   }, [orders]);
 
+  const kpisWrapStyle: CSSProperties = useMemo(() => {
+    if (!isMobile) return styles.kpis;
+    return {
+      display: "flex",
+      gap: 12,
+      overflowX: "auto",
+      paddingBottom: 6,
+      WebkitOverflowScrolling: "touch",
+      scrollSnapType: "x mandatory",
+      marginBottom: 14,
+    };
+  }, [isMobile]);
+
+  const kpiCardStyle: CSSProperties = useMemo(() => {
+    if (!isMobile) return styles.kpiCard;
+    return {
+      ...styles.kpiCard,
+      minWidth: 160,
+      flex: "0 0 auto",
+      scrollSnapAlign: "start",
+    };
+  }, [isMobile]);
+
+  const filtersGridStyle: CSSProperties = useMemo(() => {
+    if (!isMobile) return styles.filtersGrid;
+    return { display: "grid", gridTemplateColumns: "1fr", gap: 12 };
+  }, [isMobile]);
+
+  const headerInnerStyle: CSSProperties = useMemo(() => {
+    if (!isMobile) return styles.headerInner;
+    return { ...styles.headerInner, padding: "12px 14px", flexDirection: "column", alignItems: "stretch", gap: 10 };
+  }, [isMobile]);
+
+  const headerTopRowStyle: CSSProperties = useMemo(() => {
+    if (!isMobile) return { display: "flex", alignItems: "center", gap: 12 };
+    return { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 };
+  }, [isMobile]);
+
+  const headerActionsStyle: CSSProperties = useMemo(() => {
+    if (!isMobile) return { display: "flex", alignItems: "center", gap: 10 };
+    return { display: "grid", gridTemplateColumns: "1fr 90px", gap: 10, alignItems: "center" };
+  }, [isMobile]);
+
+  const mainStyle: CSSProperties = useMemo(() => {
+    if (!isMobile) return styles.main;
+    return { ...styles.main, padding: "14px 14px 22px" };
+  }, [isMobile]);
+
   return (
     <div style={styles.page}>
       <header style={styles.header}>
-        <div style={styles.headerInner}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <button style={styles.backBtn} onClick={() => navigate(CATALOG_ROUTE)} title="Voltar ao catálogo">
-              ← Voltar ao catálogo
+        <div style={headerInnerStyle}>
+          <div style={headerTopRowStyle}>
+            <button
+              style={{ ...styles.backBtn, ...(isMobile ? { width: "auto", height: 38, borderRadius: 12 } : {}) }}
+              onClick={() => navigate(CATALOG_ROUTE)}
+              title="Voltar ao catálogo"
+            >
+              {isMobile ? "← Catálogo" : "← Voltar ao catálogo"}
             </button>
-            <div>
+
+            <div style={{ flex: 1, marginLeft: isMobile ? 0 : 10 }}>
               <div style={styles.hTitle}>Administração de pedidos</div>
               <div style={styles.hSub}>Visualize, cancele e consulte histórico</div>
             </div>
+
+            {isMobile && <span style={styles.headerChip}>Admin</span>}
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={headerActionsStyle}>
             <button
-              style={styles.ghostBtn}
+              style={{
+                ...styles.ghostBtn,
+                ...(isMobile ? { width: "100%", height: 42, borderRadius: 14 } : {}),
+              }}
               onClick={() => {
                 setCancelHistOpen(true);
                 loadCancellationHistory();
               }}
               title="Ver histórico de cancelamentos"
             >
-              Histórico de cancelamentos
+              {isMobile ? "Histórico (cancelamentos)" : "Histórico de cancelamentos"}
             </button>
-            <span style={styles.headerChip}>Admin</span>
+
+            {!isMobile && <span style={styles.headerChip}>Admin</span>}
           </div>
         </div>
       </header>
 
-      <main style={styles.main}>
-        <section style={styles.kpis}>
-          <div style={styles.kpiCard}>
+      <main style={mainStyle}>
+        <section style={kpisWrapStyle}>
+          <div style={kpiCardStyle}>
             <div style={styles.kpiLabel}>Total</div>
             <div style={styles.kpiValue}>{summary.total}</div>
           </div>
-          <div style={styles.kpiCard}>
+          <div style={kpiCardStyle}>
             <div style={styles.kpiLabel}>Pendentes</div>
             <div style={styles.kpiValue}>{summary.pending}</div>
           </div>
-          <div style={styles.kpiCard}>
+          <div style={kpiCardStyle}>
             <div style={styles.kpiLabel}>Entregues</div>
             <div style={styles.kpiValue}>{summary.delivered}</div>
           </div>
-          <div style={styles.kpiCard}>
+          <div style={kpiCardStyle}>
             <div style={styles.kpiLabel}>Cancelados</div>
             <div style={styles.kpiValue}>{summary.canceled}</div>
           </div>
-          <div style={styles.kpiCard}>
+          <div style={kpiCardStyle}>
             <div style={styles.kpiLabel}>Com saldo</div>
             <div style={styles.kpiValue}>{summary.withWallet}</div>
           </div>
 
-          <button style={styles.refreshBtn} onClick={loadOrders} title="Atualizar">
+          <button
+            style={{
+              ...styles.refreshBtn,
+              ...(isMobile
+                ? {
+                    minWidth: 140,
+                    height: 46,
+                    flex: "0 0 auto",
+                    scrollSnapAlign: "start",
+                  }
+                : {}),
+            }}
+            onClick={loadOrders}
+            title="Atualizar"
+          >
             Atualizar
           </button>
         </section>
 
         <section style={styles.filters}>
-          <div style={styles.filtersGrid}>
+          <div style={filtersGridStyle}>
             <div style={styles.field}>
               <label style={styles.label}>CPF</label>
               <input
@@ -611,12 +643,7 @@ export default function AdminOrders() {
 
             <div style={styles.field}>
               <label style={styles.label}>Nº do pedido</label>
-              <input
-                style={styles.input}
-                placeholder="Ex.: GM-20260102-1234"
-                value={orderFilter}
-                onChange={(e) => setOrderFilter(e.target.value)}
-              />
+              <input style={styles.input} placeholder="Ex.: GM-20260102-1234" value={orderFilter} onChange={(e) => setOrderFilter(e.target.value)} />
             </div>
 
             <div style={styles.field}>
@@ -633,14 +660,16 @@ export default function AdminOrders() {
 
             <div style={styles.field}>
               <label style={styles.label}>&nbsp;</label>
-              <button style={styles.primaryBtn} onClick={loadOrders}>
+              <button style={{ ...styles.primaryBtn, width: "100%" }} onClick={loadOrders}>
                 Filtrar
               </button>
             </div>
           </div>
 
           <div style={styles.helpRow}>
-            <span style={styles.helpText}>Passe o mouse sobre o badge de pagamento para ver detalhes.</span>
+            <span style={styles.helpText}>
+              {isMobile ? "Toque no badge de pagamento (segure) para ver detalhes." : "Passe o mouse sobre o badge de pagamento para ver detalhes."}
+            </span>
           </div>
         </section>
 
@@ -721,8 +750,7 @@ export default function AdminOrders() {
                               </div>
                             </td>
 
-                            {/* ✅ total consistente */}
-                            <td style={styles.td}>{brlFromCents(toCentsFromOrder(o))}</td>
+                            <td style={styles.td}>{o.total_cents ? brlFromCents(o.total_cents) : brlFromReais(o.total_value)}</td>
 
                             <td style={styles.td}>
                               <span style={statusPill(o.status)}>{STATUS_LABEL[o.status || ""] || (o.status || "—")}</span>
@@ -755,10 +783,13 @@ export default function AdminOrders() {
                   return (
                     <div key={o.id} style={styles.mobileCard}>
                       <div style={styles.mobileTop}>
-                        <div>
+                        <div style={{ minWidth: 0 }}>
                           <div style={styles.mobileTitle}>{o.order_number || "—"}</div>
-                          <div style={styles.mobileSub}>
-                            <b>{o.employee_name || "Nome não encontrado"}</b> • {formatCPF(o.employee_cpf)}
+                          <div style={styles.mobileSub} title={o.employee_name || ""}>
+                            <b style={{ display: "inline-block", maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {o.employee_name || "Nome não encontrado"}
+                            </b>{" "}
+                            • {formatCPF(o.employee_cpf)}
                           </div>
                           <div style={styles.mobileSub}>{new Date(o.created_at).toLocaleString("pt-BR")}</div>
                         </div>
@@ -771,7 +802,7 @@ export default function AdminOrders() {
 
                       <div style={styles.mobileBottom}>
                         <div>
-                          <div style={styles.mobileTotal}>{brlFromCents(toCentsFromOrder(o))}</div>
+                          <div style={styles.mobileTotal}>{o.total_cents ? brlFromCents(o.total_cents) : brlFromReais(o.total_value)}</div>
                           <div style={styles.payMini}>
                             {meta.wallet > 0 && <span style={styles.payLine}>Saldo: {brlFromCents(meta.wallet)}</span>}
                             {meta.pickup > 0 && <span style={styles.payLine}>Retirada: {brlFromCents(meta.pickup)}</span>}
@@ -779,7 +810,13 @@ export default function AdminOrders() {
                         </div>
 
                         <button
-                          style={{ ...styles.primaryBtn, padding: "10px 12px", ...(isCanceled ? styles.disabledBtn : {}) }}
+                          style={{
+                            ...styles.primaryBtn,
+                            padding: "10px 12px",
+                            height: 42,
+                            borderRadius: 14,
+                            ...(isCanceled ? styles.disabledBtn : {}),
+                          }}
                           disabled={isCanceled}
                           onClick={() => setSelected(o)}
                         >
@@ -805,9 +842,21 @@ export default function AdminOrders() {
       {/* Modal: gerenciar pedido */}
       {selected && (
         <div style={styles.overlay} role="dialog" aria-modal="true">
-          <div style={styles.modal}>
+          <div
+            style={{
+              ...styles.modal,
+              ...(isMobile
+                ? {
+                    width: "100%",
+                    height: "min(100vh - 24px, 900px)",
+                    maxHeight: "calc(100vh - 24px)",
+                    borderRadius: 18,
+                  }
+                : {}),
+            }}
+          >
             <div style={styles.modalTop}>
-              <div>
+              <div style={{ minWidth: 0 }}>
                 <div style={styles.modalTitle}>Pedido {selected.order_number || "—"}</div>
                 <div style={styles.modalSub}>
                   {selected.employee_name || "Nome não encontrado"} • {formatCPF(selected.employee_cpf)} •{" "}
@@ -820,38 +869,44 @@ export default function AdminOrders() {
               </button>
             </div>
 
-            <div style={styles.modalBody}>
+            <div style={{ ...styles.modalBody, ...(isMobile ? { padding: 12, overflow: "auto" } : {}) }}>
               {/* Resumo */}
               <div style={styles.section}>
                 <div style={styles.sectionTitle}>Resumo</div>
 
                 {(() => {
                   const meta = getPaymentMeta(selected);
+                  const summaryGridStyle: CSSProperties = isMobile
+                    ? { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }
+                    : styles.summaryGrid;
+
+                  const summaryItemStyle: CSSProperties = { display: "flex", flexDirection: "column", gap: 6, minWidth: 0 };
+
                   return (
-                    <div style={styles.summaryGrid}>
-                      <div style={styles.summaryItem}>
+                    <div style={summaryGridStyle}>
+                      <div style={summaryItemStyle}>
                         <div style={styles.summaryLabel}>Status</div>
-                        <span style={statusPill(selected.status)}>
-                          {STATUS_LABEL[selected.status || ""] || (selected.status || "—")}
-                        </span>
+                        <span style={statusPill(selected.status)}>{STATUS_LABEL[selected.status || ""] || (selected.status || "—")}</span>
                       </div>
 
-                      <div style={styles.summaryItem}>
+                      <div style={summaryItemStyle}>
                         <div style={styles.summaryLabel}>Total</div>
-                        <div style={styles.summaryValue}>{brlFromCents(toCentsFromOrder(selected))}</div>
+                        <div style={styles.summaryValue}>
+                          {selected.total_cents ? brlFromCents(selected.total_cents) : brlFromReais(selected.total_value)}
+                        </div>
                       </div>
 
-                      <div style={styles.summaryItem}>
+                      <div style={summaryItemStyle}>
                         <div style={styles.summaryLabel}>Pagamento</div>
                         <Badge kind={meta.kind} tooltip={meta.tooltip} />
                       </div>
 
-                      <div style={styles.summaryItem}>
+                      <div style={summaryItemStyle}>
                         <div style={styles.summaryLabel}>Saldo</div>
                         <div style={styles.summaryValue}>{brlFromCents(meta.wallet)}</div>
                       </div>
 
-                      <div style={styles.summaryItem}>
+                      <div style={summaryItemStyle}>
                         <div style={styles.summaryLabel}>Retirada</div>
                         <div style={styles.summaryValue}>{brlFromCents(meta.pickup)}</div>
                       </div>
@@ -886,13 +941,17 @@ export default function AdminOrders() {
                       onChange={(e) => setCancelReason(e.target.value)}
                     />
 
-                    <div style={styles.actions}>
-                      <button style={styles.secondaryBtn} onClick={() => setSelected(null)} disabled={canceling}>
+                    <div style={{ ...styles.actions, ...(isMobile ? { flexDirection: "column", alignItems: "stretch" } : {}) }}>
+                      <button style={{ ...styles.secondaryBtn, ...(isMobile ? { width: "100%" } : {}) }} onClick={() => setSelected(null)} disabled={canceling}>
                         Voltar
                       </button>
 
                       <button
-                        style={{ ...styles.dangerBtn, ...(canceling ? styles.disabledBtn : {}) }}
+                        style={{
+                          ...styles.dangerBtn,
+                          ...(isMobile ? { width: "100%" } : {}),
+                          ...(canceling ? styles.disabledBtn : {}),
+                        }}
                         onClick={cancelOrder}
                         disabled={canceling}
                       >
@@ -930,9 +989,9 @@ export default function AdminOrders() {
                 )}
               </div>
 
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, ...(isMobile ? { flexDirection: "column" } : {}) }}>
                 <button
-                  style={styles.secondaryBtn}
+                  style={{ ...styles.secondaryBtn, ...(isMobile ? { width: "100%" } : {}) }}
                   onClick={async () => {
                     await loadOrders();
                     await loadHistory(selected.id);
@@ -940,7 +999,7 @@ export default function AdminOrders() {
                 >
                   Atualizar
                 </button>
-                <button style={styles.primaryBtn} onClick={() => setSelected(null)}>
+                <button style={{ ...styles.primaryBtn, ...(isMobile ? { width: "100%" } : {}) }} onClick={() => setSelected(null)}>
                   Fechar
                 </button>
               </div>
@@ -952,7 +1011,15 @@ export default function AdminOrders() {
       {/* Modal: histórico de cancelamentos */}
       {cancelHistOpen && (
         <div style={styles.overlay} role="dialog" aria-modal="true">
-          <div style={{ ...styles.modal, width: "min(1100px, 100%)" }}>
+          <div
+            style={{
+              ...styles.modal,
+              width: isMobile ? "100%" : "min(1100px, 100%)",
+              height: isMobile ? "min(100vh - 24px, 900px)" : undefined,
+              maxHeight: isMobile ? "calc(100vh - 24px)" : undefined,
+              borderRadius: isMobile ? 18 : styles.modal.borderRadius,
+            }}
+          >
             <div style={styles.modalTop}>
               <div>
                 <div style={styles.modalTitle}>Histórico de cancelamentos</div>
@@ -964,7 +1031,7 @@ export default function AdminOrders() {
               </button>
             </div>
 
-            <div style={styles.modalBody}>
+            <div style={{ ...styles.modalBody, ...(isMobile ? { padding: 12, overflow: "auto" } : {}) }}>
               {cancelLogsLoading && (
                 <div style={styles.stateBox}>
                   <div style={styles.spinner} />
@@ -993,78 +1060,124 @@ export default function AdminOrders() {
               )}
 
               {!cancelLogsLoading && !cancelLogsErr && cancelLogs.length > 0 && (
-                <div style={styles.tableCard}>
-                  <div style={styles.tableHeader}>
-                    <div style={styles.tableTitle}>Cancelamentos</div>
-                    <div style={styles.tableSub}>
-                      Mostrando <b>{cancelLogs.length}</b> registro(s)
-                    </div>
-                  </div>
+                <>
+                  {!isMobile ? (
+                    <div style={styles.tableCard}>
+                      <div style={styles.tableHeader}>
+                        <div style={styles.tableTitle}>Cancelamentos</div>
+                        <div style={styles.tableSub}>
+                          Mostrando <b>{cancelLogs.length}</b> registro(s)
+                        </div>
+                      </div>
 
-                  <div style={styles.tableScroll}>
-                    <table style={styles.table}>
-                      <thead>
-                        <tr>
-                          <th style={styles.th}>Pedido</th>
-                          <th style={styles.th}>Funcionário</th>
-                          <th style={styles.th}>Pagamento</th>
-                          <th style={styles.th}>Total</th>
-                          <th style={styles.th}>Cancelado em</th>
-                          <th style={styles.th}>Cancelado por</th>
-                          <th style={styles.th}>Motivo</th>
-                        </tr>
-                      </thead>
-
-                      <tbody>
-                        {cancelLogs.map((r) => {
-                          const meta = getPaymentMeta(r as any);
-                          const total = brlFromCents(toCentsFromOrder(r as any));
-
-                          return (
-                            <tr key={`${r.order_id}-${r.cancelled_at || ""}`} style={styles.tr}>
-                              <td style={styles.tdStrong}>
-                                {r.order_number || "—"}
-                                <div style={styles.tdMuted}>{r.order_id}</div>
-                              </td>
-
-                              <td style={styles.td}>
-                                <div style={{ fontWeight: 950 }}>{r.employee_name || "—"}</div>
-                                <div style={styles.tdMuted}>{formatCPF(r.employee_cpf)}</div>
-                              </td>
-
-                              <td style={styles.td}>
-                                <Badge kind={meta.kind} tooltip={meta.tooltip} />
-                                <div style={styles.payMini}>
-                                  {meta.wallet > 0 && <span style={styles.payLine}>Saldo: {brlFromCents(meta.wallet)}</span>}
-                                  {meta.pickup > 0 && <span style={styles.payLine}>Retirada: {brlFromCents(meta.pickup)}</span>}
-                                </div>
-                              </td>
-
-                              <td style={styles.td}>{total}</td>
-                              <td style={styles.td}>{r.cancelled_at ? new Date(r.cancelled_at).toLocaleString("pt-BR") : "—"}</td>
-
-                              <td style={styles.td}>
-                                <div style={{ fontWeight: 900 }}>{r.actor_name || "—"}</div>
-                                <div style={styles.tdMuted}>{formatCPF(r.actor_cpf)}</div>
-                              </td>
-
-                              <td style={styles.td}>
-                                <div style={{ maxWidth: 420, whiteSpace: "pre-wrap" }}>{r.reason || "—"}</div>
-                              </td>
+                      <div style={styles.tableScroll}>
+                        <table style={styles.table}>
+                          <thead>
+                            <tr>
+                              <th style={styles.th}>Pedido</th>
+                              <th style={styles.th}>Funcionário</th>
+                              <th style={styles.th}>Pagamento</th>
+                              <th style={styles.th}>Total</th>
+                              <th style={styles.th}>Cancelado em</th>
+                              <th style={styles.th}>Cancelado por</th>
+                              <th style={styles.th}>Motivo</th>
                             </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
+                          </thead>
+
+                          <tbody>
+                            {cancelLogs.map((r) => {
+                              const meta = getPaymentMeta(r as any);
+                              const total = r.total_cents ? brlFromCents(r.total_cents) : brlFromReais(r.total_value);
+
+                              return (
+                                <tr key={`${r.order_id}-${r.cancelled_at || ""}`} style={styles.tr}>
+                                  <td style={styles.tdStrong}>
+                                    {r.order_number || "—"}
+                                    <div style={styles.tdMuted}>{r.order_id}</div>
+                                  </td>
+
+                                  <td style={styles.td}>
+                                    <div style={{ fontWeight: 950 }}>{r.employee_name || "—"}</div>
+                                    <div style={styles.tdMuted}>{formatCPF(r.employee_cpf)}</div>
+                                  </td>
+
+                                  <td style={styles.td}>
+                                    <Badge kind={meta.kind} tooltip={meta.tooltip} />
+                                    <div style={styles.payMini}>
+                                      {meta.wallet > 0 && <span style={styles.payLine}>Saldo: {brlFromCents(meta.wallet)}</span>}
+                                      {meta.pickup > 0 && <span style={styles.payLine}>Retirada: {brlFromCents(meta.pickup)}</span>}
+                                    </div>
+                                  </td>
+
+                                  <td style={styles.td}>{total}</td>
+                                  <td style={styles.td}>{r.cancelled_at ? new Date(r.cancelled_at).toLocaleString("pt-BR") : "—"}</td>
+
+                                  <td style={styles.td}>
+                                    <div style={{ fontWeight: 900 }}>{r.actor_name || "—"}</div>
+                                    <div style={styles.tdMuted}>{formatCPF(r.actor_cpf)}</div>
+                                  </td>
+
+                                  <td style={styles.td}>
+                                    <div style={{ maxWidth: 420, whiteSpace: "pre-wrap" }}>{r.reason || "—"}</div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={styles.mobileList}>
+                      {cancelLogs.map((r) => {
+                        const meta = getPaymentMeta(r as any);
+                        const total = r.total_cents ? brlFromCents(r.total_cents) : brlFromReais(r.total_value);
+                        return (
+                          <div key={`${r.order_id}-${r.cancelled_at || ""}`} style={styles.mobileCard}>
+                            <div style={styles.mobileTop}>
+                              <div style={{ minWidth: 0 }}>
+                                <div style={styles.mobileTitle}>{r.order_number || "—"}</div>
+                                <div style={styles.mobileSub}>
+                                  <b style={{ display: "inline-block", maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    {r.employee_name || "—"}
+                                  </b>{" "}
+                                  • {formatCPF(r.employee_cpf)}
+                                </div>
+                                <div style={styles.mobileSub}>
+                                  {r.cancelled_at ? new Date(r.cancelled_at).toLocaleString("pt-BR") : "—"} •{" "}
+                                  <span style={{ fontWeight: 900 }}>{r.actor_name || "—"}</span>
+                                </div>
+                              </div>
+
+                              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
+                                <Badge kind={meta.kind} tooltip={meta.tooltip} />
+                                <div style={{ fontSize: 12, fontWeight: 950 }}>{total}</div>
+                              </div>
+                            </div>
+
+                            <div style={{ ...styles.payMini, marginTop: 8 }}>
+                              {meta.wallet > 0 && <span style={styles.payLine}>Saldo: {brlFromCents(meta.wallet)}</span>}
+                              {meta.pickup > 0 && <span style={styles.payLine}>Retirada: {brlFromCents(meta.pickup)}</span>}
+                            </div>
+
+                            <div style={{ marginTop: 10, fontSize: 13, opacity: 0.9, whiteSpace: "pre-wrap" }}>
+                              <span style={{ fontWeight: 950 }}>Motivo:</span> {r.reason || "—"}
+                            </div>
+
+                            <div style={{ marginTop: 10, fontSize: 11, opacity: 0.55, wordBreak: "break-all" }}>{r.order_id}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
               )}
 
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-                <button style={styles.secondaryBtn} onClick={loadCancellationHistory}>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, ...(isMobile ? { flexDirection: "column" } : {}) }}>
+                <button style={{ ...styles.secondaryBtn, ...(isMobile ? { width: "100%" } : {}) }} onClick={loadCancellationHistory}>
                   Atualizar lista
                 </button>
-                <button style={styles.primaryBtn} onClick={() => setCancelHistOpen(false)}>
+                <button style={{ ...styles.primaryBtn, ...(isMobile ? { width: "100%" } : {}) }} onClick={() => setCancelHistOpen(false)}>
                   Fechar
                 </button>
               </div>
@@ -1087,8 +1200,10 @@ function TooltipStyles() {
     style.id = "gm-adminorders-tooltip-style";
     style.innerHTML = `
       @keyframes gmSpin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
-      .gm-tip{ position: relative; }
-      .gm-tip[data-tip]:hover::after{
+      .gm-tip{ position: relative; -webkit-tap-highlight-color: transparent; }
+      /* desktop hover */
+      .gm-tip[data-tip]:hover::after,
+      .gm-tip[data-tip]:active::after{
         content: attr(data-tip);
         position: absolute;
         left: 50%;
@@ -1108,7 +1223,8 @@ function TooltipStyles() {
         min-width: 190px;
         text-align: left;
       }
-      .gm-tip[data-tip]:hover::before{
+      .gm-tip[data-tip]:hover::before,
+      .gm-tip[data-tip]:active::before{
         content: "";
         position: absolute;
         left: 50%;
@@ -1178,6 +1294,9 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: 999,
     background: "rgba(0,0,0,0.06)",
     border: "1px solid rgba(0,0,0,0.06)",
+    justifySelf: "end",
+    alignSelf: "center",
+    textAlign: "center",
   },
   hTitle: { fontSize: 18, fontWeight: 950, letterSpacing: -0.2 },
   hSub: { fontSize: 13, opacity: 0.75, marginTop: 2 },
@@ -1276,7 +1395,7 @@ const styles: Record<string, CSSProperties> = {
     background: "rgba(255,255,255,0.92)",
     border: "1px solid rgba(0,0,0,0.06)",
     borderRadius: 18,
-    overflow: "visible", // ✅ não corta tooltip
+    overflow: "hidden",
     boxShadow: "0 10px 30px rgba(0,0,0,0.04)",
   },
   tableHeader: {
@@ -1289,12 +1408,7 @@ const styles: Record<string, CSSProperties> = {
   },
   tableTitle: { fontSize: 14, fontWeight: 950 },
   tableSub: { fontSize: 12, opacity: 0.7 },
-
-  tableScroll: {
-    overflowX: "auto",
-    overflowY: "visible", // ✅ não corta tooltip
-  },
-
+  tableScroll: { overflow: "auto" },
   table: { width: "100%", borderCollapse: "separate", borderSpacing: 0 },
   th: {
     textAlign: "left",
@@ -1400,7 +1514,7 @@ const styles: Record<string, CSSProperties> = {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    padding: 16,
+    padding: 12,
     zIndex: 50,
   },
   modal: {
@@ -1430,6 +1544,7 @@ const styles: Record<string, CSSProperties> = {
     background: "white",
     fontWeight: 950,
     cursor: "pointer",
+    flex: "0 0 auto",
   },
   modalBody: { padding: 16, display: "grid", gap: 14 },
 
@@ -1438,7 +1553,6 @@ const styles: Record<string, CSSProperties> = {
   sectionHint: { fontSize: 12, opacity: 0.75, marginBottom: 10 },
 
   summaryGrid: { display: "grid", gridTemplateColumns: "repeat(5, minmax(160px, 1fr))", gap: 12 },
-  summaryItem: { display: "flex", flexDirection: "column", gap: 6 },
   summaryLabel: { fontSize: 12, fontWeight: 900, opacity: 0.7 },
   summaryValue: { fontSize: 14, fontWeight: 950 },
 

@@ -361,6 +361,7 @@ const Index: React.FC = () => {
 
   const [isMobile, setIsMobile] = useState(false);
   const [hideHeader, setHideHeader] = useState(false);
+
   const searchBarContainerRef = useRef<HTMLDivElement | null>(null);
   const searchBarOffsetRef = useRef<number | null>(null);
 
@@ -844,19 +845,27 @@ const Index: React.FC = () => {
     navigate("/login", { replace: true });
   };
 
-  /* ---------------- mobile + search ---------------- */
+  /* ---------------- mobile + search (FIX DO "SALTO") ---------------- */
   useEffect(() => {
     const updateIsMobile = () => setIsMobile(window.innerWidth < 768);
 
     const updateSearchOffset = () => {
-      if (searchBarContainerRef.current) {
-        const rect = searchBarContainerRef.current.getBoundingClientRect();
-        searchBarOffsetRef.current = rect.top + window.scrollY;
-      }
+      const el = searchBarContainerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      // top absoluto (document)
+      searchBarOffsetRef.current = rect.top + window.scrollY;
     };
 
     updateIsMobile();
-    updateSearchOffset();
+
+    // ✅ mede várias vezes no início pra pegar carregamentos (hero/destaques/imagens)
+    const raf1 = requestAnimationFrame(() => updateSearchOffset());
+    const raf2 = requestAnimationFrame(() =>
+      requestAnimationFrame(() => updateSearchOffset())
+    );
+    const t1 = window.setTimeout(() => updateSearchOffset(), 150);
+    const t2 = window.setTimeout(() => updateSearchOffset(), 600);
 
     const handleResize = () => {
       updateIsMobile();
@@ -864,8 +873,41 @@ const Index: React.FC = () => {
     };
 
     window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
+
+    // ✅ Recalcula quando QUALQUER coisa muda a altura da página
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(() => {
+        // evita recalcular no meio do layout thrash
+        requestAnimationFrame(() => updateSearchOffset());
+      });
+      // body pega mudanças do hero/carrossel/imagens acima do catálogo
+      ro.observe(document.body);
+    }
+
+    // também quando terminar de carregar a página
+    window.addEventListener("load", updateSearchOffset);
+
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+      clearTimeout(t1);
+      clearTimeout(t2);
+      window.removeEventListener("resize", handleResize);
+      window.removeEventListener("load", updateSearchOffset);
+      ro?.disconnect();
+    };
   }, []);
+
+  // ✅ também recalcula quando avisos/carrossel mudam (garante)
+  useEffect(() => {
+    const el = searchBarContainerRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      const rect = el.getBoundingClientRect();
+      searchBarOffsetRef.current = rect.top + window.scrollY;
+    });
+  }, [notices.length, currentNoticeIndex, featuredLoading, featuredMode]);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -877,15 +919,20 @@ const Index: React.FC = () => {
         setHideHeader(false);
         return;
       }
-      const HEADER_HEIGHT = 96;
-      if (window.scrollY + HEADER_HEIGHT >= searchBarOffsetRef.current) {
-        setHideHeader(true);
-      } else {
-        setHideHeader(false);
-      }
+
+      // ✅ use o MESMO "top" que você usa no sticky (top-24)
+      const HEADER_HEIGHT = 96; // corresponde ao header fixo
+      const threshold = Math.max(0, searchBarOffsetRef.current - HEADER_HEIGHT);
+
+      // 🔥 Agora só some quando REALMENTE encostar
+      if (window.scrollY >= threshold) setHideHeader(true);
+      else setHideHeader(false);
     };
 
-    window.addEventListener("scroll", handleScroll);
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    // roda uma vez pra sincronizar
+    handleScroll();
+
     return () => window.removeEventListener("scroll", handleScroll);
   }, [isMobile]);
 
@@ -901,7 +948,9 @@ const Index: React.FC = () => {
   };
 
   /**
-   * ✅ padroniza SOMENTE a imagem do ProductCard DENTRO DO CARROSSEL
+   * ✅ Padroniza SOMENTE a imagem do ProductCard DENTRO DO CARROSSEL
+   * - Mobile: mais destaque pra imagem (object-cover + altura maior)
+   * - Desktop: mantém o comportamento atual (object-contain)
    */
   const featuredCards = useMemo(() => {
     if (!featuredProducts.length) return [];
@@ -909,17 +958,29 @@ const Index: React.FC = () => {
     return featuredProducts.map((p) => (
       <div
         key={String(p.id)}
+        data-featured-card="true"
         className={`
           w-[300px] md:w-[340px]
           shrink-0
+
+          /* Wrapper do card (mobile) — "não lavado" e mais destaque */
+          [&_[data-card]]:bg-white
+          [&_[data-card]]:shadow-[0_10px_24px_rgba(0,0,0,0.10)]
+          [&_[data-card]]:border-gray-200/80
+          md:[&_[data-card]]:shadow-none
+
+          /* Imagem do card */
           [&_button[aria-label^='Imagem do produto']]:w-full
-          [&_button[aria-label^='Imagem do produto']]:h-[170px]
-          [&_button[aria-label^='Imagem do produto']]:rounded-xl
+          [&_button[aria-label^='Imagem do produto']]:h-[190px]
+          [&_button[aria-label^='Imagem do produto']]:rounded-2xl
           [&_button[aria-label^='Imagem do produto']]:overflow-hidden
           md:[&_button[aria-label^='Imagem do produto']]:h-[190px]
+
+          /* Mobile = cover (mais impacto), Desktop = contain (como era) */
           [&_button[aria-label^='Imagem do produto']_img]:w-full
           [&_button[aria-label^='Imagem do produto']_img]:h-full
-          [&_button[aria-label^='Imagem do produto']_img]:object-contain
+          [&_button[aria-label^='Imagem do produto']_img]:object-cover
+          md:[&_button[aria-label^='Imagem do produto']_img]:object-contain
         `}
       >
         <ProductCard product={p} hideImages={lightMode} />
@@ -1163,8 +1224,9 @@ const Index: React.FC = () => {
               onClick={() => goTo("/destaques")}
               className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-red-50 text-gray-800"
             >
-              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-red-100">
-                <Star className="h-4 w-4 text-red-600" />
+              <span className="flex h-8 w-8 items-center justify
+-center rounded-full bg-red-100">
+                <Star className="h-4 w-4 block text-red-600" />
               </span>
               <span>Destaques</span>
             </button>
@@ -1337,14 +1399,20 @@ const Index: React.FC = () => {
 
         {/* ✅ DESTAQUES */}
         {featuredLoading ? (
-          <div className="mb-6 rounded-2xl border bg-white/60 backdrop-blur-md px-4 py-4 text-sm text-gray-600 flex items-center gap-2">
+          <div
+            className="
+              mb-6 rounded-2xl border px-4 py-4 text-sm text-gray-600 flex items-center gap-2
+              bg-white
+              md:bg-white/60 md:backdrop-blur-md
+            "
+          >
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-red-100 text-red-600">
               ★
             </span>
             Carregando destaques...
           </div>
         ) : featuredCards.length ? (
-          <div className="mb-7">
+          <div className="mb-7 gm-featured">
             <FeaturedProductsCarousel
               title="Produtos em destaque"
               items={featuredCards}
