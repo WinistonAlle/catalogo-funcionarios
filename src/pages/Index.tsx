@@ -1,3 +1,4 @@
+// src/pages/Index.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
@@ -128,6 +129,127 @@ type TopSellingRow = {
   total_quantity: number;
   total_value: number;
   image_path: string | null;
+};
+
+/* --------------------------------------------------------
+   LOADING (Uiverse - JkHuger)
+   - Overlay full screen
+   - CSS isolado (prefixo gm-uiverse-)
+-------------------------------------------------------- */
+const UiverseLoading: React.FC<{ show: boolean }> = ({ show }) => {
+  if (!show) return null;
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-white/65 backdrop-blur-sm">
+      <div className="gm-uiverse-frame">
+        <div className="gm-uiverse-center">
+          <div className="gm-uiverse-dot-1" />
+          <div className="gm-uiverse-dot-2" />
+          <div className="gm-uiverse-dot-3" />
+        </div>
+      </div>
+
+      <style>{`
+        .gm-uiverse-frame {
+          position: relative;
+          width: 220px;
+          height: 220px;
+        }
+
+        .gm-uiverse-center {
+          position: absolute;
+          width: 220px;
+          height: 220px;
+          top: 0;
+          left: 0;
+        }
+
+        .gm-uiverse-dot-1 {
+          position: absolute;
+          z-index: 3;
+          width: 30px;
+          height: 30px;
+          top: 95px;
+          left: 95px;
+          background: #fff;
+          border-radius: 50%;
+          -webkit-animation-fill-mode: both;
+          animation-fill-mode: both;
+          -webkit-animation: gm-jump-jump-1 2s cubic-bezier(0.21, 0.98, 0.6, 0.99) infinite alternate;
+          animation: gm-jump-jump-1 2s cubic-bezier(0.21, 0.98, 0.6, 0.99) infinite alternate;
+        }
+
+        .gm-uiverse-dot-2 {
+          position: absolute;
+          z-index: 2;
+          width: 60px;
+          height: 60px;
+          top: 80px;
+          left: 80px;
+          background: #fff;
+          border-radius: 50%;
+          -webkit-animation-fill-mode: both;
+          animation-fill-mode: both;
+          -webkit-animation: gm-jump-jump-2 2s cubic-bezier(0.21, 0.98, 0.6, 0.99) infinite alternate;
+          animation: gm-jump-jump-2 2s cubic-bezier(0.21, 0.98, 0.6, 0.99) infinite alternate;
+        }
+
+        .gm-uiverse-dot-3 {
+          position: absolute;
+          z-index: 1;
+          width: 90px;
+          height: 90px;
+          top: 65px;
+          left: 65px;
+          background: #fff;
+          border-radius: 50%;
+          -webkit-animation-fill-mode: both;
+          animation-fill-mode: both;
+          -webkit-animation: gm-jump-jump-3 2s cubic-bezier(0.21, 0.98, 0.6, 0.99) infinite alternate;
+          animation: gm-jump-jump-3 2s cubic-bezier(0.21, 0.98, 0.6, 0.99) infinite alternate;
+        }
+
+        @keyframes gm-jump-jump-1 {
+          0%, 70% {
+            box-shadow: 2px 2px 3px 2px rgba(0, 0, 0, 0.2);
+            -webkit-transform: scale(0);
+            transform: scale(0);
+          }
+          100% {
+            box-shadow: 10px 10px 15px 0 rgba(0, 0, 0, 0.3);
+            -webkit-transform: scale(1);
+            transform: scale(1);
+          }
+        }
+
+        @keyframes gm-jump-jump-2 {
+          0%, 40% {
+            box-shadow: 2px 2px 3px 2px rgba(0, 0, 0, 0.2);
+            -webkit-transform: scale(0);
+            transform: scale(0);
+          }
+          100% {
+            box-shadow: 10px 10px 15px 0 rgba(0, 0, 0, 0.3);
+            -webkit-transform: scale(1);
+            transform: scale(1);
+          }
+        }
+
+        @keyframes gm-jump-jump-3 {
+          0%, 10% {
+            box-shadow: 2px 2px 3px 2px rgba(0, 0, 0, 0.2);
+            -webkit-transform: scale(0);
+            transform: scale(0);
+          }
+          100% {
+            box-shadow: 10px 10px 15px 0 rgba(0, 0, 0, 0.3);
+            -webkit-transform: scale(1);
+            transform: scale(1);
+          }
+        }
+      `}</style>
+    </div>
+  );
 };
 
 /* --------------------------------------------------------
@@ -344,6 +466,11 @@ const Index: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  // ✅ Loading overlay (Uiverse)
+  // aparece enquanto carrega produtos/avisos/destaques e some quando tudo terminar
+  const [overlayLoading, setOverlayLoading] = useState(true);
+  const firstPaintDone = useRef(false);
+
   const [searchTerm, setSearchTerm] = useState<string>(() => {
     if (typeof window === "undefined") return "";
     return localStorage.getItem(SEARCH_CACHE_KEY) ?? "";
@@ -378,6 +505,9 @@ const Index: React.FC = () => {
   const [featuredMode, setFeaturedMode] = useState<CarouselMode>("auto");
   const [featuredProducts, setFeaturedProducts] = useState<Product[]>([]);
   const [featuredLoading, setFeaturedLoading] = useState(false);
+
+  // ✅ Avisos carregando (pra compor o overlay)
+  const [noticesLoading, setNoticesLoading] = useState(true);
 
   const hasLoadedFromCache = useRef(false);
   const employee: any = safeGetEmployee();
@@ -718,6 +848,7 @@ const Index: React.FC = () => {
     let isMounted = true;
 
     async function loadNotices() {
+      setNoticesLoading(true);
       try {
         const { data, error } = await supabase
           .from("notices")
@@ -743,6 +874,8 @@ const Index: React.FC = () => {
         }
       } catch (err) {
         console.error("Erro inesperado ao carregar avisos:", err);
+      } finally {
+        if (isMounted) setNoticesLoading(false);
       }
     }
 
@@ -988,8 +1121,34 @@ const Index: React.FC = () => {
     ));
   }, [featuredProducts, lightMode]);
 
+  /* --------------------------------------------------------
+     Overlay loading: aparece no 1º carregamento "de verdade"
+     - se veio do cache: mostra rapidinho só pra não piscar feio
+  -------------------------------------------------------- */
+  useEffect(() => {
+    const allDone = !loading && !featuredLoading && !noticesLoading;
+    if (!firstPaintDone.current) {
+      // segura pelo menos 250ms pra dar "feel" de carregamento
+      if (allDone) {
+        const t = window.setTimeout(() => {
+          setOverlayLoading(false);
+          firstPaintDone.current = true;
+        }, hasLoadedFromCache.current ? 180 : 320);
+        return () => clearTimeout(t);
+      } else {
+        setOverlayLoading(true);
+      }
+    } else {
+      // depois do primeiro load, não força overlay de novo
+      if (allDone) setOverlayLoading(false);
+    }
+  }, [loading, featuredLoading, noticesLoading]);
+
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col relative pb-20 md:pb-0">
+      {/* ✅ LOADING OVERLAY */}
+      <UiverseLoading show={overlayLoading} />
+
       <div
         className="absolute top-0 left-0 right-0 h-24 pointer-events-none"
         style={{
@@ -1111,7 +1270,7 @@ const Index: React.FC = () => {
         </div>
       </div>
 
-      {/* OVERLAY */}
+      {/* OVERLAY MENU */}
       <div
         className={`
           fixed inset-0 z-50 transition-opacity duration-200
@@ -1218,15 +1377,15 @@ const Index: React.FC = () => {
             </button>
           )}
 
-          {/* ✅ DESTAQUES (só admin) */}
+          {/* ✅ DESTAQUES (só admin) — FIX: centraliza de verdade o SVG na bolinha */}
           {isAdmin && (
             <button
               onClick={() => goTo("/destaques")}
               className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-red-50 text-gray-800"
             >
-              <span className="flex h-8 w-8 items-center justify
--center rounded-full bg-red-100">
-                <Star className="h-4 w-4 block text-red-600" />
+              {/* TROCA flex -> grid + svg block (remove baseline/inline) */}
+              <span className="grid h-8 w-8 place-items-center rounded-full bg-red-100">
+                <Star className="h-4 w-4 text-red-600 block" />
               </span>
               <span>Destaques</span>
             </button>
@@ -1282,16 +1441,18 @@ const Index: React.FC = () => {
               relative overflow-hidden rounded-3xl min-h-[280px] md:min-h-[380px]
               flex items-stretch shadow-lg md:shadow-xl shadow-black/15
               ${
-                showNoticeHero && !hasNoticeImage
+                (hasNotices ? true : false) && !((hasNotices ? notices[currentNoticeIndex] : null)?.image_url)
                   ? "bg-gray-100 border border-gray-300"
                   : ""
               }
             `}
             style={
-              showNoticeHero
-                ? hasNoticeImage
+              (hasNotices ? notices[currentNoticeIndex] : null)
+                ? (hasNotices ? notices[currentNoticeIndex] : null)?.image_url
                   ? {
-                      backgroundImage: `url('${currentNotice!.image_url}')`,
+                      backgroundImage: `url('${
+                        (hasNotices ? notices[currentNoticeIndex] : null)!.image_url
+                      }')`,
                       backgroundSize: "cover",
                       backgroundPosition: "center",
                     }
@@ -1303,15 +1464,17 @@ const Index: React.FC = () => {
                   }
             }
           >
-            {!showNoticeHero && <div className="absolute inset-0 bg-red-900/70" />}
+            {!((hasNotices ? notices[currentNoticeIndex] : null) != null) && (
+              <div className="absolute inset-0 bg-red-900/70" />
+            )}
 
             <div className="relative z-10 w-full px-6 py-8 md:px-10 md:py-10 flex items-start">
-              {showNoticeHero && currentNotice ? (
-                hasNoticeImage ? (
+              {((hasNotices ? notices[currentNoticeIndex] : null) != null) ? (
+                (hasNotices ? notices[currentNoticeIndex] : null)!.image_url ? (
                   <div className="relative flex flex-col justify-between h-full max-w-xl text-white drop-shadow-md">
                     <div className="mt-1">
                       <h2 className="text-3xl md:text-4xl font-extrabold leading-tight">
-                        {currentNotice.title}
+                        {(hasNotices ? notices[currentNoticeIndex] : null)!.title}
                       </h2>
                     </div>
 
@@ -1329,10 +1492,10 @@ const Index: React.FC = () => {
                     </p>
                     <div className="border-l-4 border-red-500 pl-4">
                       <h2 className="text-3xl md:text-4xl font-extrabold leading-tight text-red-700">
-                        {currentNotice.title}
+                        {(hasNotices ? notices[currentNoticeIndex] : null)!.title}
                       </h2>
                       <p className="mt-3 text-sm md:text-base text-gray-700">
-                        {currentNotice.body}
+                        {(hasNotices ? notices[currentNoticeIndex] : null)!.body}
                       </p>
                       <button
                         onClick={() => navigate("/avisos")}
@@ -1373,7 +1536,7 @@ const Index: React.FC = () => {
             </div>
           </div>
 
-          {showNoticeHero && notices.length > 1 && (
+          {((hasNotices ? notices[currentNoticeIndex] : null) != null) && notices.length > 1 && (
             <>
               <button
                 onClick={() =>
@@ -1617,7 +1780,7 @@ const socialLinks = [
 ];
 
 const developerText =
-  "© 2025 Catálogo Interativo para funcionários desenvolvido por Winiston Alle & Mateus Borges";
+  "©️ 2025 Catálogo Interativo para funcionários desenvolvido por Winiston Alle & Mateus Borges";
 
 const Footer: React.FC = () => {
   return (

@@ -11,7 +11,7 @@ type OrderRow = {
   employee_name: string | null;
 
   total_items: number | null;
-  total_value: number | null; // legacy (R$)
+  total_value: number | null; // legacy (R$)\
   total_cents: number | null; // new (cents)
 
   wallet_used_cents: number | null; // new (cents)
@@ -280,13 +280,43 @@ export default function AdminOrders() {
 
   const isMobile = useIsMobile(940);
 
+  // ✅ pega CPF do "ator" com compatibilidade:
+  // - chaves antigas (cpf, employee_cpf, gm_employee_cpf)
+  // - employee_session (JSON)
   function actorCpfFromLocalStorage() {
+    if (typeof window === "undefined") return "";
+
     const possible =
       localStorage.getItem("gm_employee_cpf") ||
       localStorage.getItem("employee_cpf") ||
-      localStorage.getItem("cpf") ||
-      "";
-    return onlyDigits(possible);
+      localStorage.getItem("cpf");
+
+    if (possible) return onlyDigits(possible);
+
+    try {
+      const raw = localStorage.getItem("employee_session");
+      if (!raw) return "";
+      const obj = JSON.parse(raw);
+      return onlyDigits(obj?.cpf || obj?.employee_cpf || "");
+    } catch {
+      return "";
+    }
+  }
+
+  // ✅ fallback (PWA/iOS pode limpar localStorage)
+  async function getActorCpf(): Promise<string> {
+    const fromLocal = actorCpfFromLocalStorage();
+    if (fromLocal) return fromLocal;
+
+    // tenta descobrir via Supabase Auth -> employees.user_id
+    const { data: auth } = await supabase.auth.getUser();
+    const userId = auth?.user?.id;
+    if (!userId) return "";
+
+    const { data: emp, error } = await supabase.from("employees").select("cpf").eq("user_id", userId).maybeSingle();
+    if (error) return "";
+
+    return onlyDigits((emp as any)?.cpf || "");
   }
 
   async function fetchEmployeeMap(): Promise<Map<string, string>> {
@@ -387,9 +417,11 @@ export default function AdminOrders() {
   async function cancelOrder() {
     if (!selected) return;
 
-    const actorCpf = actorCpfFromLocalStorage();
+    const actorCpf = await getActorCpf();
     if (!actorCpf) {
-      alert("Não encontrei seu CPF de login no navegador (localStorage).");
+      alert(
+        "Não encontrei seu CPF de login (localStorage/Auth). Faça login novamente.\n\nDica: no iPhone/PWA o Safari às vezes limpa o storage."
+      );
       return;
     }
     if (!cancelReason.trim()) {
@@ -643,7 +675,12 @@ export default function AdminOrders() {
 
             <div style={styles.field}>
               <label style={styles.label}>Nº do pedido</label>
-              <input style={styles.input} placeholder="Ex.: GM-20260102-1234" value={orderFilter} onChange={(e) => setOrderFilter(e.target.value)} />
+              <input
+                style={styles.input}
+                placeholder="Ex.: GM-20260102-1234"
+                value={orderFilter}
+                onChange={(e) => setOrderFilter(e.target.value)}
+              />
             </div>
 
             <div style={styles.field}>
@@ -1118,7 +1155,7 @@ export default function AdminOrders() {
                                   </td>
 
                                   <td style={styles.td}>
-                                    <div style={{ maxWidth: 420, whiteSpace: "pre-wrap" }}>{r.reason || "—"}</div>
+                                    <div style={{ fontWeight: 800, whiteSpace: "pre-wrap" }}>{r.reason || "—"}</div>
                                   </td>
                                 </tr>
                               );
@@ -1132,456 +1169,678 @@ export default function AdminOrders() {
                       {cancelLogs.map((r) => {
                         const meta = getPaymentMeta(r as any);
                         const total = r.total_cents ? brlFromCents(r.total_cents) : brlFromReais(r.total_value);
+
                         return (
                           <div key={`${r.order_id}-${r.cancelled_at || ""}`} style={styles.mobileCard}>
                             <div style={styles.mobileTop}>
                               <div style={{ minWidth: 0 }}>
                                 <div style={styles.mobileTitle}>{r.order_number || "—"}</div>
-                                <div style={styles.mobileSub}>
-                                  <b style={{ display: "inline-block", maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                <div style={styles.mobileSub} title={r.employee_name || ""}>
+                                  <b
+                                    style={{
+                                      display: "inline-block",
+                                      maxWidth: "100%",
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      whiteSpace: "nowrap",
+                                    }}
+                                  >
                                     {r.employee_name || "—"}
                                   </b>{" "}
                                   • {formatCPF(r.employee_cpf)}
                                 </div>
+
                                 <div style={styles.mobileSub}>
-                                  {r.cancelled_at ? new Date(r.cancelled_at).toLocaleString("pt-BR") : "—"} •{" "}
-                                  <span style={{ fontWeight: 900 }}>{r.actor_name || "—"}</span>
+                                  Cancelado em:{" "}
+                                  {r.cancelled_at ? new Date(r.cancelled_at).toLocaleString("pt-BR") : "—"}
                                 </div>
                               </div>
 
                               <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
                                 <Badge kind={meta.kind} tooltip={meta.tooltip} />
-                                <div style={{ fontSize: 12, fontWeight: 950 }}>{total}</div>
+                                <span style={{ ...styles.badge, background: "rgba(239,68,68,0.10)", color: "#991B1B", borderColor: "rgba(239,68,68,0.22)" }}>
+                                  Cancelado
+                                </span>
                               </div>
                             </div>
 
-                            <div style={{ ...styles.payMini, marginTop: 8 }}>
-                              {meta.wallet > 0 && <span style={styles.payLine}>Saldo: {brlFromCents(meta.wallet)}</span>}
-                              {meta.pickup > 0 && <span style={styles.payLine}>Retirada: {brlFromCents(meta.pickup)}</span>}
-                            </div>
+                            <div style={styles.mobileBottom}>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                <div style={styles.mobileTotal}>{total}</div>
 
-                            <div style={{ marginTop: 10, fontSize: 13, opacity: 0.9, whiteSpace: "pre-wrap" }}>
-                              <span style={{ fontWeight: 950 }}>Motivo:</span> {r.reason || "—"}
-                            </div>
+                                <div style={styles.payMini}>
+                                  {meta.wallet > 0 && <span style={styles.payLine}>Saldo: {brlFromCents(meta.wallet)}</span>}
+                                  {meta.pickup > 0 && <span style={styles.payLine}>Retirada: {brlFromCents(meta.pickup)}</span>}
+                                </div>
 
-                            <div style={{ marginTop: 10, fontSize: 11, opacity: 0.55, wordBreak: "break-all" }}>{r.order_id}</div>
+                                <div style={{ marginTop: 6 }}>
+                                  <div style={{ fontSize: 12, fontWeight: 900, color: "#111827" }}>
+                                    Cancelado por: {r.actor_name || "—"}
+                                  </div>
+                                  <div style={{ fontSize: 12, opacity: 0.8 }}>{formatCPF(r.actor_cpf)}</div>
+                                </div>
+
+                                <div style={{ marginTop: 6 }}>
+                                  <div style={{ fontSize: 12, fontWeight: 900, color: "#111827" }}>Motivo</div>
+                                  <div style={{ fontSize: 12, opacity: 0.9, whiteSpace: "pre-wrap" }}>{r.reason || "—"}</div>
+                                </div>
+                              </div>
+
+                              <button
+                                style={{ ...styles.secondaryBtn, padding: "10px 12px", height: 42, borderRadius: 14 }}
+                                onClick={() => {
+                                  // abre o modal do pedido selecionando o pedido (se existir no list atual)
+                                  const found = orders.find((o) => o.id === r.order_id);
+                                  if (found) setSelected(found);
+                                  else alert("Esse pedido não está na lista atual (filtros). Clique em 'Atualizar' e tente novamente.");
+                                }}
+                              >
+                                Abrir pedido
+                              </button>
+                            </div>
                           </div>
                         );
                       })}
                     </div>
                   )}
+
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 14, ...(isMobile ? { flexDirection: "column" } : {}) }}>
+                    <button
+                      style={{ ...styles.secondaryBtn, ...(isMobile ? { width: "100%" } : {}) }}
+                      onClick={() => loadCancellationHistory()}
+                      disabled={cancelLogsLoading}
+                    >
+                      Atualizar
+                    </button>
+                    <button
+                      style={{ ...styles.primaryBtn, ...(isMobile ? { width: "100%" } : {}) }}
+                      onClick={() => setCancelHistOpen(false)}
+                    >
+                      Fechar
+                    </button>
+                  </div>
                 </>
               )}
-
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, ...(isMobile ? { flexDirection: "column" } : {}) }}>
-                <button style={{ ...styles.secondaryBtn, ...(isMobile ? { width: "100%" } : {}) }} onClick={loadCancellationHistory}>
-                  Atualizar lista
-                </button>
-                <button style={{ ...styles.primaryBtn, ...(isMobile ? { width: "100%" } : {}) }} onClick={() => setCancelHistOpen(false)}>
-                  Fechar
-                </button>
-              </div>
             </div>
           </div>
         </div>
       )}
 
-      <TooltipStyles />
+      {/* Tooltip via CSS-in-JS (simples e leve) */}
+      <style>{`
+        .gm-tip { position: relative; user-select: none; }
+        .gm-tip::after {
+          content: attr(data-tip);
+          position: absolute;
+          left: 50%;
+          top: calc(100% + 8px);
+          transform: translateX(-50%);
+          background: rgba(17,24,39,0.95);
+          color: #fff;
+          padding: 8px 10px;
+          border-radius: 10px;
+          font-size: 12px;
+          line-height: 1.2;
+          white-space: pre;
+          opacity: 0;
+          pointer-events: none;
+          transition: opacity .15s ease;
+          z-index: 9999;
+          min-width: 140px;
+          text-align: left;
+          box-shadow: 0 10px 30px rgba(0,0,0,0.18);
+        }
+        .gm-tip:hover::after { opacity: 1; }
+        /* Mobile: tooltip no "active/press" não é perfeito, mas dá pra ver com toque longo em alguns browsers */
+      `}</style>
     </div>
   );
 }
 
-function TooltipStyles() {
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    if (document.getElementById("gm-adminorders-tooltip-style")) return;
-
-    const style = document.createElement("style");
-    style.id = "gm-adminorders-tooltip-style";
-    style.innerHTML = `
-      @keyframes gmSpin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
-      .gm-tip{ position: relative; -webkit-tap-highlight-color: transparent; }
-      /* desktop hover */
-      .gm-tip[data-tip]:hover::after,
-      .gm-tip[data-tip]:active::after{
-        content: attr(data-tip);
-        position: absolute;
-        left: 50%;
-        transform: translateX(-50%);
-        bottom: calc(100% + 10px);
-        background: rgba(17,24,39,0.96);
-        color: #fff;
-        padding: 10px 12px;
-        border-radius: 12px;
-        font-size: 12px;
-        font-weight: 800;
-        white-space: pre-line;
-        box-shadow: 0 18px 40px rgba(0,0,0,0.25);
-        border: 1px solid rgba(255,255,255,0.12);
-        z-index: 9999;
-        pointer-events: none;
-        min-width: 190px;
-        text-align: left;
-      }
-      .gm-tip[data-tip]:hover::before,
-      .gm-tip[data-tip]:active::before{
-        content: "";
-        position: absolute;
-        left: 50%;
-        transform: translateX(-50%);
-        bottom: calc(100% + 4px);
-        border-width: 6px;
-        border-style: solid;
-        border-color: rgba(17,24,39,0.96) transparent transparent transparent;
-        z-index: 9999;
-        pointer-events: none;
-      }
-    `;
-    document.head.appendChild(style);
-  }, []);
-
-  return null;
-}
-
+/* ----------------------------- styles ----------------------------- */
 const styles: Record<string, CSSProperties> = {
   page: {
     minHeight: "100vh",
-    background:
-      "radial-gradient(1200px 500px at 20% -10%, rgba(59,130,246,0.12), transparent 60%), radial-gradient(900px 400px at 90% 10%, rgba(16,185,129,0.12), transparent 55%), #f7f7fb",
+    background: "#F6F7FB",
     color: "#111827",
-    display: "flex",
-    flexDirection: "column",
   },
+
   header: {
     position: "sticky",
     top: 0,
     zIndex: 20,
-    backdropFilter: "blur(10px)",
-    background: "rgba(255,255,255,0.78)",
+    background: "rgba(246,247,251,0.85)",
+    backdropFilter: "blur(12px)",
     borderBottom: "1px solid rgba(0,0,0,0.06)",
   },
+
   headerInner: {
     maxWidth: 1200,
     margin: "0 auto",
-    padding: "16px 20px",
+    padding: "14px 18px",
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
   },
-  backBtn: {
-    height: 40,
-    padding: "0 12px",
-    borderRadius: 14,
-    border: "1px solid rgba(0,0,0,0.10)",
-    background: "white",
-    fontWeight: 950,
-    cursor: "pointer",
-  },
-  ghostBtn: {
-    height: 40,
-    padding: "0 12px",
-    borderRadius: 14,
-    border: "1px solid rgba(0,0,0,0.10)",
-    background: "rgba(255,255,255,0.92)",
-    fontWeight: 950,
-    cursor: "pointer",
-  },
-  headerChip: {
-    fontSize: 12,
-    fontWeight: 900,
-    padding: "8px 10px",
-    borderRadius: 999,
-    background: "rgba(0,0,0,0.06)",
-    border: "1px solid rgba(0,0,0,0.06)",
-    justifySelf: "end",
-    alignSelf: "center",
-    textAlign: "center",
-  },
-  hTitle: { fontSize: 18, fontWeight: 950, letterSpacing: -0.2 },
-  hSub: { fontSize: 13, opacity: 0.75, marginTop: 2 },
 
-  main: { width: "100%", maxWidth: 1200, margin: "0 auto", padding: "18px 20px 30px", flex: 1 },
+  backBtn: {
+    height: 42,
+    padding: "0 14px",
+    borderRadius: 14,
+    border: "1px solid rgba(0,0,0,0.08)",
+    background: "#fff",
+    cursor: "pointer",
+    fontWeight: 900,
+    boxShadow: "0 10px 25px rgba(0,0,0,0.06)",
+  },
+
+  hTitle: {
+    fontSize: 18,
+    fontWeight: 1000,
+    letterSpacing: "-0.02em",
+  },
+
+  hSub: {
+    marginTop: 2,
+    fontSize: 12,
+    opacity: 0.7,
+  },
+
+  headerChip: {
+    height: 30,
+    padding: "0 10px",
+    borderRadius: 999,
+    border: "1px solid rgba(0,0,0,0.08)",
+    background: "#fff",
+    display: "inline-flex",
+    alignItems: "center",
+    fontWeight: 950,
+    fontSize: 12,
+  },
+
+  main: {
+    maxWidth: 1200,
+    margin: "0 auto",
+    padding: "18px 18px 28px",
+  },
 
   kpis: {
     display: "grid",
-    gridTemplateColumns: "repeat(5, minmax(140px, 1fr)) 140px",
+    gridTemplateColumns: "repeat(6, minmax(0, 1fr))",
     gap: 12,
+    marginBottom: 16,
     alignItems: "stretch",
-    marginBottom: 14,
   },
+
   kpiCard: {
-    background: "rgba(255,255,255,0.92)",
-    border: "1px solid rgba(0,0,0,0.06)",
-    borderRadius: 16,
-    padding: "12px 14px",
-    boxShadow: "0 10px 30px rgba(0,0,0,0.04)",
-  },
-  kpiLabel: { fontSize: 12, fontWeight: 850, opacity: 0.65 },
-  kpiValue: { fontSize: 20, fontWeight: 950, marginTop: 2 },
-  refreshBtn: {
-    borderRadius: 16,
+    borderRadius: 18,
     border: "1px solid rgba(0,0,0,0.08)",
-    background: "rgba(255,255,255,0.92)",
+    background: "#fff",
+    padding: 14,
+    boxShadow: "0 18px 45px rgba(0,0,0,0.06)",
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "space-between",
+  },
+
+  kpiLabel: {
+    fontSize: 12,
     fontWeight: 900,
+    opacity: 0.65,
+  },
+
+  kpiValue: {
+    marginTop: 8,
+    fontSize: 22,
+    fontWeight: 1000,
+  },
+
+  refreshBtn: {
+    borderRadius: 18,
+    border: "1px solid rgba(0,0,0,0.08)",
+    background: "#111827",
+    color: "#fff",
+    fontWeight: 950,
     cursor: "pointer",
-    boxShadow: "0 10px 30px rgba(0,0,0,0.04)",
+    boxShadow: "0 18px 45px rgba(17,24,39,0.22)",
   },
 
   filters: {
-    background: "rgba(255,255,255,0.92)",
-    border: "1px solid rgba(0,0,0,0.06)",
     borderRadius: 18,
+    border: "1px solid rgba(0,0,0,0.08)",
+    background: "#fff",
     padding: 14,
-    boxShadow: "0 10px 30px rgba(0,0,0,0.04)",
-    marginBottom: 14,
+    boxShadow: "0 18px 45px rgba(0,0,0,0.06)",
+    marginBottom: 16,
   },
-  filtersGrid: { display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr 0.6fr", gap: 12 },
-  field: { display: "flex", flexDirection: "column", gap: 6 },
-  label: { fontSize: 12, fontWeight: 900, opacity: 0.7 },
+
+  filtersGrid: {
+    display: "grid",
+    gridTemplateColumns: "1.1fr 1.4fr 1fr 0.8fr",
+    gap: 12,
+    alignItems: "end",
+  },
+
+  field: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+    minWidth: 0,
+  },
+
+  label: {
+    fontSize: 12,
+    fontWeight: 900,
+    opacity: 0.7,
+  },
+
   input: {
     height: 44,
     borderRadius: 14,
     border: "1px solid rgba(0,0,0,0.10)",
     padding: "0 12px",
     outline: "none",
-    background: "white",
-    fontSize: 14,
+    background: "#fff",
+    fontWeight: 800,
   },
+
   select: {
     height: 44,
     borderRadius: 14,
     border: "1px solid rgba(0,0,0,0.10)",
-    padding: "0 10px",
+    padding: "0 12px",
     outline: "none",
-    background: "white",
-    fontSize: 14,
+    background: "#fff",
+    fontWeight: 800,
   },
-  helpRow: { marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(0,0,0,0.10)" },
-  helpText: { fontSize: 12, fontWeight: 850, opacity: 0.7 },
 
   primaryBtn: {
     height: 44,
+    padding: "0 14px",
     borderRadius: 14,
-    border: "1px solid rgba(0,0,0,0.06)",
+    border: "1px solid rgba(0,0,0,0.10)",
     background: "#111827",
-    color: "white",
-    fontWeight: 900,
-    cursor: "pointer",
-    padding: "0 14px",
-  },
-  secondaryBtn: {
-    height: 44,
-    borderRadius: 14,
-    border: "1px solid rgba(0,0,0,0.12)",
-    background: "white",
-    fontWeight: 900,
-    cursor: "pointer",
-    padding: "0 14px",
-  },
-  dangerBtn: {
-    height: 44,
-    borderRadius: 14,
-    border: "1px solid rgba(239,68,68,0.25)",
-    background: "#EF4444",
-    color: "white",
+    color: "#fff",
     fontWeight: 950,
     cursor: "pointer",
-    padding: "0 14px",
+    boxShadow: "0 14px 30px rgba(17,24,39,0.20)",
   },
-  disabledBtn: { opacity: 0.6, cursor: "not-allowed" },
+
+  ghostBtn: {
+    height: 42,
+    padding: "0 14px",
+    borderRadius: 14,
+    border: "1px solid rgba(0,0,0,0.08)",
+    background: "rgba(255,255,255,0.70)",
+    cursor: "pointer",
+    fontWeight: 900,
+  },
+
+  secondaryBtn: {
+    height: 44,
+    padding: "0 14px",
+    borderRadius: 14,
+    border: "1px solid rgba(0,0,0,0.10)",
+    background: "#fff",
+    cursor: "pointer",
+    fontWeight: 950,
+  },
+
+  dangerBtn: {
+    height: 44,
+    padding: "0 14px",
+    borderRadius: 14,
+    border: "1px solid rgba(239,68,68,0.30)",
+    background: "rgba(239,68,68,0.12)",
+    color: "#991B1B",
+    cursor: "pointer",
+    fontWeight: 1000,
+  },
+
+  disabledBtn: {
+    opacity: 0.55,
+    cursor: "not-allowed",
+  },
+
+  helpRow: {
+    marginTop: 10,
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+  },
+
+  helpText: {
+    fontSize: 12,
+    opacity: 0.65,
+  },
 
   tableCard: {
-    background: "rgba(255,255,255,0.92)",
-    border: "1px solid rgba(0,0,0,0.06)",
     borderRadius: 18,
+    border: "1px solid rgba(0,0,0,0.08)",
+    background: "#fff",
+    boxShadow: "0 18px 45px rgba(0,0,0,0.06)",
     overflow: "hidden",
-    boxShadow: "0 10px 30px rgba(0,0,0,0.04)",
   },
+
   tableHeader: {
     padding: "14px 14px 10px",
     display: "flex",
     alignItems: "baseline",
     justifyContent: "space-between",
-    gap: 12,
+    gap: 10,
     borderBottom: "1px solid rgba(0,0,0,0.06)",
   },
-  tableTitle: { fontSize: 14, fontWeight: 950 },
+
+  tableTitle: { fontWeight: 1000, fontSize: 14 },
   tableSub: { fontSize: 12, opacity: 0.7 },
-  tableScroll: { overflow: "auto" },
-  table: { width: "100%", borderCollapse: "separate", borderSpacing: 0 },
+
+  tableScroll: {
+    overflow: "auto",
+  },
+
+  table: {
+    width: "100%",
+    borderCollapse: "separate",
+    borderSpacing: 0,
+    minWidth: 980,
+  },
+
   th: {
     textAlign: "left",
     padding: "12px 14px",
     fontSize: 12,
-    fontWeight: 950,
+    fontWeight: 1000,
     opacity: 0.75,
-    background: "rgba(0,0,0,0.03)",
+    background: "rgba(0,0,0,0.02)",
     borderBottom: "1px solid rgba(0,0,0,0.06)",
     position: "sticky",
     top: 0,
     zIndex: 1,
   },
-  tr: { borderBottom: "1px solid rgba(0,0,0,0.06)" },
-  td: { padding: "12px 14px", fontSize: 13, borderBottom: "1px solid rgba(0,0,0,0.06)", verticalAlign: "top" },
-  tdStrong: { padding: "12px 14px", fontSize: 13, borderBottom: "1px solid rgba(0,0,0,0.06)", fontWeight: 950 },
-  tdMuted: { fontSize: 11, opacity: 0.55, marginTop: 2 },
+
+  tr: {
+    borderBottom: "1px solid rgba(0,0,0,0.06)",
+  },
+
+  td: {
+    padding: "12px 14px",
+    verticalAlign: "top",
+    fontSize: 13,
+    borderBottom: "1px solid rgba(0,0,0,0.06)",
+  },
+
+  tdStrong: {
+    padding: "12px 14px",
+    verticalAlign: "top",
+    fontSize: 13,
+    fontWeight: 1000,
+    borderBottom: "1px solid rgba(0,0,0,0.06)",
+  },
+
+  tdMuted: { marginTop: 4, fontSize: 12, opacity: 0.65 },
+
+  payMini: { marginTop: 6, display: "flex", flexDirection: "column", gap: 2 },
+  payLine: { fontSize: 12, opacity: 0.75 },
+
+  smallBtn: {
+    height: 36,
+    padding: "0 12px",
+    borderRadius: 12,
+    border: "1px solid rgba(0,0,0,0.10)",
+    background: "#fff",
+    cursor: "pointer",
+    fontWeight: 950,
+  },
 
   badge: {
     display: "inline-flex",
     alignItems: "center",
-    padding: "7px 10px",
+    gap: 8,
     borderRadius: 999,
+    padding: "6px 10px",
     fontSize: 12,
-    fontWeight: 950,
+    fontWeight: 1000,
     border: "1px solid rgba(0,0,0,0.08)",
-    userSelect: "none",
-    whiteSpace: "nowrap",
-  },
-
-  payMini: { display: "grid", gap: 4, marginTop: 8 },
-  payLine: { fontSize: 12, fontWeight: 850, opacity: 0.75 },
-
-  smallBtn: {
-    padding: "9px 12px",
-    borderRadius: 12,
-    border: "1px solid rgba(0,0,0,0.12)",
-    background: "white",
-    fontWeight: 900,
-    cursor: "pointer",
+    background: "rgba(0,0,0,0.04)",
   },
 
   stateBox: {
-    display: "flex",
-    gap: 12,
-    alignItems: "center",
+    borderRadius: 18,
+    border: "1px solid rgba(0,0,0,0.08)",
+    background: "#fff",
     padding: 14,
-    borderRadius: 16,
-    background: "rgba(255,255,255,0.92)",
-    border: "1px solid rgba(0,0,0,0.06)",
-    boxShadow: "0 10px 30px rgba(0,0,0,0.04)",
-    marginBottom: 14,
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    boxShadow: "0 18px 45px rgba(0,0,0,0.06)",
   },
-  stateTitle: { fontWeight: 950, fontSize: 14 },
-  stateText: { opacity: 0.75, fontSize: 13 },
+
+  stateTitle: { fontWeight: 1000 },
+  stateText: { fontSize: 12, opacity: 0.75, marginTop: 2 },
+
   spinner: {
     width: 18,
     height: 18,
-    borderRadius: 999,
-    border: "3px solid rgba(0,0,0,0.12)",
-    borderTopColor: "rgba(0,0,0,0.65)",
-    animation: "gmSpin 0.8s linear infinite",
+    borderRadius: "50%",
+    border: "3px solid rgba(0,0,0,0.10)",
+    borderTopColor: "rgba(0,0,0,0.45)",
+    animation: "gmspin 1s linear infinite",
   },
+
   spinnerSmall: {
     width: 14,
     height: 14,
-    borderRadius: 999,
-    border: "3px solid rgba(0,0,0,0.12)",
-    borderTopColor: "rgba(0,0,0,0.65)",
-    animation: "gmSpin 0.8s linear infinite",
+    borderRadius: "50%",
+    border: "3px solid rgba(0,0,0,0.10)",
+    borderTopColor: "rgba(0,0,0,0.45)",
+    animation: "gmspin 1s linear infinite",
   },
-  errorDot: { width: 12, height: 12, borderRadius: 999, background: "#EF4444" },
+
+  errorDot: {
+    width: 10,
+    height: 10,
+    borderRadius: "50%",
+    background: "rgba(239,68,68,0.75)",
+  },
 
   emptyBox: {
+    borderRadius: 18,
+    border: "1px dashed rgba(0,0,0,0.18)",
+    background: "rgba(255,255,255,0.60)",
     padding: 18,
-    borderRadius: 18,
-    background: "rgba(255,255,255,0.92)",
-    border: "1px solid rgba(0,0,0,0.06)",
-    boxShadow: "0 10px 30px rgba(0,0,0,0.04)",
+    textAlign: "center",
   },
-  emptyTitle: { fontSize: 15, fontWeight: 950, marginBottom: 6 },
-  emptyText: { fontSize: 13, opacity: 0.75 },
-  emptyInline: { fontSize: 13, opacity: 0.75 },
 
-  mobileList: { display: "grid", gap: 12 },
-  mobileCard: {
-    background: "rgba(255,255,255,0.92)",
-    border: "1px solid rgba(0,0,0,0.06)",
-    borderRadius: 18,
-    padding: 14,
-    boxShadow: "0 10px 30px rgba(0,0,0,0.04)",
+  emptyTitle: { fontWeight: 1000 },
+  emptyText: { marginTop: 6, fontSize: 12, opacity: 0.75 },
+
+  mobileList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
   },
-  mobileTop: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 10 },
-  mobileTitle: { fontSize: 14, fontWeight: 950 },
-  mobileSub: { fontSize: 12, opacity: 0.75, marginTop: 2 },
-  mobileBottom: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  mobileTotal: { fontSize: 16, fontWeight: 950 },
+
+  mobileCard: {
+    borderRadius: 18,
+    border: "1px solid rgba(0,0,0,0.08)",
+    background: "#fff",
+    padding: 14,
+    boxShadow: "0 18px 45px rgba(0,0,0,0.06)",
+  },
+
+  mobileTop: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
+  mobileTitle: { fontSize: 14, fontWeight: 1000 },
+  mobileSub: { marginTop: 4, fontSize: 12, opacity: 0.75 },
+
+  mobileBottom: {
+    marginTop: 12,
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    alignItems: "flex-end",
+  },
+
+  mobileTotal: { fontSize: 18, fontWeight: 1000 },
 
   overlay: {
     position: "fixed",
     inset: 0,
-    background: "rgba(0,0,0,0.55)",
+    background: "rgba(0,0,0,0.35)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     padding: 12,
     zIndex: 50,
   },
+
   modal: {
-    width: "min(920px, 100%)",
-    background: "white",
+    width: "min(860px, 100%)",
     borderRadius: 22,
+    background: "#fff",
     border: "1px solid rgba(0,0,0,0.10)",
-    boxShadow: "0 30px 80px rgba(0,0,0,0.35)",
+    boxShadow: "0 25px 70px rgba(0,0,0,0.22)",
     overflow: "hidden",
   },
+
   modalTop: {
-    padding: "14px 16px",
-    borderBottom: "1px solid rgba(0,0,0,0.06)",
+    padding: "14px 14px 10px",
     display: "flex",
     alignItems: "flex-start",
     justifyContent: "space-between",
     gap: 12,
-    background: "linear-gradient(180deg, rgba(0,0,0,0.02), transparent)",
+    borderBottom: "1px solid rgba(0,0,0,0.06)",
   },
-  modalTitle: { fontSize: 16, fontWeight: 950 },
-  modalSub: { fontSize: 12, opacity: 0.75, marginTop: 2 },
+
+  modalTitle: { fontWeight: 1000, fontSize: 14 },
+  modalSub: { marginTop: 4, fontSize: 12, opacity: 0.75 },
+
   iconBtn: {
     width: 38,
     height: 38,
     borderRadius: 14,
     border: "1px solid rgba(0,0,0,0.10)",
-    background: "white",
-    fontWeight: 950,
+    background: "#fff",
     cursor: "pointer",
-    flex: "0 0 auto",
+    fontWeight: 1000,
   },
-  modalBody: { padding: 16, display: "grid", gap: 14 },
 
-  section: { border: "1px solid rgba(0,0,0,0.06)", borderRadius: 18, padding: 14, background: "rgba(0,0,0,0.015)" },
-  sectionTitle: { fontSize: 13, fontWeight: 950, marginBottom: 6 },
-  sectionHint: { fontSize: 12, opacity: 0.75, marginBottom: 10 },
+  modalBody: {
+    padding: 14,
+  },
 
-  summaryGrid: { display: "grid", gridTemplateColumns: "repeat(5, minmax(160px, 1fr))", gap: 12 },
-  summaryLabel: { fontSize: 12, fontWeight: 900, opacity: 0.7 },
-  summaryValue: { fontSize: 14, fontWeight: 950 },
+  section: {
+    border: "1px solid rgba(0,0,0,0.08)",
+    borderRadius: 18,
+    padding: 14,
+    background: "rgba(0,0,0,0.015)",
+    marginBottom: 12,
+  },
+
+  sectionTitle: { fontWeight: 1000, fontSize: 13 },
+  sectionHint: { marginTop: 6, fontSize: 12, opacity: 0.75 },
+
+  summaryGrid: {
+    marginTop: 12,
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr 1fr",
+    gap: 12,
+  },
+
+  summaryLabel: { fontSize: 12, opacity: 0.75, fontWeight: 900 },
+  summaryValue: { fontSize: 14, fontWeight: 1000 },
+
+  infoBox: {
+    marginTop: 10,
+    borderRadius: 14,
+    border: "1px solid rgba(0,0,0,0.10)",
+    background: "#fff",
+    padding: 12,
+  },
 
   textarea: {
+    marginTop: 10,
     width: "100%",
     minHeight: 90,
-    resize: "vertical",
-    borderRadius: 16,
+    borderRadius: 14,
     border: "1px solid rgba(0,0,0,0.10)",
     padding: 12,
     outline: "none",
-    fontSize: 14,
-    background: "white",
+    resize: "vertical",
+    fontWeight: 700,
   },
-  actions: { display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 10, flexWrap: "wrap" },
 
-  infoBox: { borderRadius: 16, padding: 12, border: "1px solid rgba(239,68,68,0.22)", background: "rgba(239,68,68,0.08)" },
+  actions: {
+    marginTop: 10,
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: 10,
+  },
 
-  historyLoading: { display: "flex", gap: 10, alignItems: "center", fontSize: 13, opacity: 0.8 },
-  historyList: { display: "grid", gap: 10 },
-  historyItem: { borderRadius: 16, padding: 12, background: "white", border: "1px solid rgba(0,0,0,0.06)" },
-  historyTop: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 },
-  historyAction: { fontWeight: 950, fontSize: 13 },
-  historyTime: { fontSize: 12, opacity: 0.7 },
-  historyMeta: { fontSize: 12, opacity: 0.7, marginTop: 4 },
-  historyReason: { fontSize: 13, marginTop: 6, opacity: 0.9 },
+  historyLoading: {
+    marginTop: 10,
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    fontSize: 12,
+    opacity: 0.8,
+  },
 
-  footer: { borderTop: "1px solid rgba(0,0,0,0.06)", background: "rgba(255,255,255,0.70)", backdropFilter: "blur(10px)" },
-  footerInner: { maxWidth: 1200, margin: "0 auto", padding: "14px 20px", display: "flex", justifyContent: "space-between", gap: 12 },
-  footerText: { fontSize: 12, fontWeight: 850, opacity: 0.8 },
+  historyList: {
+    marginTop: 10,
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+  },
+
+  historyItem: {
+    borderRadius: 14,
+    border: "1px solid rgba(0,0,0,0.10)",
+    background: "#fff",
+    padding: 12,
+  },
+
+  historyTop: { display: "flex", justifyContent: "space-between", gap: 10 },
+  historyAction: { fontWeight: 1000, fontSize: 12, textTransform: "none" },
+  historyTime: { fontSize: 12, opacity: 0.75 },
+  historyMeta: { marginTop: 6, fontSize: 12, opacity: 0.75 },
+  historyReason: { marginTop: 6, fontSize: 12, whiteSpace: "pre-wrap" },
+  emptyInline: { marginTop: 10, fontSize: 12, opacity: 0.75 },
+
+  footer: {
+    borderTop: "1px solid rgba(0,0,0,0.06)",
+    marginTop: 22,
+    padding: "14px 0",
+  },
+
+  footerInner: {
+    maxWidth: 1200,
+    margin: "0 auto",
+    padding: "0 18px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  footerText: { fontSize: 12, fontWeight: 900, opacity: 0.75 },
   footerTextMuted: { fontSize: 12, opacity: 0.6 },
 };
+
+/* animação do spinner (CSS global dentro do arquivo) */
+const _injectKeyframes = (() => {
+  if (typeof document === "undefined") return;
+  const id = "gm-adminorders-keyframes";
+  if (document.getElementById(id)) return;
+  const style = document.createElement("style");
+  style.id = id;
+  style.innerHTML = `
+    @keyframes gmspin { to { transform: rotate(360deg); } }
+  `;
+  document.head.appendChild(style);
+})();
