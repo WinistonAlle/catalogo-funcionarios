@@ -1,5 +1,5 @@
 // src/pages/Checkout.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCart } from "@/contexts/CartContext";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/sonner";
@@ -12,13 +12,18 @@ import logo from "../images/logoc.png";
 function safeGetEmployee() {
   try {
     const raw = localStorage.getItem("employee_session");
-    if (!raw) return {};
-    if (raw.trim().startsWith("{") || raw.trim().startsWith("[")) {
-      return JSON.parse(raw);
+    if (!raw) return null;
+
+    const t = raw.trim();
+    if (t === "null" || t === "undefined") return null;
+
+    if (t.startsWith("{") || t.startsWith("[")) {
+      const parsed = JSON.parse(t);
+      return parsed && typeof parsed === "object" ? parsed : null;
     }
-    return {};
+    return null;
   } catch {
-    return {};
+    return null;
   }
 }
 
@@ -28,7 +33,6 @@ function formatBRLFromCents(cents: number) {
 }
 
 function getMonthKeySaoPaulo() {
-  // YYYY-MM, usando fuso de SP
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Sao_Paulo",
     year: "numeric",
@@ -104,19 +108,24 @@ const Checkout: React.FC = () => {
   const navigate = useNavigate();
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // ✅ employee reativo (NÃO congele em useMemo([]))
+  const [employee, setEmployee] = useState<any>(() => safeGetEmployee() ?? {});
+  const [employeeReady, setEmployeeReady] = useState(false);
+
   // UI pagamento
   const [payMode, setPayMode] = useState<"wallet" | "pickup">("wallet");
+  const [userTouchedPayMode, setUserTouchedPayMode] = useState(false);
 
   // Saldo mensal
   const [walletLoading, setWalletLoading] = useState(true);
   const [walletError, setWalletError] = useState<string | null>(null);
+
+  // ✅ importante: não comece “zerando” como verdade final, mas ok como default.
   const [monthlyLimitCents, setMonthlyLimitCents] = useState(0);
   const [spentCents, setSpentCents] = useState(0);
 
-  // ✅ employee_id resolvido (vem do session OU da view employee_wallet_view)
+  // ✅ employee_id resolvido (view > session)
   const [resolvedEmployeeId, setResolvedEmployeeId] = useState<string | null>(null);
-
-  const employee: any = useMemo(() => safeGetEmployee(), []);
 
   const safeCartTotal = Number.isFinite(cartTotal) ? cartTotal : 0;
   const totalCents = useMemo(() => Math.round(safeCartTotal * 100), [safeCartTotal]);
@@ -128,118 +137,178 @@ const Checkout: React.FC = () => {
     return Math.max(avail, 0);
   }, [monthlyLimitCents, spentCents]);
 
-  // ✅ NOVA REGRA: só permite pagar com saldo se cobrir 100% do total
+  // ✅ só permite pagar com saldo se cobrir 100% do total
   const canPayWithWallet = useMemo(() => {
     if (walletLoading) return false;
     if (walletError) return false;
     return availableCents >= totalCents && totalCents > 0;
   }, [walletLoading, walletError, availableCents, totalCents]);
 
-  // ✅ se não puder pagar com saldo, força "pagar na retirada"
   useEffect(() => {
+    if (walletLoading) return;
+
     if (payMode === "wallet" && !canPayWithWallet) {
       setPayMode("pickup");
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canPayWithWallet]);
 
-  // ✅ SEM HÍBRIDO:
-  // - walletUsedCents só existe se wallet puder pagar o total (100%)
+    if (!userTouchedPayMode && canPayWithWallet && payMode !== "wallet") {
+      setPayMode("wallet");
+    }
+  }, [walletLoading, canPayWithWallet, payMode, userTouchedPayMode]);
+
   const walletUsedCents = useMemo(() => {
     if (payMode !== "wallet") return 0;
     if (!canPayWithWallet) return 0;
-    return totalCents; // 100% do pedido
+    return totalCents;
   }, [payMode, canPayWithWallet, totalCents]);
 
-  // - payOnPickupCents é 100% quando pickup; 0 quando wallet
   const payOnPickupCents = useMemo(() => {
     return payMode === "pickup" ? totalCents : 0;
   }, [payMode, totalCents]);
 
-  // ✅ saldo após o pedido (preview)
   const afterOrderAvailableCents = useMemo(() => {
     if (payMode !== "wallet") return availableCents;
-    // wallet sempre debita 100% do pedido
     return Math.max(availableCents - totalCents, 0);
   }, [payMode, availableCents, totalCents]);
 
+  /**
+   * ✅ Mantém employee_session sincronizado no Checkout
+   * - tenta ler do localStorage ao montar
+   * - tenta novamente após 0ms (pega escrita que aconteceu “junto” da navegação)
+   * - escuta storage event (outra aba / ou updates)
+   * - escuta auth state change e, se precisar, refaz leitura do storage
+   */
   useEffect(() => {
     let alive = true;
 
-    async function loadWallet() {
+    const readEmployee = () => {
+      const e = safeGetEmployee();
+      if (!alive) return;
+      if (e) setEmployee(e);
+      // se não tiver nada, mantém o que já tinha (não derruba pra {})
+    };
+
+    readEmployee();
+    // 2º tick: resolve “às vezes” que vem de timing
+    setTimeout(readEmployee, 0);
+
+    const onStorage = (ev: StorageEvent) => {
+      if (ev.key === "employee_session") readEmployee();
+    };
+    window.addEventListener("storage", onStorage);
+
+    const { data: sub } = supabase.auth.onAuthStateChange(() => {
+      // auth mudou: tenta re-ler o employee_session (se sua app atualiza ele no login)
+      readEmployee();
+    });
+
+    // Também tenta pegar sessão atual e marcar ready (pra não ficar “sem employee” silencioso)
+    (async () => {
       try {
-        setWalletLoading(true);
-        setWalletError(null);
-
-        const employeeCpf = (employee?.cpf ?? "").toString().trim();
-        const employeeIdFromSession = employee?.user_id || employee?.id || employee?.employee_id;
-
-        if (!employeeCpf) {
-          setMonthlyLimitCents(0);
-          setSpentCents(0);
-          setResolvedEmployeeId(null);
-          setWalletError("Faça login novamente para ver seu saldo.");
-          return;
-        }
-
-        // 1) limite mensal (VIEW segura)
-        const { data: walletRow, error: walletErr } = await supabase
-          .from("employee_wallet_view")
-          .select("employee_id, credito_mensal_cents")
-          .eq("cpf", employeeCpf)
-          .maybeSingle();
-
-        if (walletErr) throw walletErr;
-
-        const limit = Number(walletRow?.credito_mensal_cents ?? 0) || 0;
-
-        // ✅ resolve employee_id: prefere view, senão session
-        const resolvedId = (walletRow?.employee_id || employeeIdFromSession) as
-          | string
-          | undefined;
-
-        if (!resolvedId) {
-          setMonthlyLimitCents(limit);
-          setSpentCents(0);
-          setResolvedEmployeeId(null);
-          setWalletError("Não foi possível identificar seu cadastro. Faça login novamente.");
-          return;
-        }
-
-        // 2) gasto do mês
-        const { data: spendRow, error: spendErr } = await supabase
-          .from("employee_monthly_spend")
-          .select("spent_cents")
-          .eq("employee_id", resolvedId)
-          .eq("month_key", monthKey)
-          .maybeSingle();
-
-        if (spendErr) throw spendErr;
-
-        const spent = Number(spendRow?.spent_cents ?? 0) || 0;
-
-        if (!alive) return;
-        setMonthlyLimitCents(limit);
-        setSpentCents(spent);
-        setResolvedEmployeeId(resolvedId);
-      } catch (e: any) {
-        if (!alive) return;
-        console.error("Erro ao carregar saldo mensal:", e);
-        setMonthlyLimitCents(0);
-        setSpentCents(0);
-        setResolvedEmployeeId(null);
-        setWalletError(e?.message || "Não foi possível carregar seu saldo agora.");
+        await supabase.auth.getSession();
       } finally {
-        if (!alive) return;
-        setWalletLoading(false);
+        if (alive) setEmployeeReady(true);
       }
-    }
+    })();
 
-    loadWallet();
     return () => {
       alive = false;
+      window.removeEventListener("storage", onStorage);
+      sub.subscription.unsubscribe();
     };
+  }, []);
+
+  // 🔒 evita corridas: resposta antiga não pode sobrescrever estado novo
+  const loadIdRef = useRef(0);
+
+  const loadWallet = useCallback(async () => {
+    const loadId = ++loadIdRef.current;
+
+    // ✅ não derrube números imediatamente; só entra em loading
+    setWalletLoading(true);
+    setWalletError(null);
+
+    try {
+      const employeeCpf = (employee?.cpf ?? "").toString().trim();
+      const employeeIdFromSession =
+        employee?.user_id || employee?.id || employee?.employee_id || null;
+
+      // Se ainda não tem cpf, não “zera”; apenas sinaliza e espera
+      if (!employeeCpf) {
+        if (loadId !== loadIdRef.current) return;
+        setResolvedEmployeeId(null);
+        setWalletError("Carregando seu perfil… (se persistir, faça login novamente)");
+        return;
+      }
+
+      // 1) limite mensal (VIEW segura)
+      const { data: walletRow, error: walletErr } = await supabase
+        .from("employee_wallet_view")
+        .select("employee_id, credito_mensal_cents")
+        .eq("cpf", employeeCpf)
+        .maybeSingle();
+
+      if (walletErr) throw walletErr;
+
+      const limit = Number(walletRow?.credito_mensal_cents ?? 0) || 0;
+
+      const resolvedId = (walletRow?.employee_id || employeeIdFromSession) as string | undefined;
+
+      if (!resolvedId) {
+        if (loadId !== loadIdRef.current) return;
+        // ✅ atualiza limite se veio, mas não inventa spent=0 como verdade final
+        setMonthlyLimitCents(limit);
+        setResolvedEmployeeId(null);
+        setWalletError("Não foi possível identificar seu cadastro. Faça login novamente.");
+        return;
+      }
+
+      // 2) gasto do mês
+      const { data: spendRow, error: spendErr } = await supabase
+        .from("employee_monthly_spend")
+        .select("spent_cents")
+        .eq("employee_id", resolvedId)
+        .eq("month_key", monthKey)
+        .maybeSingle();
+
+      if (spendErr) throw spendErr;
+
+      const spent = Number(spendRow?.spent_cents ?? 0) || 0;
+
+      if (loadId !== loadIdRef.current) return;
+
+      setMonthlyLimitCents(limit);
+      setSpentCents(spent);
+      setResolvedEmployeeId(resolvedId);
+      setWalletError(null);
+    } catch (e: any) {
+      if (loadId !== loadIdRef.current) return;
+      console.error("Erro ao carregar saldo mensal:", e);
+
+      // ✅ NÃO zera aqui (isso é o que estava “matando” o saldo por falha transitória)
+      setResolvedEmployeeId(null);
+      setWalletError(e?.message || "Não foi possível carregar seu saldo agora.");
+    } finally {
+      if (loadId === loadIdRef.current) setWalletLoading(false);
+    }
   }, [employee, monthKey]);
+
+  // carrega quando employee mudar (agora ele é reativo)
+  useEffect(() => {
+    // evita spam no primeiro paint se ainda não está pronto
+    if (!employeeReady) return;
+    loadWallet();
+  }, [employeeReady, loadWallet]);
+
+  // bônus: quando a aba volta pro foco, recarrega saldo (resolve “às vezes” por rede)
+  useEffect(() => {
+    const onFocus = () => {
+      if (!isSubmitting) loadWallet();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [isSubmitting, loadWallet]);
 
   const handleConfirm = async () => {
     if (cartItems.length === 0) {
@@ -257,7 +326,6 @@ const Checkout: React.FC = () => {
       return;
     }
 
-    // ✅ usa employee_id resolvido (view > session)
     const employeeId =
       resolvedEmployeeId || employee?.user_id || employee?.id || employee?.employee_id || null;
 
@@ -269,7 +337,6 @@ const Checkout: React.FC = () => {
       return;
     }
 
-    // ✅ trava se tentar wallet sem saldo suficiente (proteção extra)
     if (payMode === "wallet" && !canPayWithWallet) {
       toast.error("Saldo insuficiente para pagar com saldo", {
         description: "Este pedido deve ser pago na retirada.",
@@ -281,7 +348,6 @@ const Checkout: React.FC = () => {
     setIsSubmitting(true);
 
     try {
-      // 1) cria pedido + itens
       const { orderId, orderNumber } = await createOrder({
         employeeId,
         employeeCpf,
@@ -294,8 +360,6 @@ const Checkout: React.FC = () => {
 
       if (!orderId) throw new Error("Falha ao criar pedido (orderId vazio).");
 
-      // ✅ 2) aplica pagamento via RPC:
-      // - wallet só quando pode pagar 100%
       const useWallet = payMode === "wallet" && canPayWithWallet;
 
       const { data, error } = await supabase.rpc("place_order_with_wallet_v2", {
@@ -309,30 +373,23 @@ const Checkout: React.FC = () => {
         throw error;
       }
 
-      // ✅ ATUALIZA SALDO PELO RETORNO DA RPC (new_spent_cents)
       const row: any = Array.isArray(data) ? data[0] : data;
 
       if (row && row.new_spent_cents !== undefined && row.new_spent_cents !== null) {
         const newSpent = Number(row.new_spent_cents) || 0;
         setSpentCents(newSpent);
       } else {
-        // fallback local (wallet sempre 100% do total)
         if (useWallet && totalCents > 0) {
           setSpentCents((prev) => (Number.isFinite(prev) ? prev : 0) + totalCents);
         }
       }
 
-      // ✅ MÉTODO: apenas wallet OU pickup (sem split)
       const paymentMethod = useWallet ? "wallet" : "pickup";
-
-      // ✅ CAMPOS QUE O RUNNER LÊ (IMPORTANTÍSSIMO)
       const walletDebited = useWallet;
 
-      // ✅ valores finais (sem híbrido)
       const spentFromBalance = useWallet ? totalCents : 0;
       const payOnPickup = useWallet ? 0 : totalCents;
 
-      // ✅ SALVA NO PEDIDO
       const { data: updated, error: upErr } = await supabase
         .from("orders")
         .update({
@@ -401,7 +458,6 @@ const Checkout: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4 py-8">
-      {/* ✅ CSS Uiverse (checkbox 31 + botão confirmar NOVO) */}
       <style>{`
         /* Uiverse checkbox 31 (scoped via className) */
         .checkbox-wrapper-31:hover .check { stroke-dashoffset: 0; }
@@ -457,7 +513,7 @@ const Checkout: React.FC = () => {
 
         .checkbox-wrapper-31 input[type=checkbox]:hover { cursor: pointer; }
 
-        /* cor do "checked" (ajustei pra combinar com o tema) */
+        /* cor do "checked" */
         .checkbox-wrapper-31 input[type=checkbox]:checked + svg .background { fill: #111827; }
         .checkbox-wrapper-31 input[type=checkbox]:checked + svg .stroke { stroke-dashoffset: 0; }
         .checkbox-wrapper-31 input[type=checkbox]:checked + svg .check { stroke-dashoffset: 0; }
@@ -495,7 +551,6 @@ const Checkout: React.FC = () => {
       `}</style>
 
       <div className="w-full max-w-3xl bg-white rounded-2xl shadow-sm border p-6 md:p-8">
-        {/* LOGO CENTRALIZADA */}
         <div className="flex justify-center mb-6">
           <img src={logo} alt="Logo" className="h-20 w-auto select-none" />
         </div>
@@ -506,7 +561,6 @@ const Checkout: React.FC = () => {
           separação interna.
         </p>
 
-        {/* BLOCO SALDO + PAGAMENTO */}
         <div className="mb-6 rounded-2xl border bg-gray-50 p-4 md:p-5">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
             <div>
@@ -539,11 +593,13 @@ const Checkout: React.FC = () => {
             </div>
           </div>
 
-          {/* ✅ Troca dos "radios" pelos checkboxes do Uiverse */}
           <div className="mt-4 grid gap-2" role="radiogroup" aria-label="Forma de pagamento">
             <CheckRadio31
               checked={payMode === "wallet"}
-              onChange={() => setPayMode("wallet")}
+              onChange={() => {
+                setUserTouchedPayMode(true);
+                setPayMode("wallet");
+              }}
               disabled={walletLoading || !canPayWithWallet}
               label="Usar saldo do mês"
               subLabel="Disponível precisa cobrir 100% do total do pedido."
@@ -557,14 +613,16 @@ const Checkout: React.FC = () => {
 
             <CheckRadio31
               checked={payMode === "pickup"}
-              onChange={() => setPayMode("pickup")}
+              onChange={() => {
+                setUserTouchedPayMode(true);
+                setPayMode("pickup");
+              }}
               disabled={walletLoading}
               label="Pagar tudo na retirada"
               subLabel="Não utiliza seu saldo mensal."
             />
           </div>
 
-          {/* PREVIEW (sem split) */}
           <div className="mt-4 rounded-xl bg-white border p-3">
             <div className="flex justify-between text-sm">
               <span className="text-gray-600">Total do pedido</span>
@@ -590,7 +648,6 @@ const Checkout: React.FC = () => {
           </div>
         </div>
 
-        {/* ITENS */}
         <div className="space-y-4 mb-6">
           {cartItems.map((item) => (
             <div key={item.product.id} className="flex justify-between items-center border-b pb-3">
@@ -635,7 +692,6 @@ const Checkout: React.FC = () => {
             Voltar para o catálogo
           </Button>
 
-          {/* ✅ Botão confirmar (Uiverse arieshiphop) */}
           <button
             type="button"
             className="uiverse-aries flex-1"

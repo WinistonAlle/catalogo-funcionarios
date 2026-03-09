@@ -26,7 +26,7 @@ let lastRunAt: number | null = null;
  * GOOGLE SHEETS SYNC
  * =====================
  */
-const SHEET_SYNC_INTERVAL_MS = 60 * 1000; // 1 hora
+const SHEET_SYNC_INTERVAL_MS = 60 * 60 * 1000; // ✅ 1 hora
 const SHEET_SCRIPT_PATH =
   "C:\\Users\\JULIO\\Desktop\\catalogo-funcionario\\catalogo-funcionarios\\scripts\\syncEmployeesFromSheet.mjs";
 
@@ -65,7 +65,7 @@ function buildChildEnv(orderId?: string | null): NodeJS.ProcessEnv {
     SAIBWEB_SLOWMO: String(process.env.SAIBWEB_SLOWMO ?? DEFAULT_SLOWMO),
     ...(process.env.SAIBWEB_KEEP_OPEN === "1" ? { SAIBWEB_KEEP_OPEN: "1" } : {}),
     ...(process.env.SAIBWEB_PAUSE === "1" ? { SAIBWEB_PAUSE: "1" } : {}),
-    ...(orderId ? { ORDER_ID: String(orderId) } : {}),
+    ...(orderId ? { ORDER_ID: String(orderId) } : {}), // ✅ agora o runner usa isso
   };
 }
 
@@ -130,13 +130,11 @@ async function processQueue() {
       console.log("➡️ Processando:", next, "| restante:", queue.length);
 
       const result = await runOne(next);
+
       queuedOrRunning.delete(next);
 
-      if (result.ok) {
-        console.log("✅ Finalizado com sucesso.");
-      } else {
-        console.log("⚠️ Finalizado com erro.");
-      }
+      if (result.ok) console.log("✅ Finalizado com sucesso.");
+      else console.log("⚠️ Finalizado com erro.");
     }
   } finally {
     isRunning = false;
@@ -227,6 +225,6 @@ app.listen(PORT, () => {
 
 // ⏱️ inicia o job após subir o servidor
 setTimeout(() => {
-  runSheetSync(); // primeira execução
+  runSheetSync();
   setInterval(runSheetSync, SHEET_SYNC_INTERVAL_MS);
 }, 5_000);

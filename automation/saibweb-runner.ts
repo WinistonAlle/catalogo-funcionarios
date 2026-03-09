@@ -26,6 +26,9 @@ const TYPE_DELAY = Number(process.env.SAIBWEB_TYPE_DELAY ?? 0);
 // Se quiser pausar em teste, use SAIBWEB_PAUSE=1 (opcional)
 const SHOULD_PAUSE = process.env.SAIBWEB_PAUSE === "1" || KEEP_OPEN;
 
+// ✅ (NOVO) se o webhook passar ORDER_ID, o runner tenta processar exatamente ele
+const TARGET_ORDER_ID = process.env.ORDER_ID ? String(process.env.ORDER_ID) : null;
+
 // =====================
 // ENV - SUPABASE
 // =====================
@@ -113,11 +116,9 @@ function toFiniteNumberOrNull(v: any): number | null {
 }
 
 /**
- * ✅ REGRA NOVA (o que você pediu):
+ * ✅ REGRA:
  * - fator = (weight > 1 ? weight : 1)
  * - qty_saibweb = qty_pedido * fator
- *
- * Ex: pão de queijo 5kg x2 => 2 * 5 = 10
  */
 function computeSaibwebQtyFromWeightAndQty(weight: number | null, orderQty: number): number {
   const w = weight ?? 0;
@@ -131,24 +132,21 @@ function computeSaibwebQtyFromWeightAndQty(weight: number | null, orderQty: numb
 }
 
 function formatQtyForInput(q: number): string {
-  // Mantém ponto como separador decimal (ex: 1.5) e evita 2.000000
   if (!Number.isFinite(q)) return "0";
   return q.toFixed(3).replace(/\.?0+$/, "");
 }
 
 // =====================
-// OBS NF (pelo seu schema real)
+// OBS NF
 // =====================
 function buildObsFromOrder(order: DbOrder): string {
   const spent = order.spent_from_balance_cents ?? 0;
   const pickup = order.pay_on_pickup_cents ?? 0;
 
-  // ✅ Pago com saldo
   if (order.wallet_debited === true && spent > 0) {
     return "PAGO COM SALDO, APTO PARA RETIRAR";
   }
 
-  // 💰 Pagar na retirada
   if (pickup > 0) {
     return `PAGAR NA RETIRADA ${centsToBRL(pickup)}`;
   }
@@ -158,36 +156,74 @@ function buildObsFromOrder(order: DbOrder): string {
 
 // =====================
 // SUPABASE: pegar 1 pedido pendente + lock + itens
+// (NOVO) se vier orderId, tenta pegar exatamente ele
 // =====================
-async function pickNextOrderToProcess(): Promise<{ order: DbOrder; items: DbItem[] } | null> {
-  const { data: orders, error } = await supabase
-    .from("orders")
-    .select(
-      `
-        id,
-        order_number,
-        created_at,
-        employee_cpf,
-        employee_name,
-        wallet_debited,
-        spent_from_balance_cents,
-        pay_on_pickup_cents,
-        saibweb_status,
-        saibweb_error,
-        saibweb_synced_at,
-        saibweb_external_id,
-        cancelled_at
-      `
-    )
-    .eq("saibweb_status", "PENDING")
-    .is("cancelled_at", null)
-    .order("created_at", { ascending: true })
-    .limit(1);
+async function pickNextOrderToProcess(
+  orderId?: string | null
+): Promise<{ order: DbOrder; items: DbItem[] } | null> {
+  // 1) Busca o pedido alvo (se veio)
+  let order: DbOrder | null = null;
 
-  if (error) throw error;
-  if (!orders || orders.length === 0) return null;
+  if (orderId) {
+    const { data: one, error } = await supabase
+      .from("orders")
+      .select(
+        `
+          id,
+          order_number,
+          created_at,
+          employee_cpf,
+          employee_name,
+          wallet_debited,
+          spent_from_balance_cents,
+          pay_on_pickup_cents,
+          saibweb_status,
+          saibweb_error,
+          saibweb_synced_at,
+          saibweb_external_id,
+          cancelled_at
+        `
+      )
+      .eq("id", orderId)
+      .eq("saibweb_status", "PENDING")
+      .is("cancelled_at", null)
+      .limit(1);
 
-  const order = orders[0] as DbOrder;
+    if (error) throw error;
+    if (one && one.length > 0) order = one[0] as DbOrder;
+  }
+
+  // 2) Se não veio/alvo não está pending, pega o mais antigo pending
+  if (!order) {
+    const { data: orders, error } = await supabase
+      .from("orders")
+      .select(
+        `
+          id,
+          order_number,
+          created_at,
+          employee_cpf,
+          employee_name,
+          wallet_debited,
+          spent_from_balance_cents,
+          pay_on_pickup_cents,
+          saibweb_status,
+          saibweb_error,
+          saibweb_synced_at,
+          saibweb_external_id,
+          cancelled_at
+        `
+      )
+      .eq("saibweb_status", "PENDING")
+      .is("cancelled_at", null)
+      .order("created_at", { ascending: true })
+      .limit(1);
+
+    if (error) throw error;
+    if (!orders || orders.length === 0) return null;
+
+    order = orders[0] as DbOrder;
+  }
 
   // lock: PENDING -> PROCESSING
   const { data: locked, error: lockErr } = await supabase
@@ -224,12 +260,8 @@ async function pickNextOrderToProcess(): Promise<{ order: DbOrder; items: DbItem
     return { order, items: [] };
   }
 
-  // =====================
   // ✅ Buscar weight na tabela products (assumindo products.old_id = order_items.product_old_id)
-  // =====================
   const uniqueCodes = Array.from(new Set(baseItems.map((i) => i.product_code)));
-
-  // Se o old_id for numérico no banco, converte pra number pra bater melhor.
   const uniqueOldIdsAsNumber = uniqueCodes.map((c) => Number(c)).filter((n) => Number.isFinite(n));
 
   const weightByOldId = new Map<string, number | null>();
@@ -250,7 +282,6 @@ async function pickNextOrderToProcess(): Promise<{ order: DbOrder; items: DbItem
       }
     }
   } else {
-    // fallback: tenta como string (caso old_id seja text no banco)
     const { data: products, error: prodErr } = await supabase
       .from("products")
       .select("old_id, weight")
@@ -269,8 +300,6 @@ async function pickNextOrderToProcess(): Promise<{ order: DbOrder; items: DbItem
 
   const items: DbItem[] = baseItems.map((it) => {
     const weight = weightByOldId.get(it.product_code) ?? null;
-
-    // ✅ AQUI É A MUDANÇA: qty SAIBWEB = qty pedido * (peso se >1 senão 1)
     const saibweb_qty = computeSaibwebQtyFromWeightAndQty(weight, it.qty);
 
     return {
@@ -361,24 +390,15 @@ async function fillByXPathAndEnter(page: Page, clickXpath: string, value: string
   await page.keyboard.press("Enter").catch(() => {});
   await page.waitForTimeout(140);
 
-  // autocompletes salvam no blur
   await page.keyboard.press("Tab").catch(() => {});
   await page.waitForTimeout(90);
 }
 
-// ✅ NOVO: Operação sem seta.
-// Clica, espera 0.5s e confirma com Enter.
 async function selectOperationByEnterOnly(page: Page, clickXpath: string) {
   await clickByXPathPreferButton(page, clickXpath, { timeout: 15000 });
-
-  // espera meio segundo pro dropdown estabilizar
   await page.waitForTimeout(500);
-
-  // confirma (sem ArrowDown)
   await page.keyboard.press("Enter").catch(() => {});
   await page.waitForTimeout(150);
-
-  // blur/tab pra salvar
   await page.keyboard.press("Tab").catch(() => {});
   await page.waitForTimeout(100);
 }
@@ -402,7 +422,7 @@ async function loginSaibweb(page: Page) {
 }
 
 // =====================
-// Fluxo SAIBWEB (XPaths fornecidos por você)
+// Fluxo SAIBWEB
 // =====================
 async function clickHamburgerMenu(page: Page) {
   console.log("🍔 Menu hamburger");
@@ -425,7 +445,6 @@ async function clickSFA(page: Page) {
   console.log("✅ SFA clicado");
 }
 
-// ✅ NOVO (SAIBWEB mudou): depois de SFA, precisa clicar em Movimentações
 async function clickMovimentacoes(page: Page) {
   console.log("📦 Movimentações");
   await clickByXPath(
@@ -436,7 +455,6 @@ async function clickMovimentacoes(page: Page) {
   console.log("✅ Movimentações clicado");
 }
 
-// ✅ Atualizado: agora vem depois de Movimentações
 async function clickSFAPedidoFaturamento(page: Page) {
   console.log("🧾 SFA - Pedido de Faturamento");
   await clickByXPath(
@@ -492,8 +510,6 @@ async function preencherNovoCadastro(page: Page, cpf: string, obs: string) {
     '//*[@id="scrollable-force-tabpanel-1"]/div/div/div[2]/form/div[2]/div[1]/div/div[2]/div/div/div[1]/div[2]';
 
   await fillByXPathAndEnter(page, clienteXPath, cpf);
-
-  // ✅ Agora: sem seta. Clica, espera meio segundo e Enter.
   await selectOperationByEnterOnly(page, operacaoXPath);
 
   const obsEl = page.locator("#obs_nota").first();
@@ -519,17 +535,13 @@ async function abrirItensDoPedido(page: Page) {
   console.log("✅ Aba Itens do Pedido aberta");
 }
 
-// ✅ NOVO: Selecionar tabela de preço antes de adicionar itens
 async function selecionarTabelaPrecoAntesDosItens(page: Page) {
   console.log("💲 Selecionando TABELA DE PREÇO: 18");
 
   const tabelaPrecoXPath =
     '//*[@id="scrollable-force-tabpanel-2"]/div/div/div[2]/span/form/div/div[1]/div/div[2]/div/div/div[1]/div[2]';
 
-  // clica no campo, digita 18 e Enter (com blur/tab pra salvar)
   await fillByXPathAndEnter(page, tabelaPrecoXPath, "18");
-
-  // um respiro extra pra garantir que aplicou a tabela
   await page.waitForTimeout(250);
 
   console.log("✅ Tabela de preço definida: 18");
@@ -573,18 +585,14 @@ async function confirmarPedido(page: Page) {
 }
 
 // =====================
-// MAIN
+// PROCESSA 1 PEDIDO (extraído do antigo main)
 // =====================
-async function main() {
-  console.log("🚀 SAIBWEB runner — Supabase -> SAIBWEB (1 pedido por execução)");
-  console.log(`⚙️ headless=${HEADLESS} slowMo=${SLOW_MO} keepOpen=${KEEP_OPEN}`);
+async function processOne(orderIdHint?: string | null) {
+  const job = await pickNextOrderToProcess(orderIdHint);
 
-  ensureDir(path.resolve("automation_screenshots"));
-
-  const job = await pickNextOrderToProcess();
   if (!job) {
-    console.log("📭 Nenhum pedido com saibweb_status = PENDING. Encerrando.");
-    return;
+    console.log("📭 Nenhum pedido com saibweb_status = PENDING. Encerrando este ciclo.");
+    return { processed: false };
   }
 
   const { order, items } = job;
@@ -594,19 +602,18 @@ async function main() {
   console.log("👤 CPF:", order.employee_cpf);
   console.log("🧩 Itens:", items.length);
 
-  // validações essenciais
   if (!order.employee_cpf) {
     const msg = "Pedido sem employee_cpf (NULL).";
     console.log("❌", msg);
     await markOrderError(orderId, msg);
-    return;
+    return { processed: true };
   }
 
   if (!items.length) {
     const msg = "Pedido sem itens válidos em order_items (product_old_id/quantity).";
     console.log("❌", msg);
     await markOrderError(orderId, msg);
-    return;
+    return { processed: true };
   }
 
   const obs = buildObsFromOrder(order);
@@ -617,10 +624,9 @@ async function main() {
       "Pagamento não identificado: verifique wallet_debited/spent_from_balance_cents/pay_on_pickup_cents.";
     console.log("❌", msg);
     await markOrderError(orderId, msg);
-    return;
+    return { processed: true };
   }
 
-  // Log extra pra conferir regra do peso (agora multiplicando)
   for (const it of items) {
     const fator = (it.weight ?? 0) > 1 ? it.weight : 1;
     console.log(
@@ -636,22 +642,14 @@ async function main() {
     await loginSaibweb(page);
     await clickHamburgerMenu(page);
     await clickSFA(page);
-
-    // ✅ NOVO caminho do menu (SAIBWEB mudou)
     await clickMovimentacoes(page);
     await clickSFAPedidoFaturamento(page);
-
     await clickNovoCadastro(page);
-
     await preencherNovoCadastro(page, order.employee_cpf, obs);
-
     await abrirItensDoPedido(page);
-
-    // ✅ AQUI entra sua nova regra: antes de adicionar itens, define a tabela de preço 18
     await selecionarTabelaPrecoAntesDosItens(page);
 
     for (const it of items) {
-      // ✅ Aqui aplica a regra nova: qtyPedido * (peso se > 1 senão 1)
       await adicionarItemDoPedido(page, it.product_code, it.saibweb_qty);
     }
 
@@ -661,7 +659,6 @@ async function main() {
 
     console.log("🏁 SUCESSO! Pedido sincronizado:", order.order_number ?? orderId);
 
-    // ✅ Só pausa em teste
     await waitForEnter("👉 Aperte ENTER para encerrar...");
   } catch (err: any) {
     const msg = err?.message ?? String(err);
@@ -670,17 +667,44 @@ async function main() {
     await safeShot(page, `err-order-${orderId}`);
     await markOrderError(orderId, msg);
 
-    // ✅ Só pausa em teste
     await waitForEnter("👉 Aperte ENTER para encerrar...");
   } finally {
     if (KEEP_OPEN) {
       console.log("🟣 SAIBWEB_KEEP_OPEN=1 -> mantendo navegador aberto.");
       await waitForEnter("👉 Aperte ENTER para fechar o navegador...");
     }
-
-    // ✅ Em produção (KEEP_OPEN=0), fecha direto.
     await browser.close();
   }
+
+  return { processed: true };
+}
+
+// =====================
+// MAIN (AGORA: drena)
+// =====================
+async function main() {
+  console.log("🚀 SAIBWEB runner — Supabase -> SAIBWEB (drain)");
+  console.log(`⚙️ headless=${HEADLESS} slowMo=${SLOW_MO} keepOpen=${KEEP_OPEN}`);
+  console.log(`🎯 ORDER_ID=${TARGET_ORDER_ID ?? "(none)"} (se vier, tenta processar esse primeiro)`);
+
+  ensureDir(path.resolve("automation_screenshots"));
+
+  // ✅ 1) Tenta processar o ORDER_ID primeiro (se veio)
+  let first = true;
+
+  while (true) {
+    const hint = first ? TARGET_ORDER_ID : null;
+    first = false;
+
+    const { processed } = await processOne(hint);
+
+    if (!processed) break;
+
+    // Pequeno respiro pra não martelar
+    await sleep(250);
+  }
+
+  console.log("🏁 Drain finalizado: sem pendências PENDING.");
 }
 
 main();
