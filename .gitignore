@@ -12,6 +12,7 @@ build
 .env
 .env.*
 !.env.example
+google-service-account.json
 
 # logs
 npm-debug.log*

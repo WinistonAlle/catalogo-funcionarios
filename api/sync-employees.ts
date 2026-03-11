@@ -37,7 +37,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const { data: emp, error: empErr } = await supabaseAdmin
       .from("employees")
-      .select("role, is_admin, user_id")
+      .select("role, user_id")
       .eq("user_id", userData.user.id)
       .maybeSingle();
 
@@ -45,7 +45,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!emp) return res.status(403).json({ ok: false, error: "Employee not found / not linked" });
 
     const role = String((emp as any).role || "").toLowerCase();
-    const isAdmin = Boolean((emp as any).is_admin);
+    const isAdmin = role === "admin";
     const isRh = role === "rh";
 
     if (!isAdmin && !isRh) {

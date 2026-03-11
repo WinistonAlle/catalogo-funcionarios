@@ -4,6 +4,11 @@ dotenv.config();
 import express from "express";
 import { spawn } from "child_process";
 import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.resolve(__dirname, "..");
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -26,9 +31,9 @@ let lastRunAt: number | null = null;
  * GOOGLE SHEETS SYNC
  * =====================
  */
-const SHEET_SYNC_INTERVAL_MS = 60 * 60 * 1000; // ✅ 1 hora
+const SHEET_SYNC_INTERVAL_MS = 60 * 60 * 1000; // 1 hora
 const SHEET_SCRIPT_PATH =
-  "C:\\Users\\JULIO\\Desktop\\catalogo-funcionario\\catalogo-funcionarios\\scripts\\syncEmployeesFromSheet.mjs";
+  process.env.SHEET_SYNC_SCRIPT_PATH || path.resolve(PROJECT_ROOT, "scripts", "syncEmployeesFromSheet.mjs");
 
 let sheetSyncRunning = false;
 let lastSheetSyncAt: number | null = null;
@@ -47,15 +52,15 @@ function buildCommand() {
   if (process.platform === "win32") {
     return {
       command: "cmd.exe",
-      args: ["/c", "npx", "tsx", "automation/saibweb-runner.ts"],
-      printable: "cmd.exe /c npx tsx automation/saibweb-runner.ts",
+      args: ["/c", "npx", "tsx", path.resolve(PROJECT_ROOT, "automation", "saibweb-runner.ts")],
+      printable: `cmd.exe /c npx tsx ${path.resolve(PROJECT_ROOT, "automation", "saibweb-runner.ts")}`,
     };
   }
 
   return {
     command: "npx",
-    args: ["tsx", "automation/saibweb-runner.ts"],
-    printable: "npx tsx automation/saibweb-runner.ts",
+    args: ["tsx", path.resolve(PROJECT_ROOT, "automation", "saibweb-runner.ts")],
+    printable: `npx tsx ${path.resolve(PROJECT_ROOT, "automation", "saibweb-runner.ts")}`,
   };
 }
 
@@ -102,7 +107,7 @@ function runOne(orderId: string) {
 
     const child = spawn(command, args, {
       env: childEnv,
-      cwd: process.cwd(),
+      cwd: PROJECT_ROOT,
       stdio: "inherit",
       shell: false,
     });
@@ -159,8 +164,8 @@ function runSheetSync() {
   console.log("📊 Iniciando sync Google Sheets");
   console.log("▶️ node", SHEET_SCRIPT_PATH);
 
-  const child = spawn("node", [SHEET_SCRIPT_PATH], {
-    cwd: path.dirname(SHEET_SCRIPT_PATH),
+  const child = spawn(process.execPath, [SHEET_SCRIPT_PATH], {
+    cwd: PROJECT_ROOT,
     stdio: "inherit",
     shell: false,
   });

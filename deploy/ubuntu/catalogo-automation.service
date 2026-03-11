@@ -1,0 +1,21 @@
+[Unit]
+Description=Catalogo GM Automation Webhook
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/catalogo/current
+EnvironmentFile=/var/www/catalogo/shared/.env
+Environment=NODE_ENV=production
+Environment=SAIBWEB_WEBHOOK_PORT=3333
+ExecStart=/usr/bin/npm run automation:webhook
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
