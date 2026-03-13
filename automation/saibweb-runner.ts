@@ -190,11 +190,16 @@ async function pickNextOrderToProcess(
       .limit(1);
 
     if (error) throw error;
-    if (one && one.length > 0) order = one[0] as DbOrder;
+    if (!one || one.length === 0) {
+      console.log(`⏭️ ORDER_ID=${orderId} não está mais PENDING ou não existe.`);
+      return null;
+    }
+
+    order = one[0] as DbOrder;
   }
 
   // 2) Se não veio/alvo não está pending, pega o mais antigo pending
-  if (!order) {
+  if (!orderId && !order) {
     const { data: orders, error } = await supabase
       .from("orders")
       .select(
@@ -689,14 +694,18 @@ async function main() {
 
   ensureDir(path.resolve("automation_screenshots"));
 
-  // ✅ 1) Tenta processar o ORDER_ID primeiro (se veio)
-  let first = true;
+  if (TARGET_ORDER_ID) {
+    const { processed } = await processOne(TARGET_ORDER_ID);
+    console.log(
+      processed
+        ? `🏁 Execução pontual finalizada para ORDER_ID=${TARGET_ORDER_ID}.`
+        : `🏁 Nenhuma ação necessária para ORDER_ID=${TARGET_ORDER_ID}.`
+    );
+    return;
+  }
 
   while (true) {
-    const hint = first ? TARGET_ORDER_ID : null;
-    first = false;
-
-    const { processed } = await processOne(hint);
+    const { processed } = await processOne(null);
 
     if (!processed) break;
 
