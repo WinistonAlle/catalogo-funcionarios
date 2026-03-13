@@ -1,11 +1,11 @@
 // automation/saibweb-runner.ts
-import dotenv from "dotenv";
+import * as dotenv from "dotenv";
 dotenv.config();
 
 import { chromium, Page } from "playwright";
-import readline from "readline";
-import fs from "fs";
-import path from "path";
+import * as readline from "node:readline";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { createClient } from "@supabase/supabase-js";
 
 // =====================
@@ -76,6 +76,16 @@ type DbItem = {
   saibweb_qty: number; // ✅ quantidade que será enviada pro SAIBWEB (qty * peso quando peso>1)
 };
 
+type OrderItemRow = {
+  product_old_id: string | number | null;
+  quantity: number | string | null;
+};
+
+type ProductRow = {
+  old_id: string | number | null;
+  weight: number | string | null;
+};
+
 // =====================
 // Utils
 // =====================
@@ -90,7 +100,9 @@ async function safeShot(page: Page, name: string) {
     const shot = path.resolve("automation_screenshots", `${name}-${Date.now()}.png`);
     await page.screenshot({ path: shot, fullPage: true });
     console.log("📸 Screenshot:", shot);
-  } catch {}
+  } catch {
+    return;
+  }
 }
 
 // ✅ Só pausa se SHOULD_PAUSE=true (em servidor fica false e não trava)
@@ -110,9 +122,14 @@ function centsToBRL(cents: number) {
   return (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
-function toFiniteNumberOrNull(v: any): number | null {
+function toFiniteNumberOrNull(v: unknown): number | null {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message;
+  return String(err ?? "Erro desconhecido");
 }
 
 /**
@@ -162,8 +179,6 @@ async function pickNextOrderToProcess(
   orderId?: string | null
 ): Promise<{ order: DbOrder; items: DbItem[] } | null> {
   // 1) Busca o pedido alvo (se veio)
-  let order: DbOrder | null = null;
-
   if (orderId) {
     const { data: one, error } = await supabase
       .from("orders")
@@ -194,43 +209,43 @@ async function pickNextOrderToProcess(
       console.log(`⏭️ ORDER_ID=${orderId} não está mais PENDING ou não existe.`);
       return null;
     }
-
-    order = one[0] as DbOrder;
+    const order = one[0] as DbOrder;
+    return await lockAndLoadOrder(order);
   }
 
   // 2) Se não veio/alvo não está pending, pega o mais antigo pending
-  if (!orderId && !order) {
-    const { data: orders, error } = await supabase
-      .from("orders")
-      .select(
-        `
-          id,
-          order_number,
-          created_at,
-          employee_cpf,
-          employee_name,
-          wallet_debited,
-          spent_from_balance_cents,
-          pay_on_pickup_cents,
-          saibweb_status,
-          saibweb_error,
-          saibweb_synced_at,
-          saibweb_external_id,
-          cancelled_at
-        `
-      )
-      .eq("saibweb_status", "PENDING")
-      .is("cancelled_at", null)
-      .order("created_at", { ascending: true })
-      .limit(1);
+  const { data: orders, error } = await supabase
+    .from("orders")
+    .select(
+      `
+        id,
+        order_number,
+        created_at,
+        employee_cpf,
+        employee_name,
+        wallet_debited,
+        spent_from_balance_cents,
+        pay_on_pickup_cents,
+        saibweb_status,
+        saibweb_error,
+        saibweb_synced_at,
+        saibweb_external_id,
+        cancelled_at
+      `
+    )
+    .eq("saibweb_status", "PENDING")
+    .is("cancelled_at", null)
+    .order("created_at", { ascending: true })
+    .limit(1);
 
-    if (error) throw error;
-    if (!orders || orders.length === 0) return null;
+  if (error) throw error;
+  if (!orders || orders.length === 0) return null;
 
-    order = orders[0] as DbOrder;
-  }
+  const order = orders[0] as DbOrder;
+  return await lockAndLoadOrder(order);
+}
 
-  // lock: PENDING -> PROCESSING
+async function lockAndLoadOrder(order: DbOrder): Promise<{ order: DbOrder; items: DbItem[] } | null> {
   const { data: locked, error: lockErr } = await supabase
     .from("orders")
     .update({ saibweb_status: "PROCESSING", saibweb_error: null })
@@ -241,7 +256,6 @@ async function pickNextOrderToProcess(
   if (lockErr) throw lockErr;
   if (!locked || locked.length === 0) return null;
 
-  // ✅ ITENS
   const { data: rawItems, error: itemsErr } = await supabase
     .from("order_items")
     .select("product_old_id, quantity")
@@ -249,8 +263,8 @@ async function pickNextOrderToProcess(
 
   if (itemsErr) throw itemsErr;
 
-  const baseItems = (rawItems ?? [])
-    .map((it: any) => {
+  const baseItems = ((rawItems ?? []) as OrderItemRow[])
+    .map((it) => {
       const code = it.product_old_id;
       const qty = Number(it.quantity);
 
@@ -279,9 +293,9 @@ async function pickNextOrderToProcess(
 
     if (prodErr) throw prodErr;
 
-    for (const p of products ?? []) {
-      const oldId = (p as any)?.old_id;
-      const w = toFiniteNumberOrNull((p as any)?.weight);
+    for (const p of (products ?? []) as ProductRow[]) {
+      const oldId = p.old_id;
+      const w = toFiniteNumberOrNull(p.weight);
       if (oldId !== null && oldId !== undefined) {
         weightByOldId.set(String(oldId), w);
       }
@@ -290,13 +304,13 @@ async function pickNextOrderToProcess(
     const { data: products, error: prodErr } = await supabase
       .from("products")
       .select("old_id, weight")
-      .in("old_id", uniqueCodes as any);
+      .in("old_id", uniqueCodes);
 
     if (prodErr) throw prodErr;
 
-    for (const p of products ?? []) {
-      const oldId = (p as any)?.old_id;
-      const w = toFiniteNumberOrNull((p as any)?.weight);
+    for (const p of (products ?? []) as ProductRow[]) {
+      const oldId = p.old_id;
+      const w = toFiniteNumberOrNull(p.weight);
       if (oldId !== null && oldId !== undefined) {
         weightByOldId.set(String(oldId), w);
       }
@@ -485,21 +499,27 @@ async function clickNovoCadastro(page: Page) {
     await sleep(650);
     console.log("✅ Novo cadastro clicado (button)");
     return;
-  } catch {}
+  } catch {
+    // tenta o seletor alternativo
+  }
 
   try {
     await clickByXPathPreferButton(page, novoCadastroSvgXPath, { timeout: 15000 });
     await sleep(650);
     console.log("✅ Novo cadastro clicado (svg->button)");
     return;
-  } catch {}
+  } catch {
+    // tenta o clique forçado
+  }
 
   try {
     await clickByXPath(page, novoCadastroButtonXPath, { timeout: 8000, force: true });
     await sleep(650);
     console.log("✅ Novo cadastro clicado (force)");
     return;
-  } catch {}
+  } catch {
+    // cai no erro final com screenshot
+  }
 
   await safeShot(page, "novo-cadastro-falhou");
   throw new Error("Não consegui clicar no NOVO CADASTRO.");
@@ -665,8 +685,8 @@ async function processOne(orderIdHint?: string | null) {
     console.log("🏁 SUCESSO! Pedido sincronizado:", order.order_number ?? orderId);
 
     await waitForEnter("👉 Aperte ENTER para encerrar...");
-  } catch (err: any) {
-    const msg = err?.message ?? String(err);
+  } catch (err: unknown) {
+    const msg = getErrorMessage(err);
     console.error("❌ Erro:", msg);
 
     await safeShot(page, `err-order-${orderId}`);
