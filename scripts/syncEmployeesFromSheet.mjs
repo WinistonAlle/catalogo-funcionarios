@@ -23,15 +23,15 @@ function loadGoogleCredentials() {
     const creds = JSON.parse(raw);
     // garante que quebras de linha da private_key estejam ok
     if (creds.private_key) creds.private_key = creds.private_key.replace(/\\n/g, "\n");
-    return creds;
+    return { creds, source: "env" };
   }
 
-  // ✅ 2) Fallback: arquivo local (dev)
+  // ✅ 2) Fallback: arquivo local (servidor/dev)
   if (fs.existsSync(GOOGLE_KEY_FILE)) {
     const fileRaw = fs.readFileSync(GOOGLE_KEY_FILE, "utf8");
     const creds = JSON.parse(fileRaw);
     if (creds.private_key) creds.private_key = creds.private_key.replace(/\\n/g, "\n");
-    return creds;
+    return { creds, source: "file" };
   }
 
   console.error("❌ Missing Google credentials.");
@@ -40,7 +40,12 @@ function loadGoogleCredentials() {
   process.exit(1);
 }
 
-const googleCreds = loadGoogleCredentials();
+const { creds: googleCreds, source: googleCredsSource } = loadGoogleCredentials();
+
+console.log(
+  `🔐 Google credentials source: ${googleCredsSource === "env" ? "GOOGLE_SERVICE_ACCOUNT_JSON" : GOOGLE_KEY_FILE}`
+);
+console.log(`📧 Google service account: ${googleCreds?.client_email ?? "(missing client_email)"}`);
 
 // -------------------------
 // 2. Supabase client (service role)
@@ -79,7 +84,9 @@ function normalizeHeader(h) {
 }
 
 function normalizeCpf(cpf) {
-  return (cpf || "").toString().trim();
+  const digits = (cpf || "").toString().replace(/\D/g, "");
+  if (!digits) return "";
+  return digits.padStart(11, "0").slice(0, 11);
 }
 
 // Aceita "350", "350,00", "R$ 350,00", "1.234,56", etc.
@@ -112,6 +119,10 @@ function shouldSyncMonthlyCredit() {
     new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", day: "2-digit" }).format(now)
   );
   return daySP === 1;
+}
+
+function shouldDeleteMissingEmployees() {
+  return process.env.SYNC_DELETE_MISSING_FROM_SHEET === "1";
 }
 
 // -------------------------
@@ -175,7 +186,7 @@ async function readEmployeesFromSheet() {
         credito_mensal_cents,
       };
     })
-    .filter((e) => e.cpf && e.full_name);
+    .filter((e) => e.cpf.length === 11 && e.full_name);
 
   console.log(`✅ Funcionários lidos da planilha: ${employees.length}`);
   return employees;
@@ -193,7 +204,7 @@ async function syncEmployees() {
       return;
     }
 
-    const cpfsInSheet = sheetEmployees.map((e) => e.cpf);
+    const cpfsInSheet = Array.from(new Set(sheetEmployees.map((e) => e.cpf)));
 
     console.log("🔎 Buscando funcionários atuais no Supabase...");
     const { data: dbEmployees, error: dbError } = await supabase.from("employees").select("id, cpf");
@@ -248,8 +259,12 @@ async function syncEmployees() {
     }
 
     const cpfsToDelete = cpfsInDb.filter((cpf) => cpf && !cpfsInSheet.includes(cpf));
+    const allowDelete = shouldDeleteMissingEmployees();
 
-    if (cpfsToDelete.length > 0) {
+    console.log(`🧾 CPFs planilha (normalizados): ${cpfsInSheet.length}`);
+    console.log(`🗃️ CPFs banco (normalizados): ${cpfsInDb.length}`);
+
+    if (cpfsToDelete.length > 0 && allowDelete) {
       console.log("🗑️ Removendo do Supabase (não estão mais na planilha):", cpfsToDelete);
       const { error: deleteError } = await supabase.from("employees").delete().in("cpf", cpfsToDelete);
 
@@ -257,6 +272,11 @@ async function syncEmployees() {
         console.error("❌ Erro ao deletar employees:", deleteError);
         return;
       }
+    } else if (cpfsToDelete.length > 0) {
+      console.log(
+        "🟡 Exclusão automática desabilitada. Para remover CPFs ausentes da planilha, use SYNC_DELETE_MISSING_FROM_SHEET=1."
+      );
+      console.log("🟡 CPFs que seriam removidos:", cpfsToDelete);
     } else {
       console.log("👌 Nenhum funcionário para remover.");
     }
@@ -267,6 +287,7 @@ async function syncEmployees() {
     console.log(`   Crédito mensal sincronizado hoje? ${syncCredit ? "SIM (todos)" : "NÃO (só novos)"}`);
   } catch (err) {
     console.error("💥 Erro geral na sincronização:", err);
+    process.exit(1);
   }
 }
 
