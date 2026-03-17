@@ -132,6 +132,10 @@ function getErrorMessage(err: unknown): string {
   return String(err ?? "Erro desconhecido");
 }
 
+function orderTag(order: Pick<DbOrder, "id" | "order_number"> | { id: string; order_number?: string | null }) {
+  return `[order ${order.order_number ?? order.id}]`;
+}
+
 /**
  * ✅ REGRA:
  * - fator = (weight > 1 ? weight : 1)
@@ -246,6 +250,8 @@ async function pickNextOrderToProcess(
 }
 
 async function lockAndLoadOrder(order: DbOrder): Promise<{ order: DbOrder; items: DbItem[] } | null> {
+  console.log(`${orderTag(order)} 🔒 Tentando mover PENDING -> PROCESSING`);
+
   const { data: locked, error: lockErr } = await supabase
     .from("orders")
     .update({ saibweb_status: "PROCESSING", saibweb_error: null })
@@ -254,7 +260,10 @@ async function lockAndLoadOrder(order: DbOrder): Promise<{ order: DbOrder; items
     .select("id");
 
   if (lockErr) throw lockErr;
-  if (!locked || locked.length === 0) return null;
+  if (!locked || locked.length === 0) {
+    console.log(`${orderTag(order)} ⏭️ Lock não obtido; outro processo pegou este pedido.`);
+    return null;
+  }
 
   const { data: rawItems, error: itemsErr } = await supabase
     .from("order_items")
@@ -333,6 +342,7 @@ async function lockAndLoadOrder(order: DbOrder): Promise<{ order: DbOrder; items
 }
 
 async function markOrderSuccess(orderId: string, extra?: { externalId?: string | null }) {
+  console.log(`[order ${orderId}] ✅ Marcando status SYNCED`);
   await supabase
     .from("orders")
     .update({
@@ -345,6 +355,7 @@ async function markOrderSuccess(orderId: string, extra?: { externalId?: string |
 }
 
 async function markOrderError(orderId: string, message: string) {
+  console.log(`[order ${orderId}] ❌ Marcando status ERROR: ${message}`);
   await supabase
     .from("orders")
     .update({
@@ -623,31 +634,31 @@ async function processOne(orderIdHint?: string | null) {
   const { order, items } = job;
   const orderId = order.id;
 
-  console.log("🧾 Pedido:", order.order_number ?? orderId);
-  console.log("👤 CPF:", order.employee_cpf);
-  console.log("🧩 Itens:", items.length);
+  console.log(`${orderTag(order)} 🧾 Iniciando processamento`);
+  console.log(`${orderTag(order)} 👤 CPF:`, order.employee_cpf);
+  console.log(`${orderTag(order)} 🧩 Itens:`, items.length);
 
   if (!order.employee_cpf) {
     const msg = "Pedido sem employee_cpf (NULL).";
-    console.log("❌", msg);
+    console.log(`${orderTag(order)} ❌ ${msg}`);
     await markOrderError(orderId, msg);
     return { processed: true };
   }
 
   if (!items.length) {
     const msg = "Pedido sem itens válidos em order_items (product_old_id/quantity).";
-    console.log("❌", msg);
+    console.log(`${orderTag(order)} ❌ ${msg}`);
     await markOrderError(orderId, msg);
     return { processed: true };
   }
 
   const obs = buildObsFromOrder(order);
-  console.log("📝 OBS NF:", obs);
+  console.log(`${orderTag(order)} 📝 OBS NF:`, obs);
 
   if (obs === "PAGAMENTO NÃO IDENTIFICADO") {
     const msg =
       "Pagamento não identificado: verifique wallet_debited/spent_from_balance_cents/pay_on_pickup_cents.";
-    console.log("❌", msg);
+    console.log(`${orderTag(order)} ❌ ${msg}`);
     await markOrderError(orderId, msg);
     return { processed: true };
   }
@@ -655,7 +666,7 @@ async function processOne(orderIdHint?: string | null) {
   for (const it of items) {
     const fator = (it.weight ?? 0) > 1 ? it.weight : 1;
     console.log(
-      `⚖️ item ${it.product_code} -> weight=${it.weight ?? "null"} | qtyPedido=${it.qty} | fator=${fator} | qtySAIBWEB=${it.saibweb_qty}`
+      `${orderTag(order)} ⚖️ item ${it.product_code} -> weight=${it.weight ?? "null"} | qtyPedido=${it.qty} | fator=${fator} | qtySAIBWEB=${it.saibweb_qty}`
     );
   }
 
@@ -682,12 +693,12 @@ async function processOne(orderIdHint?: string | null) {
 
     await markOrderSuccess(orderId, { externalId: null });
 
-    console.log("🏁 SUCESSO! Pedido sincronizado:", order.order_number ?? orderId);
+    console.log(`${orderTag(order)} 🏁 SUCESSO! Pedido sincronizado.`);
 
     await waitForEnter("👉 Aperte ENTER para encerrar...");
   } catch (err: unknown) {
     const msg = getErrorMessage(err);
-    console.error("❌ Erro:", msg);
+    console.error(`${orderTag(order)} ❌ Erro:`, msg);
 
     await safeShot(page, `err-order-${orderId}`);
     await markOrderError(orderId, msg);

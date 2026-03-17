@@ -5,6 +5,7 @@ import express from "express";
 import { spawn } from "child_process";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createClient } from "@supabase/supabase-js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,6 +16,19 @@ app.use(express.json({ limit: "2mb" }));
 
 const PORT = Number(process.env.SAIBWEB_WEBHOOK_PORT ?? 3333);
 const DEFAULT_SLOWMO = process.env.SAIBWEB_SLOWMO ?? "250";
+const WEBHOOK_TOKEN = process.env.SAIBWEB_WEBHOOK_TOKEN || "";
+const RECOVER_ON_BOOT = process.env.SAIBWEB_RECOVER_PROCESSING_ON_BOOT !== "0";
+
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+  throw new Error("Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY");
+}
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+  auth: { persistSession: false },
+});
 
 /**
  * =====================
@@ -25,18 +39,6 @@ const queue: string[] = [];
 const queuedOrRunning = new Set<string>();
 let isRunning = false;
 let lastRunAt: number | null = null;
-
-/**
- * =====================
- * GOOGLE SHEETS SYNC
- * =====================
- */
-const SHEET_SYNC_INTERVAL_MS = 60 * 60 * 1000; // 1 hora
-const SHEET_SCRIPT_PATH =
-  process.env.SHEET_SYNC_SCRIPT_PATH || path.resolve(PROJECT_ROOT, "scripts", "syncEmployeesFromSheet.mjs");
-
-let sheetSyncRunning = false;
-let lastSheetSyncAt: number | null = null;
 
 /**
  * =====================
@@ -72,6 +74,60 @@ function buildChildEnv(orderId?: string | null): NodeJS.ProcessEnv {
     ...(process.env.SAIBWEB_PAUSE === "1" ? { SAIBWEB_PAUSE: "1" } : {}),
     ...(orderId ? { ORDER_ID: String(orderId) } : {}), // ✅ agora o runner usa isso
   };
+}
+
+function getRequestToken(req: express.Request) {
+  const authHeader = req.headers.authorization || "";
+  const bearer = authHeader.match(/^Bearer\s+(.+)$/i)?.[1] ?? "";
+  const headerToken = String(req.headers["x-webhook-token"] || "");
+  return bearer || headerToken;
+}
+
+function requireWebhookAuth(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  if (!WEBHOOK_TOKEN) {
+    console.warn("🟡 SAIBWEB_WEBHOOK_TOKEN não configurado; bloqueando endpoint por segurança.");
+    return res.status(503).json({ ok: false, error: "Webhook token not configured" });
+  }
+
+  const provided = getRequestToken(req);
+  if (!provided || provided !== WEBHOOK_TOKEN) {
+    return res.status(401).json({ ok: false, error: "Unauthorized" });
+  }
+
+  next();
+}
+
+async function recoverStuckOrders() {
+  console.log("🩺 Verificando pedidos órfãos em PROCESSING...");
+
+  const { data, error } = await supabase
+    .from("orders")
+    .update({
+      saibweb_status: "PENDING",
+      saibweb_error: "Recuperado automaticamente após reinício do serviço webhook.",
+    })
+    .eq("saibweb_status", "PROCESSING")
+    .select("id, order_number");
+
+  if (error) {
+    console.error("❌ Falha ao recuperar pedidos PROCESSING:", error);
+    return;
+  }
+
+  const recovered = Array.isArray(data) ? data : [];
+  if (recovered.length === 0) {
+    console.log("👌 Nenhum pedido PROCESSING para recuperar.");
+    return;
+  }
+
+  console.log(
+    "♻️ Pedidos recuperados para PENDING:",
+    recovered.map((row: any) => row.order_number || row.id)
+  );
 }
 
 /**
@@ -149,44 +205,10 @@ async function processQueue() {
 
 /**
  * =====================
- * GOOGLE SHEETS JOB
- * =====================
- */
-function runSheetSync() {
-  if (sheetSyncRunning) {
-    console.log("🟡 Sync Google Sheets já em execução. Pulando.");
-    return;
-  }
-
-  sheetSyncRunning = true;
-  lastSheetSyncAt = Date.now();
-
-  console.log("📊 Iniciando sync Google Sheets");
-  console.log("▶️ node", SHEET_SCRIPT_PATH);
-
-  const child = spawn(process.execPath, [SHEET_SCRIPT_PATH], {
-    cwd: PROJECT_ROOT,
-    stdio: "inherit",
-    shell: false,
-  });
-
-  child.on("close", (code) => {
-    sheetSyncRunning = false;
-    console.log("✅ Sync Google Sheets finalizado. code =", code);
-  });
-
-  child.on("error", (err) => {
-    sheetSyncRunning = false;
-    console.error("❌ Erro no sync Google Sheets:", err);
-  });
-}
-
-/**
- * =====================
  * ROTAS
  * =====================
  */
-app.get("/health", (_req, res) => {
+app.get("/health", requireWebhookAuth, (_req, res) => {
   res.json({
     ok: true,
     saibweb: {
@@ -194,16 +216,11 @@ app.get("/health", (_req, res) => {
       queued: queue.length,
       lastRunAt,
     },
-    sheetSync: {
-      running: sheetSyncRunning,
-      lastRunAt: lastSheetSyncAt,
-      intervalMs: SHEET_SYNC_INTERVAL_MS,
-    },
     now: Date.now(),
   });
 });
 
-app.post("/webhook/new-order", (req, res) => {
+app.post("/webhook/new-order", requireWebhookAuth, (req, res) => {
   const orderId = extractOrderId(req.body);
   const r = enqueue(orderId);
 
@@ -223,13 +240,13 @@ app.post("/webhook/new-order", (req, res) => {
  * BOOT
  * =====================
  */
-app.listen(PORT, () => {
-  console.log(`🧩 SAIBWEB webhook rodando em http://localhost:${PORT}`);
-  console.log("⏱️ Google Sheets sync a cada 1 hora");
-});
+app.listen(PORT, async () => {
+  if (RECOVER_ON_BOOT) {
+    await recoverStuckOrders().catch((err) => {
+      console.error("❌ Erro ao executar recovery on boot:", err);
+    });
+  }
 
-// ⏱️ inicia o job após subir o servidor
-setTimeout(() => {
-  runSheetSync();
-  setInterval(runSheetSync, SHEET_SYNC_INTERVAL_MS);
-}, 5_000);
+  console.log(`🧩 SAIBWEB webhook rodando em http://localhost:${PORT}`);
+  console.log(`🔐 Webhook auth: ${WEBHOOK_TOKEN ? "obrigatória" : "token ausente"}`);
+});

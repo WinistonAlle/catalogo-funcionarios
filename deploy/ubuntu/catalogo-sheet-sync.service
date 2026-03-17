@@ -1,0 +1,20 @@
+[Unit]
+Description=Catalogo GM Google Sheets Sync
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/catalogo/current
+EnvironmentFile=/var/www/catalogo/shared/.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npm run automation:sheet-sync
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

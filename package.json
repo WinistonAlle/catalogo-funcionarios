@@ -11,7 +11,8 @@
     "preview": "vite preview --port=4174",
     "sync:employees": "node scripts/syncEmployeesFromSheet.mjs",
     "automation:webhook": "tsx automation/saibweb-webhook.ts",
-    "automation:runner": "tsx automation/saibweb-runner.ts"
+    "automation:runner": "tsx automation/saibweb-runner.ts",
+    "automation:sheet-sync": "tsx automation/sheet-sync-service.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",

@@ -89,6 +89,10 @@ function normalizeCpf(cpf) {
   return digits.padStart(11, "0").slice(0, 11);
 }
 
+function unique(values) {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
 // Aceita "350", "350,00", "R$ 350,00", "1.234,56", etc.
 function parseMoneyToCentsBR(value) {
   if (value === null || value === undefined) return 0;
@@ -204,7 +208,8 @@ async function syncEmployees() {
       return;
     }
 
-    const cpfsInSheet = Array.from(new Set(sheetEmployees.map((e) => e.cpf)));
+    const cpfsInSheet = unique(sheetEmployees.map((e) => e.cpf));
+    const cpfsInSheetSet = new Set(cpfsInSheet);
 
     console.log("🔎 Buscando funcionários atuais no Supabase...");
     const { data: dbEmployees, error: dbError } = await supabase.from("employees").select("id, cpf");
@@ -214,7 +219,15 @@ async function syncEmployees() {
       return;
     }
 
-    const cpfsInDb = (dbEmployees || []).map((e) => normalizeCpf(e.cpf));
+    const dbEmployeesNormalized = (dbEmployees || [])
+      .map((e) => ({
+        id: e.id,
+        cpf_raw: e.cpf,
+        cpf_normalized: normalizeCpf(e.cpf),
+      }))
+      .filter((e) => e.cpf_normalized);
+
+    const cpfsInDb = unique(dbEmployeesNormalized.map((e) => e.cpf_normalized));
     const cpfsInDbSet = new Set(cpfsInDb);
 
     // ✅ Regra:
@@ -258,21 +271,49 @@ async function syncEmployees() {
       return;
     }
 
-    const cpfsToDelete = cpfsInDb.filter((cpf) => cpf && !cpfsInSheet.includes(cpf));
     const allowDelete = shouldDeleteMissingEmployees();
 
-    console.log(`🧾 CPFs planilha (normalizados): ${cpfsInSheet.length}`);
-    console.log(`🗃️ CPFs banco (normalizados): ${cpfsInDb.length}`);
+    // Recarrega após o upsert para não decidir exclusão com snapshot antigo do banco.
+    const { data: dbEmployeesAfterUpsert, error: dbAfterError } = await supabase
+      .from("employees")
+      .select("id, cpf");
 
-    if (cpfsToDelete.length > 0 && allowDelete) {
+    if (dbAfterError) {
+      console.error("❌ Erro ao recarregar employees após upsert:", dbAfterError);
+      return;
+    }
+
+    const dbEmployeesAfterNormalized = (dbEmployeesAfterUpsert || [])
+      .map((e) => ({
+        id: e.id,
+        cpf_raw: e.cpf,
+        cpf_normalized: normalizeCpf(e.cpf),
+      }))
+      .filter((e) => e.id && e.cpf_normalized);
+
+    const rowsToDelete = dbEmployeesAfterNormalized.filter(
+      (row) => !cpfsInSheetSet.has(row.cpf_normalized)
+    );
+    const cpfsToDelete = unique(rowsToDelete.map((row) => row.cpf_normalized));
+    const idsToDelete = unique(rowsToDelete.map((row) => row.id));
+
+    console.log(`🧾 CPFs planilha (normalizados): ${cpfsInSheet.length}`);
+    console.log(`🗃️ CPFs banco antes do upsert (normalizados): ${cpfsInDb.length}`);
+    console.log(
+      `🗃️ CPFs banco após upsert (normalizados): ${unique(
+        dbEmployeesAfterNormalized.map((row) => row.cpf_normalized)
+      ).length}`
+    );
+
+    if (idsToDelete.length > 0 && allowDelete) {
       console.log("🗑️ Removendo do Supabase (não estão mais na planilha):", cpfsToDelete);
-      const { error: deleteError } = await supabase.from("employees").delete().in("cpf", cpfsToDelete);
+      const { error: deleteError } = await supabase.from("employees").delete().in("id", idsToDelete);
 
       if (deleteError) {
         console.error("❌ Erro ao deletar employees:", deleteError);
         return;
       }
-    } else if (cpfsToDelete.length > 0) {
+    } else if (idsToDelete.length > 0) {
       console.log(
         "🟡 Exclusão automática desabilitada. Para remover CPFs ausentes da planilha, use SYNC_DELETE_MISSING_FROM_SHEET=1."
       );
