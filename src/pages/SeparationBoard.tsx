@@ -6,6 +6,7 @@ import { CheckCircle2, Maximize2, Minimize2, ClipboardList } from "lucide-react"
 const STATUS_SEPARATION = "aguardando_separacao"; // Em separação
 const STATUS_PENDING = "aguardando_pagamento"; // Aguardando pagamento
 const STATUS_PAID = "pago"; // Pago
+const STATUS_DELIVERED = "entregue"; // Retirado / entregue
 
 type OrderStatus = string;
 
@@ -356,7 +357,10 @@ const SeparationBoard: React.FC = () => {
         .update(next)
         .eq("id", order.id);
 
-      if (error) console.error("Erro ao avançar pedido:", error);
+      if (error) {
+        console.error("Erro ao avançar pedido:", error);
+        await fetchOrders();
+      }
       return;
     }
 
@@ -375,13 +379,16 @@ const SeparationBoard: React.FC = () => {
         .update(next)
         .eq("id", order.id);
 
-      if (error) console.error("Erro ao avançar pedido:", error);
+      if (error) {
+        console.error("Erro ao avançar pedido:", error);
+        await fetchOrders();
+      }
       return;
     }
 
     // 3) Pronto para retirada (pago + wallet) -> finalizar retirada
     if (order.status === STATUS_PAID && isWalletOnly(order)) {
-      const next: Partial<Order> = { picked_up_at: nowIso };
+      const next: Partial<Order> = { status: STATUS_DELIVERED, picked_up_at: nowIso };
 
       // otimista: some do painel
       setOrders((curr) => curr.filter((o) => o.id !== order.id));
@@ -393,10 +400,8 @@ const SeparationBoard: React.FC = () => {
         .eq("id", order.id);
 
       if (error) {
-        console.warn(
-          "Não consegui atualizar picked_up_at (talvez não exista).",
-          error
-        );
+        console.warn("Não consegui finalizar retirada do pedido.", error);
+        await fetchOrders();
       }
       return;
     }

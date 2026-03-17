@@ -99,6 +99,7 @@ type DailySummary = {
 };
 
 type PeriodRange = "mes_atual" | "mes_anterior" | "ultimos_90";
+const CANCELED_STATUS = "cancelado";
 
 const formatCurrency = (value: number) =>
   (value || 0).toLocaleString("pt-BR", {
@@ -157,11 +158,14 @@ const getMonthStartEnd = (value: string): { start: Date; end: Date } => {
 };
 
 const buildSummaryFromOrders = (orders: any[]): Summary => {
-  const totalOrders = orders.length;
+  const validOrders = (orders ?? []).filter(
+    (o) => String(o?.status || "").toLowerCase() !== CANCELED_STATUS
+  );
+  const totalOrders = validOrders.length;
   let totalRevenue = 0;
   let totalItems = 0;
 
-  for (const o of orders) {
+  for (const o of validOrders) {
     totalRevenue += Number(o.total_value ?? 0);
     totalItems += Number(o.total_items ?? 0);
   }
@@ -312,7 +316,9 @@ const ReportsPage: React.FC = () => {
           return;
         }
 
-        const orders: RawOrder[] = (data as any[]) ?? [];
+        const orders: RawOrder[] = ((data as any[]) ?? []).filter(
+          (o) => String(o?.status || "").toLowerCase() !== CANCELED_STATUS
+        );
         setOrdersRaw(orders);
 
         // ---- agregações para período atual ----
@@ -398,9 +404,10 @@ const ReportsPage: React.FC = () => {
 
         const { data: compData, error: compError } = await supabase
           .from("orders")
-          .select("id, total_items, total_value, created_at")
+          .select("id, total_items, total_value, created_at, status")
           .gte("created_at", compStart.toISOString())
-          .lt("created_at", compEnd.toISOString());
+          .lt("created_at", compEnd.toISOString())
+          .neq("status", CANCELED_STATUS);
 
         if (compError) {
           console.error("Erro ao carregar período de comparação:", compError);
@@ -439,9 +446,10 @@ const ReportsPage: React.FC = () => {
 
         const { data: todayOrders, error: todayError } = await supabase
           .from("orders")
-          .select("id, total_items, total_value, created_at")
+          .select("id, total_items, total_value, created_at, status")
           .gte("created_at", todayStart.toISOString())
-          .lt("created_at", tomorrow.toISOString());
+          .lt("created_at", tomorrow.toISOString())
+          .neq("status", CANCELED_STATUS);
 
         if (todayError) {
           console.error("Erro ao carregar resumo do dia:", todayError);
@@ -491,14 +499,16 @@ const ReportsPage: React.FC = () => {
         const [res1, res2] = await Promise.all([
           supabase
             .from("orders")
-            .select("id, total_items, total_value, created_at")
+            .select("id, total_items, total_value, created_at, status")
             .gte("created_at", start1.toISOString())
-            .lt("created_at", end1.toISOString()),
+            .lt("created_at", end1.toISOString())
+            .neq("status", CANCELED_STATUS),
           supabase
             .from("orders")
-            .select("id, total_items, total_value, created_at")
+            .select("id, total_items, total_value, created_at, status")
             .gte("created_at", start2.toISOString())
-            .lt("created_at", end2.toISOString()),
+            .lt("created_at", end2.toISOString())
+            .neq("status", CANCELED_STATUS),
         ]);
 
         if (res1.error || res2.error) {

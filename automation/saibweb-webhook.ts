@@ -17,7 +17,10 @@ app.use(express.json({ limit: "2mb" }));
 const PORT = Number(process.env.SAIBWEB_WEBHOOK_PORT ?? 3333);
 const DEFAULT_SLOWMO = process.env.SAIBWEB_SLOWMO ?? "250";
 const WEBHOOK_TOKEN = process.env.SAIBWEB_WEBHOOK_TOKEN || "";
-const RECOVER_ON_BOOT = process.env.SAIBWEB_RECOVER_PROCESSING_ON_BOOT !== "0";
+const RECOVER_ON_BOOT = process.env.SAIBWEB_RECOVER_PROCESSING_ON_BOOT === "1";
+const PROCESSING_RECOVERY_MINUTES = Number(
+  process.env.SAIBWEB_PROCESSING_RECOVERY_MINUTES ?? 20
+);
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -102,25 +105,45 @@ function requireWebhookAuth(
 }
 
 async function recoverStuckOrders() {
-  console.log("🩺 Verificando pedidos órfãos em PROCESSING...");
+  const safeMinutes = Number.isFinite(PROCESSING_RECOVERY_MINUTES)
+    ? Math.max(1, PROCESSING_RECOVERY_MINUTES)
+    : 20;
+  const cutoffIso = new Date(Date.now() - safeMinutes * 60 * 1000).toISOString();
 
-  const { data, error } = await supabase
+  console.log(
+    `🩺 Verificando pedidos órfãos em PROCESSING com created_at <= ${cutoffIso}...`
+  );
+
+  const { data: candidates, error: candidatesError } = await supabase
+    .from("orders")
+    .select("id, order_number, created_at")
+    .eq("saibweb_status", "PROCESSING")
+    .lte("created_at", cutoffIso);
+
+  if (candidatesError) {
+    console.error("❌ Falha ao buscar pedidos PROCESSING para recovery:", candidatesError);
+    return;
+  }
+
+  const recoverable = Array.isArray(candidates) ? candidates : [];
+  if (recoverable.length === 0) {
+    console.log("👌 Nenhum pedido PROCESSING antigo o suficiente para recuperar.");
+    return;
+  }
+
+  const idsToRecover = recoverable.map((row: any) => row.id).filter(Boolean);
+
+  const { data: recovered, error } = await supabase
     .from("orders")
     .update({
       saibweb_status: "PENDING",
-      saibweb_error: "Recuperado automaticamente após reinício do serviço webhook.",
+      saibweb_error: `Recuperado automaticamente após reinício do serviço webhook (>${safeMinutes} min em PROCESSING).`,
     })
-    .eq("saibweb_status", "PROCESSING")
+    .in("id", idsToRecover)
     .select("id, order_number");
 
   if (error) {
     console.error("❌ Falha ao recuperar pedidos PROCESSING:", error);
-    return;
-  }
-
-  const recovered = Array.isArray(data) ? data : [];
-  if (recovered.length === 0) {
-    console.log("👌 Nenhum pedido PROCESSING para recuperar.");
     return;
   }
 

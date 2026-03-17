@@ -168,5 +168,5 @@ sudo systemctl status catalogo-sheet-sync --no-pager
 - `npm run preview` não é recomendado para produção; o Nginx deve servir `dist/`.
 - o arquivo `.env` atual do projeto contém segredos reais. Mova os segredos para `/var/www/catalogo/shared/.env` no servidor.
 - o webhook agora exige token. Se o emissor não enviar esse token, os pedidos vão falhar com `401`.
-- o serviço do webhook recupera pedidos presos em `PROCESSING` para `PENDING` ao subir, por padrão.
+- o serviço do webhook só recupera pedidos presos em `PROCESSING` ao subir se `SAIBWEB_RECOVER_PROCESSING_ON_BOOT=1`.
 - a fila do webhook ainda é em memória. O recovery no boot reduz impacto, mas não substitui uma fila persistida em banco.
