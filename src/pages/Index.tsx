@@ -707,7 +707,7 @@ const Index: React.FC = () => {
     return () => {
       isMounted = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   /* ---------------- Destaques: modo (auto/manual) ---------------- */
@@ -901,7 +901,7 @@ const Index: React.FC = () => {
     const set = new Set<string>();
     products.forEach((p) => p.category && set.add(p.category));
 
-    let list = Array.from(set);
+    const list = Array.from(set);
     if (!list.length) return ORDERED_CATEGORIES;
 
     list.sort((a, b) => {
@@ -1609,7 +1609,6 @@ const Index: React.FC = () => {
                 selectedCategory={selectedCategory}
                 setSelectedCategory={handleSelectCategory}
                 categories={categories}
-                // @ts-ignore
               />
 
               <button

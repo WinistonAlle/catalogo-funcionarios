@@ -126,7 +126,7 @@ const SeparationBoard: React.FC = () => {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   // ✅ rolar fecha modal (evita “modal perdido”)
@@ -136,7 +136,7 @@ const SeparationBoard: React.FC = () => {
     };
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [hoverModal.open]);
 
   // pulse por 3s quando entra pedido novo em separação

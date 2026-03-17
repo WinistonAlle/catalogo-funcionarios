@@ -316,7 +316,7 @@ const ReportsPage: React.FC = () => {
         setOrdersRaw(orders);
 
         // ---- agregações para período atual ----
-        let totalOrders = orders.length;
+        const totalOrders = orders.length;
         let totalRevenue = 0;
         let totalItems = 0;
 
@@ -407,7 +407,7 @@ const ReportsPage: React.FC = () => {
           setComparisonSummary(null);
         } else {
           const compOrders: any[] = compData ?? [];
-          let compTotalOrders = compOrders.length;
+          const compTotalOrders = compOrders.length;
           let compTotalRevenue = 0;
           let compTotalItems = 0;
 
@@ -448,7 +448,7 @@ const ReportsPage: React.FC = () => {
           setDailySummary(null);
         } else {
           const list = (todayOrders as any[]) ?? [];
-          let totalOrdersToday = list.length;
+          const totalOrdersToday = list.length;
           let totalRevenueToday = 0;
           let totalItemsToday = 0;
 

@@ -781,8 +781,10 @@ export default function AdminOrders() {
     }
   }
 
+  // Carrega a listagem inicial uma vez; os demais refreshes ocorrem nas ações da tela.
   useEffect(() => {
     loadOrders();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

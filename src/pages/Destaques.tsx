@@ -716,7 +716,7 @@ const Destaques: React.FC = () => {
       loadProducts();
       loadManualSaved();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [mode]);
 
   const previewItems = useMemo(() => {
