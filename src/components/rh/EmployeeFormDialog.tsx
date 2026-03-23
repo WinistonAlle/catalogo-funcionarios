@@ -135,13 +135,14 @@ export default function EmployeeFormDialog(props: {
         </DialogHeader>
 
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
+          <input type="hidden" {...register("id")} />
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <Label>CPF</Label>
               <Input
                 placeholder="somente números"
                 {...register("cpf")}
-                disabled={!!initial}
+                readOnly={!!initial}
               />
               {errors.cpf && (
                 <p className="text-xs text-destructive mt-1">

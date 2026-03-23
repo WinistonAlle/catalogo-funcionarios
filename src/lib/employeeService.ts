@@ -47,14 +47,26 @@ export async function listEmployees(opts: {
 }
 
 export async function upsertEmployee(input: Employee) {
-  // status default = active ao admitir
+  if (input.id) {
+    const { id, ...updates } = input;
+    const { data, error } = await supabase
+      .from("employees")
+      .update(updates)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data as Employee;
+  }
+
   const payload = {
     status: "active",
     ...input,
   };
   const { data, error } = await supabase
     .from("employees")
-    .upsert(payload)
+    .insert(payload)
     .select()
     .single();
 
