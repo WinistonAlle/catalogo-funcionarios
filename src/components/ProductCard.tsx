@@ -12,7 +12,7 @@ import { supabase } from "@/lib/supabase";
 
 interface ProductCardProps {
   product: Product;
-  hideImages?: boolean; // ✅ novo
+  hideImages?: boolean;
 }
 
 /* ---------------------- helper: pega employee_id do user logado ---------------------- */
@@ -211,9 +211,10 @@ const ProductCard: React.FC<ProductCardProps> = ({
             isFavorite ? "Remover dos favoritos" : "Adicionar aos favoritos"
           }
           className={`
-            absolute top-2 right-2 z-30
+            absolute bottom-2 right-2 md:top-2 md:right-2 md:bottom-auto
+            z-30
             inline-flex items-center justify-center
-            h-8 w-8 rounded-full
+            h-9 w-9 md:h-8 md:w-8 rounded-full
             bg-white/90 backdrop-blur-sm
             border border-white/40
             shadow-sm
@@ -335,7 +336,7 @@ const ProductCard: React.FC<ProductCardProps> = ({
               ${
                 hideImages
                   ? "pt-2 pb-1 px-3"
-                  : "pt-2 md:pt-4 pb-1 md:pb-3 pr-3 md:pr-4 pl-1.5 md:pl-4"
+                  : "pt-2 md:pt-4 pb-1 md:pb-3 pr-12 md:pr-4 pl-1.5 md:pl-4"
               }
 
               [[data-featured-card='true']_&]:px-3
@@ -399,7 +400,7 @@ const ProductCard: React.FC<ProductCardProps> = ({
               ${
                 hideImages
                   ? "pb-3 px-3"
-                  : "pb-2 md:pb-4 pr-3 md:pr-4 pl-1.5 md:pl-4"
+                  : "pb-2 md:pb-4 pr-12 md:pr-4 pl-1.5 md:pl-4"
               }
 
               [[data-featured-card='true']_&]:px-3
@@ -428,7 +429,11 @@ const ProductCard: React.FC<ProductCardProps> = ({
                   <Minus className="h-4 w-4" />
                 </Button>
 
-                <div className="relative" onPointerDown={stop} onTouchStart={stop}>
+                <div
+                  className="relative"
+                  onPointerDown={stop}
+                  onTouchStart={stop}
+                >
                   <Input
                     type="text"
                     value={inputValue}
