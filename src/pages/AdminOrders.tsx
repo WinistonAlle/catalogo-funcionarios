@@ -1071,7 +1071,7 @@ export default function AdminOrders() {
                   }
                 : {}),
             }}
-            onClick={loadOrders}
+            onClick={() => loadOrders()}
             title="Atualizar"
           >
             Atualizar
@@ -1152,7 +1152,7 @@ export default function AdminOrders() {
               <div style={styles.filterActions}>
                 <button
                   style={{ ...styles.primaryBtn, width: "100%" }}
-                  onClick={loadOrders}
+                  onClick={() => loadOrders()}
                 >
                   Filtrar
                 </button>
