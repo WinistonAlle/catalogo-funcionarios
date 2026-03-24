@@ -112,7 +112,7 @@ function parseMoneyToCentsBR(value) {
   return Math.round(num * 100);
 }
 
-// Decide se hoje é “rodada mensal” (dia 1) ou diária.
+// Decide se hoje é “rodada mensal” (dia 28) ou diária.
 // Você pode FORÇAR o modo mensal para teste com: SYNC_CREDITO_MENSAL=1
 function shouldSyncMonthlyCredit() {
   if (process.env.SYNC_CREDITO_MENSAL === "1") return true;
@@ -122,7 +122,7 @@ function shouldSyncMonthlyCredit() {
   const daySP = Number(
     new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", day: "2-digit" }).format(now)
   );
-  return daySP === 1;
+  return daySP === 28;
 }
 
 function shouldDeleteMissingEmployees() {
@@ -232,7 +232,7 @@ async function syncEmployees() {
 
     // ✅ Regra:
     // - Todo dia: só cadastra/atualiza dados “cadastro”
-    // - Dia 1: atualiza o credito_mensal_cents de todo mundo
+    // - Dia 28: atualiza o credito_mensal_cents de todo mundo
     // - Qualquer dia: se for funcionário novo (CPF não existe ainda), insere já com crédito
     const syncCredit = shouldSyncMonthlyCredit();
 
