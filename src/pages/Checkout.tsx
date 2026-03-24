@@ -43,6 +43,21 @@ function getMonthKeySaoPaulo() {
   return `${y}-${m}`;
 }
 
+function isAfterSeparationCutoff(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(now);
+
+  const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
+  const minute = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
+  const totalMinutes = hour * 60 + minute;
+
+  return totalMinutes > 13 * 60 + 40;
+}
+
 /** ✅ Checkbox UI (Uiverse 31) mas usado como "radio" (seleção única) */
 function CheckRadio31({
   checked,
@@ -111,6 +126,7 @@ const Checkout: React.FC = () => {
   // ✅ employee reativo (NÃO congele em useMemo([]))
   const [employee, setEmployee] = useState<any>(() => safeGetEmployee() ?? {});
   const [employeeReady, setEmployeeReady] = useState(false);
+  const [showLateOrderPopup, setShowLateOrderPopup] = useState(false);
 
   // UI pagamento
   const [payMode, setPayMode] = useState<"wallet" | "pickup">("wallet");
@@ -171,6 +187,12 @@ const Checkout: React.FC = () => {
     if (payMode !== "wallet") return availableCents;
     return Math.max(availableCents - totalCents, 0);
   }, [payMode, availableCents, totalCents]);
+
+  useEffect(() => {
+    if (isAfterSeparationCutoff()) {
+      setShowLateOrderPopup(true);
+    }
+  }, []);
 
   /**
    * ✅ Mantém employee_session sincronizado no Checkout
@@ -548,7 +570,73 @@ const Checkout: React.FC = () => {
           opacity: 0.65;
           cursor: not-allowed;
         }
+
+        .late-order-backdrop {
+          position: fixed;
+          inset: 0;
+          background: rgba(17, 24, 39, 0.56);
+          backdrop-filter: blur(6px);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 20px;
+          z-index: 60;
+          animation: late-order-fade 0.25s ease-out;
+        }
+
+        .late-order-popup {
+          width: min(560px, 100%);
+          border-radius: 28px;
+          background: #ffffff;
+          border: 1px solid rgba(17, 24, 39, 0.08);
+          box-shadow: 0 28px 90px rgba(17, 24, 39, 0.26);
+          padding: 32px 28px;
+          transform-origin: center;
+          animation: late-order-pop 0.35s cubic-bezier(.22,1,.36,1);
+        }
+
+        @keyframes late-order-fade {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+
+        @keyframes late-order-pop {
+          from {
+            opacity: 0;
+            transform: translateY(22px) scale(0.94);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+        }
       `}</style>
+
+      {showLateOrderPopup ? (
+        <div className="late-order-backdrop" role="dialog" aria-modal="true">
+          <div className="late-order-popup text-center">
+            <h2 className="text-3xl font-black leading-tight text-gray-900 md:text-4xl">
+              Seu pedido será separado apenas no dia seguinte
+            </h2>
+            <p className="mt-4 text-base leading-7 text-gray-700">
+              Pedidos feitos após as 13:40 entram na fila para separação no próximo dia.
+            </p>
+            <div className="mt-6 rounded-2xl border border-gray-200 bg-white p-4 text-sm text-gray-700">
+              Se quiser continuar agora, o pedido será registrado normalmente, mas a separação não
+              acontece hoje.
+            </div>
+            <div className="mt-8 flex justify-end">
+              <button
+                type="button"
+                className="rounded-xl bg-gray-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-gray-800"
+                onClick={() => setShowLateOrderPopup(false)}
+              >
+                Entendi
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="w-full max-w-3xl bg-white rounded-2xl shadow-sm border p-6 md:p-8">
         <div className="flex justify-center mb-6">

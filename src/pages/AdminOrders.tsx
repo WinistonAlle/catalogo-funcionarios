@@ -104,6 +104,27 @@ function brlFromReais(reais?: number | null) {
   });
 }
 
+function toDateInputValue(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getTodayDateInput() {
+  return toDateInputValue(new Date());
+}
+
+function parseDateInput(value: string, endOfDay = false) {
+  if (!value) return null;
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return null;
+
+  return endOfDay
+    ? new Date(year, month - 1, day, 23, 59, 59, 999)
+    : new Date(year, month - 1, day, 0, 0, 0, 0);
+}
+
 function toCentsFromOrder(
   order: Pick<OrderRow, "total_cents" | "total_value">,
 ) {
@@ -374,14 +395,18 @@ function useIsMobile(breakpoint = 940) {
 
 export default function AdminOrders() {
   const navigate = useNavigate();
+  const todayFilter = useMemo(() => getTodayDateInput(), []);
 
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
+  const [nameFilter, setNameFilter] = useState("");
   const [cpfFilter, setCpfFilter] = useState("");
   const [orderFilter, setOrderFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [startDateFilter, setStartDateFilter] = useState(todayFilter);
+  const [endDateFilter, setEndDateFilter] = useState(todayFilter);
 
   const [selected, setSelected] = useState<OrderRow | null>(null);
   const [cancelReason, setCancelReason] = useState("");
@@ -404,6 +429,15 @@ export default function AdminOrders() {
   const [removingItemId, setRemovingItemId] = useState<string | null>(null);
 
   const isMobile = useIsMobile(940);
+
+  type OrderFilterValues = {
+    name: string;
+    cpf: string;
+    order: string;
+    status: string;
+    startDate: string;
+    endDate: string;
+  };
 
   function actorCpfFromLocalStorage() {
     if (typeof window === "undefined") return "";
@@ -467,9 +501,42 @@ export default function AdminOrders() {
     return map;
   }
 
-  async function loadOrders() {
+  async function loadOrders(filters?: Partial<OrderFilterValues>) {
     setLoading(true);
     setErr(null);
+
+    const activeFilters: OrderFilterValues = {
+      name: filters?.name ?? nameFilter,
+      cpf: filters?.cpf ?? cpfFilter,
+      order: filters?.order ?? orderFilter,
+      status: filters?.status ?? statusFilter,
+      startDate: filters?.startDate ?? startDateFilter,
+      endDate: filters?.endDate ?? endDateFilter,
+    };
+
+    const startDate = parseDateInput(activeFilters.startDate, false);
+    const endDate = parseDateInput(activeFilters.endDate, true);
+
+    if (activeFilters.startDate && !startDate) {
+      setErr("Data inicial inválida.");
+      setOrders([]);
+      setLoading(false);
+      return;
+    }
+
+    if (activeFilters.endDate && !endDate) {
+      setErr("Data final inválida.");
+      setOrders([]);
+      setLoading(false);
+      return;
+    }
+
+    if (startDate && endDate && startDate > endDate) {
+      setErr("A data final precisa ser igual ou maior que a data inicial.");
+      setOrders([]);
+      setLoading(false);
+      return;
+    }
 
     let q = supabase
       .from("orders")
@@ -494,11 +561,15 @@ export default function AdminOrders() {
       )
       .order("created_at", { ascending: false });
 
-    const cpf = onlyDigits(cpfFilter);
+    if (activeFilters.name.trim())
+      q = q.ilike("employee_name", `%${activeFilters.name.trim()}%`);
+    const cpf = onlyDigits(activeFilters.cpf);
     if (cpf) q = q.ilike("employee_cpf", `%${cpf}%`);
-    if (orderFilter.trim())
-      q = q.ilike("order_number", `%${orderFilter.trim()}%`);
-    if (statusFilter) q = q.eq("status", statusFilter);
+    if (activeFilters.order.trim())
+      q = q.ilike("order_number", `%${activeFilters.order.trim()}%`);
+    if (activeFilters.status) q = q.eq("status", activeFilters.status);
+    if (startDate) q = q.gte("created_at", startDate.toISOString());
+    if (endDate) q = q.lte("created_at", endDate.toISOString());
 
     const { data, error } = await q;
     if (error) {
@@ -815,6 +886,35 @@ export default function AdminOrders() {
     return { total, canceled, delivered, pending, withWallet };
   }, [orders]);
 
+  const hasCustomFilters = useMemo(() => {
+    return (
+      nameFilter.trim() !== "" ||
+      onlyDigits(cpfFilter) !== "" ||
+      orderFilter.trim() !== "" ||
+      statusFilter !== "" ||
+      startDateFilter !== todayFilter ||
+      endDateFilter !== todayFilter
+    );
+  }, [
+    cpfFilter,
+    endDateFilter,
+    nameFilter,
+    orderFilter,
+    startDateFilter,
+    statusFilter,
+    todayFilter,
+  ]);
+
+  function resetFiltersToToday() {
+    setNameFilter("");
+    setCpfFilter("");
+    setOrderFilter("");
+    setStatusFilter("");
+    setStartDateFilter(todayFilter);
+    setEndDateFilter(todayFilter);
+    setErr(null);
+  }
+
   const isManageLocked = (o?: OrderRow | null) => {
     const st = o?.status || "";
     return st === "cancelado" || st === "entregue";
@@ -981,6 +1081,16 @@ export default function AdminOrders() {
         <section style={styles.filters}>
           <div style={filtersGridStyle}>
             <div style={styles.field}>
+              <label style={styles.label}>Funcionário</label>
+              <input
+                style={styles.input}
+                placeholder="Digite o nome"
+                value={nameFilter}
+                onChange={(e) => setNameFilter(e.target.value)}
+              />
+            </div>
+
+            <div style={styles.field}>
               <label style={styles.label}>CPF</label>
               <input
                 style={styles.input}
@@ -1002,6 +1112,26 @@ export default function AdminOrders() {
             </div>
 
             <div style={styles.field}>
+              <label style={styles.label}>Data inicial</label>
+              <input
+                style={styles.input}
+                type="date"
+                value={startDateFilter}
+                onChange={(e) => setStartDateFilter(e.target.value)}
+              />
+            </div>
+
+            <div style={styles.field}>
+              <label style={styles.label}>Data final</label>
+              <input
+                style={styles.input}
+                type="date"
+                value={endDateFilter}
+                onChange={(e) => setEndDateFilter(e.target.value)}
+              />
+            </div>
+
+            <div style={styles.field}>
               <label style={styles.label}>Status</label>
               <select
                 style={styles.select}
@@ -1019,16 +1149,40 @@ export default function AdminOrders() {
 
             <div style={styles.field}>
               <label style={styles.label}>&nbsp;</label>
-              <button
-                style={{ ...styles.primaryBtn, width: "100%" }}
-                onClick={loadOrders}
-              >
-                Filtrar
-              </button>
+              <div style={styles.filterActions}>
+                <button
+                  style={{ ...styles.primaryBtn, width: "100%" }}
+                  onClick={loadOrders}
+                >
+                  Filtrar
+                </button>
+                <button
+                  style={{ ...styles.secondaryBtn, width: "100%" }}
+                  onClick={() => {
+                    resetFiltersToToday();
+                    loadOrders({
+                      name: "",
+                      cpf: "",
+                      order: "",
+                      status: "",
+                      startDate: todayFilter,
+                      endDate: todayFilter,
+                    });
+                  }}
+                  disabled={!hasCustomFilters}
+                >
+                  Hoje
+                </button>
+              </div>
             </div>
           </div>
 
           <div style={styles.helpRow}>
+            <span style={styles.helpText}>
+              {hasCustomFilters
+                ? "Filtros customizados ativos."
+                : "Padrão: exibindo somente os pedidos de hoje."}
+            </span>
             <span style={styles.helpText}>
               {isMobile
                 ? "Toque no badge de pagamento (segure) para ver detalhes."
@@ -1065,7 +1219,9 @@ export default function AdminOrders() {
           <div style={styles.emptyBox}>
             <div style={styles.emptyTitle}>Nenhum pedido encontrado</div>
             <div style={styles.emptyText}>
-              Ajuste os filtros ou tente novamente.
+              {hasCustomFilters
+                ? "Revise os filtros aplicados e tente novamente."
+                : "Ainda não há pedidos registrados hoje."}
             </div>
           </div>
         )}
@@ -2267,9 +2423,15 @@ const styles: Record<string, CSSProperties> = {
 
   filtersGrid: {
     display: "grid",
-    gridTemplateColumns: "1.1fr 1.4fr 1fr 0.8fr",
+    gridTemplateColumns: "1.15fr 1fr 1.2fr 1fr 1fr 1fr 1fr",
     gap: 12,
     alignItems: "end",
+  },
+
+  filterActions: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 8,
   },
 
   field: { display: "flex", flexDirection: "column", gap: 6, minWidth: 0 },
