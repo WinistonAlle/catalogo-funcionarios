@@ -16,11 +16,11 @@ app.use(express.json({ limit: "2mb" }));
 
 const PORT = Number(process.env.SAIBWEB_WEBHOOK_PORT ?? 3333);
 const DEFAULT_SLOWMO = process.env.SAIBWEB_SLOWMO ?? "250";
-const WEBHOOK_TOKEN = process.env.SAIBWEB_WEBHOOK_TOKEN || "";
 const RECOVER_ON_BOOT = process.env.SAIBWEB_RECOVER_PROCESSING_ON_BOOT === "1";
 const PROCESSING_RECOVERY_MINUTES = Number(
   process.env.SAIBWEB_PROCESSING_RECOVERY_MINUTES ?? 20
 );
+const PENDING_SCAN_MS = Number(process.env.SAIBWEB_PENDING_SCAN_MS ?? 30000);
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -79,31 +79,6 @@ function buildChildEnv(orderId?: string | null): NodeJS.ProcessEnv {
   };
 }
 
-function getRequestToken(req: express.Request) {
-  const authHeader = req.headers.authorization || "";
-  const bearer = authHeader.match(/^Bearer\s+(.+)$/i)?.[1] ?? "";
-  const headerToken = String(req.headers["x-webhook-token"] || "");
-  return bearer || headerToken;
-}
-
-function requireWebhookAuth(
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction
-) {
-  if (!WEBHOOK_TOKEN) {
-    console.warn("🟡 SAIBWEB_WEBHOOK_TOKEN não configurado; bloqueando endpoint por segurança.");
-    return res.status(503).json({ ok: false, error: "Webhook token not configured" });
-  }
-
-  const provided = getRequestToken(req);
-  if (!provided || provided !== WEBHOOK_TOKEN) {
-    return res.status(401).json({ ok: false, error: "Unauthorized" });
-  }
-
-  next();
-}
-
 async function recoverStuckOrders() {
   const safeMinutes = Number.isFinite(PROCESSING_RECOVERY_MINUTES)
     ? Math.max(1, PROCESSING_RECOVERY_MINUTES)
@@ -151,6 +126,22 @@ async function recoverStuckOrders() {
     "♻️ Pedidos recuperados para PENDING:",
     recovered.map((row: any) => row.order_number || row.id)
   );
+}
+
+async function hasPendingOrders() {
+  const { data, error } = await supabase
+    .from("orders")
+    .select("id")
+    .eq("saibweb_status", "PENDING")
+    .is("cancelled_at", null)
+    .limit(1);
+
+  if (error) {
+    console.error("❌ Falha ao verificar pedidos PENDING:", error);
+    return false;
+  }
+
+  return Array.isArray(data) && data.length > 0;
 }
 
 /**
@@ -226,12 +217,23 @@ async function processQueue() {
   }
 }
 
+async function kickPendingDrain(reason: string) {
+  if (queue.length > 0 || queuedOrRunning.has("__NO_ID__")) return;
+
+  const hasPending = await hasPendingOrders();
+  if (!hasPending) return;
+
+  console.log(`🔁 Encontrados pedidos PENDING sem webhook (${reason}). Iniciando varredura.`);
+  enqueue(null);
+  void processQueue();
+}
+
 /**
  * =====================
  * ROTAS
  * =====================
  */
-app.get("/health", requireWebhookAuth, (_req, res) => {
+app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     saibweb: {
@@ -243,7 +245,7 @@ app.get("/health", requireWebhookAuth, (_req, res) => {
   });
 });
 
-app.post("/webhook/new-order", requireWebhookAuth, (req, res) => {
+app.post("/webhook/new-order", (req, res) => {
   const orderId = extractOrderId(req.body);
   const r = enqueue(orderId);
 
@@ -270,6 +272,16 @@ app.listen(PORT, async () => {
     });
   }
 
+  await kickPendingDrain("boot").catch((err) => {
+    console.error("❌ Erro ao iniciar varredura de pedidos PENDING no boot:", err);
+  });
+
+  if (Number.isFinite(PENDING_SCAN_MS) && PENDING_SCAN_MS > 0) {
+    setInterval(() => {
+      void kickPendingDrain("scan");
+    }, PENDING_SCAN_MS);
+  }
+
   console.log(`🧩 SAIBWEB webhook rodando em http://localhost:${PORT}`);
-  console.log(`🔐 Webhook auth: ${WEBHOOK_TOKEN ? "obrigatória" : "token ausente"}`);
+  console.log(`🛰️ Fallback scan de pedidos PENDING: ${PENDING_SCAN_MS > 0 ? `${PENDING_SCAN_MS}ms` : "desativado"}`);
 });

@@ -49,7 +49,6 @@ Edite `/var/www/catalogo/shared/.env` com as variáveis reais.
 Variáveis mínimas novas para automação:
 
 ```env
-SAIBWEB_WEBHOOK_TOKEN=troque-por-um-token-forte
 SAIBWEB_RECOVER_PROCESSING_ON_BOOT=1
 SHEET_SYNC_INTERVAL_MS=3600000
 SHEET_SYNC_INITIAL_DELAY_MS=5000
@@ -123,26 +122,14 @@ curl -I http://funcionarios.gostinhomineiro.com
 Health da automação:
 
 ```bash
-curl http://127.0.0.1:3333/health \
-  -H "Authorization: Bearer $SAIBWEB_WEBHOOK_TOKEN"
-curl http://funcionarios.gostinhomineiro.com/automation/health \
-  -H "Authorization: Bearer $SAIBWEB_WEBHOOK_TOKEN"
+curl http://127.0.0.1:3333/health
+curl http://funcionarios.gostinhomineiro.com/automation/health
 ```
 
 Webhook:
 
 ```bash
 curl -X POST http://funcionarios.gostinhomineiro.com/automation/webhook/new-order \
-  -H "Authorization: Bearer $SAIBWEB_WEBHOOK_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"order_id":"test"}'
-```
-
-Se o emissor do webhook não conseguir usar `Authorization`, ele pode mandar:
-
-```bash
-curl -X POST http://funcionarios.gostinhomineiro.com/automation/webhook/new-order \
-  -H "x-webhook-token: $SAIBWEB_WEBHOOK_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"order_id":"test"}'
 ```
@@ -167,6 +154,5 @@ sudo systemctl status catalogo-sheet-sync --no-pager
 
 - `npm run preview` não é recomendado para produção; o Nginx deve servir `dist/`.
 - o arquivo `.env` atual do projeto contém segredos reais. Mova os segredos para `/var/www/catalogo/shared/.env` no servidor.
-- o webhook agora exige token. Se o emissor não enviar esse token, os pedidos vão falhar com `401`.
 - o serviço do webhook só recupera pedidos presos em `PROCESSING` ao subir se `SAIBWEB_RECOVER_PROCESSING_ON_BOOT=1`.
 - a fila do webhook ainda é em memória. O recovery no boot reduz impacto, mas não substitui uma fila persistida em banco.
