@@ -58,6 +58,15 @@ function isAfterSeparationCutoff(now = new Date()) {
   return totalMinutes > 13 * 60 + 40;
 }
 
+function isWeekendInSaoPaulo(now = new Date()) {
+  const weekday = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "short",
+  }).format(now);
+
+  return weekday === "Sat" || weekday === "Sun";
+}
+
 /** ✅ Checkbox UI (Uiverse 31) mas usado como "radio" (seleção única) */
 function CheckRadio31({
   checked,
@@ -147,6 +156,8 @@ const Checkout: React.FC = () => {
   const totalCents = useMemo(() => Math.round(safeCartTotal * 100), [safeCartTotal]);
 
   const monthKey = useMemo(() => getMonthKeySaoPaulo(), []);
+  const isWeekendOrder = useMemo(() => isWeekendInSaoPaulo(), []);
+  const isLateOrder = useMemo(() => isAfterSeparationCutoff(), []);
 
   const availableCents = useMemo(() => {
     const avail = (monthlyLimitCents || 0) - (spentCents || 0);
@@ -189,10 +200,10 @@ const Checkout: React.FC = () => {
   }, [payMode, availableCents, totalCents]);
 
   useEffect(() => {
-    if (isAfterSeparationCutoff()) {
+    if (isLateOrder) {
       setShowLateOrderPopup(true);
     }
-  }, []);
+  }, [isLateOrder]);
 
   /**
    * ✅ Mantém employee_session sincronizado no Checkout
@@ -616,14 +627,18 @@ const Checkout: React.FC = () => {
         <div className="late-order-backdrop" role="dialog" aria-modal="true">
           <div className="late-order-popup text-center">
             <h2 className="text-3xl font-black leading-tight text-gray-900 md:text-4xl">
-              Seu pedido será separado apenas no dia seguinte
+              {isWeekendOrder
+                ? "Seu pedido será separado apenas na segunda-feira"
+                : "Seu pedido será separado apenas no dia seguinte"}
             </h2>
             <p className="mt-4 text-base leading-7 text-gray-700">
-              Pedidos feitos após as 13:40 entram na fila para separação no próximo dia.
+              {isWeekendOrder
+                ? "Pedidos feitos no final de semana entram na fila para separação na segunda-feira."
+                : "Pedidos feitos após as 13:40 entram na fila para separação no próximo dia."}
             </p>
             <div className="mt-6 rounded-2xl border border-gray-200 bg-white p-4 text-sm text-gray-700">
               Se quiser continuar agora, o pedido será registrado normalmente, mas a separação não
-              acontece hoje.
+              {isWeekendOrder ? " acontece no final de semana." : " acontece hoje."}
             </div>
             <div className="mt-8 flex justify-end">
               <button
@@ -648,6 +663,15 @@ const Checkout: React.FC = () => {
           Confira os itens abaixo antes de confirmar. Após a confirmação, o pedido segue para
           separação interna.
         </p>
+
+        {isWeekendOrder ? (
+          <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            <p className="font-semibold">Atenção ao prazo de separação</p>
+            <p className="mt-1">
+              Pedidos realizados no final de semana serão separados somente na segunda-feira.
+            </p>
+          </div>
+        ) : null}
 
         <div className="mb-6 rounded-2xl border bg-gray-50 p-4 md:p-5">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
