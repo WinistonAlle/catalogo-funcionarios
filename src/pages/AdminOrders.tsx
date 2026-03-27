@@ -2684,11 +2684,14 @@ const styles: Record<string, CSSProperties> = {
 
   modal: {
     width: "min(860px, 100%)",
+    maxHeight: "88vh",
     borderRadius: 22,
     background: "#fff",
     border: "1px solid rgba(0,0,0,0.10)",
     boxShadow: "0 25px 70px rgba(0,0,0,0.22)",
     overflow: "hidden",
+    display: "flex",
+    flexDirection: "column",
   },
 
   modalTop: {
@@ -2713,7 +2716,12 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 1000,
   },
 
-  modalBody: { padding: 14 },
+  modalBody: {
+    padding: 14,
+    overflowY: "auto",
+    flex: 1,
+    WebkitOverflowScrolling: "touch",
+  },
 
   section: {
     border: "1px solid rgba(0,0,0,0.08)",
