@@ -935,8 +935,8 @@ const Destaques: React.FC = () => {
             Pedidos
           </button>
 
-          {/* 5) Relatórios (Admin) */}
-          {isAdmin && (
+          {/* 5) Relatórios (Admin/RH) */}
+          {(isAdmin || isRH) && (
             <button
               onClick={() => goTo("/relatorios")}
               className={`flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-red-50 ${

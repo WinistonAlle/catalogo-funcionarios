@@ -241,17 +241,17 @@ function App() {
               <Route
                 path="/rh/relatorio-gastos"
                 element={
-                  <RequireRole allow={["admin"]} redirectTo="/catalogo">
+                  <RequireRole allow={["rh"]} redirectTo="/catalogo">
                     <RHSpendingReport />
                   </RequireRole>
                 }
               />
 
-              {/* Relatórios (Admin) */}
+              {/* Relatórios (Admin + RH) */}
               <Route
                 path="/relatorios"
                 element={
-                  <RequireRole allow={["admin"]} redirectTo="/catalogo">
+                  <RequireRole allow={["admin", "rh"]} redirectTo="/catalogo">
                     <ReportsDashboard />
                   </RequireRole>
                 }

@@ -1353,7 +1353,7 @@ const Index: React.FC = () => {
             <span>Pedidos</span>
           </button>
 
-          {isAdmin && (
+          {(isAdmin || isRH) && (
             <button
               onClick={() => goTo("/relatorios")}
               className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-red-50 text-gray-800"
