@@ -23,14 +23,13 @@ import FavoritesPage from "./pages/Favorites";
 // ✅ Destaques (Admin)
 import Destaques from "./pages/Destaques";
 
-// Admin / RH / Relatórios / Separação
+// Admin / RH / Relatórios
 import Admin from "./pages/Admin";
 import AdminHome from "./pages/AdminHome";
 import RhHome from "./pages/rh/RhHome";
 import EmployeesPage from "./pages/rh/EmployeesPage";
 import RHSpendingReport from "./pages/rh/RHSpendingReport";
 import ReportsDashboard from "./pages/ReportsDashboard";
-import SeparationBoard from "./pages/SeparationBoard";
 
 // ✅ NOVO: AdminOrders
 import AdminOrders from "./pages/AdminOrders"; 
@@ -39,7 +38,7 @@ import AdminOrders from "./pages/AdminOrders";
 
 const queryClient = new QueryClient();
 
-type EmployeeRole = "admin" | "rh" | "separacao" | string;
+type EmployeeRole = "admin" | "rh" | string;
 
 type EmployeeSession = {
   id: string;
@@ -93,16 +92,9 @@ function RequireRole({
   return children;
 }
 
-/**
- * Catálogo: se for perfil separação, manda direto pro painel
- */
 function CatalogGate({ children }: { children: JSX.Element }) {
   const sess = getEmployeeSession();
   if (!sess) return <Navigate to="/login" replace />;
-
-  if (sess.role === "separacao") {
-    return <Navigate to="/painel-separacao" replace />;
-  }
 
   return children;
 }
@@ -186,16 +178,6 @@ function App() {
                   <RequireAuth>
                     <Checkout />
                   </RequireAuth>
-                }
-              />
-
-              {/* Painel de separação (TV) */}
-              <Route
-                path="/painel-separacao"
-                element={
-                  <RequireRole allow={["separacao"]} redirectTo="/catalogo">
-                    <SeparationBoard />
-                  </RequireRole>
                 }
               />
 

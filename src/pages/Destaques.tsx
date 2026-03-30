@@ -219,8 +219,8 @@ const Footer: React.FC = () => (
 
       <div className="text-center pt-2">
         <p className="text-xs text-gray-600">
-          © 2025 Catálogo Interativo para funcionários desenvolvido por{" "}
-          <b>Winiston Alle</b> & <b>Mateus Borges</b>
+          © 2026 Catálogo Interativo para funcionários desenvolvido por{" "}
+          <b>Winiston Alle</b>, <b>Mateus Borges</b> & <b>Júlio Silva</b>
         </p>
       </div>
     </div>

@@ -1779,7 +1779,7 @@ const socialLinks = [
 ];
 
 const developerText =
-  "©️ 2025 Catálogo Interativo para funcionários desenvolvido por Winiston Alle & Mateus Borges";
+  "© 2026 Catálogo Interativo para funcionários desenvolvido por Winiston Alle, Mateus Borges & Júlio Silva";
 
 const Footer: React.FC = () => {
   return (

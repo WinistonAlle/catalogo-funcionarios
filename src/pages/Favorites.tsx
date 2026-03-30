@@ -558,10 +558,10 @@ const FavoritesPage: React.FC = () => {
       <footer className="mt-4 border-t border-red-100/70 bg-white/70 backdrop-blur-md">
         <div className="container mx-auto px-4 py-4 text-center text-xs text-gray-700">
           <p className="font-medium">
-            © 2025 Catálogo Interativo para funcionários
+            © 2026 Catálogo Interativo para funcionários
           </p>
           <p className="text-gray-500">
-            desenvolvido por <b>Winiston Alle</b> & <b>Mateus Borges</b>
+            desenvolvido por <b>Winiston Alle</b>, <b>Mateus Borges</b> & <b>Júlio Silva</b>
           </p>
         </div>
       </footer>

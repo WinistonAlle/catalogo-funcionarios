@@ -151,11 +151,25 @@ function getStatusClasses(status: string) {
   const s = status?.toLowerCase?.() ?? "";
 
   if (s.includes("pend")) return "bg-amber-100 text-amber-800 border-amber-200";
+  if (s.includes("separa")) return "bg-amber-100 text-amber-800 border-amber-200";
   if (s.includes("final") || s.includes("concl"))
     return "bg-emerald-100 text-emerald-800 border-emerald-200";
+  if (s.includes("entreg")) return "bg-emerald-100 text-emerald-800 border-emerald-200";
   if (s.includes("cancel")) return "bg-red-100 text-red-800 border-red-200";
+  if (s.includes("pedido_feito") || s.includes("pedido feito"))
+    return "bg-sky-100 text-sky-800 border-sky-200";
 
   return "bg-gray-100 text-gray-700 border-gray-200";
+}
+
+function getStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    pedido_feito: "Pedido feito",
+    encaminhado_para_separacao: "Encaminhado para separação",
+    entregue: "Entregue",
+  };
+
+  return labels[status] || status;
 }
 
 const formatCurrency = (value: number) =>
@@ -670,7 +684,7 @@ const MyOrdersPage: React.FC = () => {
                         getStatusClasses(order.status)
                       }
                     >
-                      {order.status}
+                      {getStatusLabel(order.status)}
                     </span>
                   </div>
 
@@ -780,7 +794,7 @@ const socialLinks = [
 ];
 
 const developerText =
-  "© 2025 Catálogo Interativo para funcionários desenvolvido por Winiston Alle & Mateus Borges";
+  "© 2026 Catálogo Interativo para funcionários desenvolvido por Winiston Alle, Mateus Borges & Júlio Silva";
 
 const Footer: React.FC = () => {
   return (

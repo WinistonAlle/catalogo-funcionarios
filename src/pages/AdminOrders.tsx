@@ -68,11 +68,24 @@ type OrderItemRow = {
 
 const CATALOG_ROUTE = "/catalogo"; // ajuste se seu catálogo tiver outro path
 
+const ORDER_STATUS_OPTIONS = [
+  { value: "pedido_feito", label: "Pedido feito" },
+  {
+    value: "encaminhado_para_separacao",
+    label: "Encaminhado para separação",
+  },
+  { value: "entregue", label: "Entregue" },
+] as const;
+
+const ORDER_STATUS_VALUES = ORDER_STATUS_OPTIONS.map((option) => option.value);
+
 const STATUS_LABEL: Record<string, string> = {
+  pedido_feito: "Pedido feito",
+  encaminhado_para_separacao: "Encaminhado para separação",
+  entregue: "Entregue",
   aguardando_separacao: "Aguardando separação",
   em_separacao: "Em separação",
   pronto_para_retirada: "Pronto para retirada",
-  entregue: "Entregue",
   cancelado: "Cancelado",
 };
 
@@ -359,6 +372,10 @@ function statusPill(status?: string | null): CSSProperties {
   };
 
   switch (status) {
+    case "pedido_feito":
+      return { ...base, background: "rgba(59,130,246,0.10)", color: "#1D4ED8" };
+    case "encaminhado_para_separacao":
+      return { ...base, background: "rgba(245,158,11,0.12)", color: "#92400E" };
     case "aguardando_separacao":
       return { ...base, background: "rgba(59,130,246,0.10)", color: "#1D4ED8" };
     case "em_separacao":
@@ -427,6 +444,13 @@ export default function AdminOrders() {
 
   const [removeReason, setRemoveReason] = useState("");
   const [removingItemId, setRemovingItemId] = useState<string | null>(null);
+  const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
+  const [statusDrafts, setStatusDrafts] = useState<Record<string, string>>({});
+  const [bulkStatus, setBulkStatus] = useState<string>(
+    ORDER_STATUS_OPTIONS[0].value,
+  );
+  const [statusUpdatingIds, setStatusUpdatingIds] = useState<string[]>([]);
+  const [bulkUpdating, setBulkUpdating] = useState(false);
 
   const isMobile = useIsMobile(940);
 
@@ -590,8 +614,30 @@ export default function AdminOrders() {
         return { ...o, employee_name: cpfMap.get(cpfKey) ?? null };
       });
       setOrders(patched);
+      setSelectedOrderIds((current) =>
+        current.filter((id) => patched.some((order) => order.id === id)),
+      );
+      setStatusDrafts((current) => {
+        const next = { ...current };
+        for (const order of patched) {
+          next[order.id] =
+            next[order.id] ?? order.status ?? ORDER_STATUS_OPTIONS[0].value;
+        }
+        return next;
+      });
     } else {
       setOrders(list);
+      setSelectedOrderIds((current) =>
+        current.filter((id) => list.some((order) => order.id === id)),
+      );
+      setStatusDrafts((current) => {
+        const next = { ...current };
+        for (const order of list) {
+          next[order.id] =
+            next[order.id] ?? order.status ?? ORDER_STATUS_OPTIONS[0].value;
+        }
+        return next;
+      });
     }
 
     setLoading(false);
@@ -737,6 +783,81 @@ export default function AdminOrders() {
     setCanceling(false);
   }
 
+  const isStatusManageLocked = (order?: OrderRow | null) =>
+    (order?.status || "") === "cancelado";
+
+  async function updateOrderStatuses(orderIds: string[], nextStatus: string) {
+    const uniqueOrderIds = Array.from(new Set(orderIds)).filter(Boolean);
+    if (!uniqueOrderIds.length) return;
+
+    if (!ORDER_STATUS_VALUES.includes(nextStatus as (typeof ORDER_STATUS_VALUES)[number])) {
+      alert("Selecione um status válido.");
+      return;
+    }
+
+    const actorCpf = await getActorCpf();
+    const isSingle = uniqueOrderIds.length === 1;
+
+    if (isSingle) setStatusUpdatingIds(uniqueOrderIds);
+    else setBulkUpdating(true);
+
+    const updatePayload: {
+      status: string;
+    } = {
+      status: nextStatus,
+    };
+
+    const { error } = await supabase
+      .from("orders")
+      .update(updatePayload)
+      .in("id", uniqueOrderIds);
+
+    if (error) {
+      alert(error.message);
+      setStatusUpdatingIds([]);
+      setBulkUpdating(false);
+      return;
+    }
+
+    if (actorCpf) {
+      const { error: logError } = await supabase
+        .from("order_admin_actions")
+        .insert(
+          uniqueOrderIds.map((orderId) => ({
+            order_id: orderId,
+            actor_cpf: actorCpf,
+            action: "update_status",
+            reason: `Status alterado para ${STATUS_LABEL[nextStatus] || nextStatus}`,
+          })),
+        );
+
+      if (logError) {
+        console.error("Erro ao registrar histórico de status:", logError);
+      }
+    }
+
+    if (selected && uniqueOrderIds.includes(selected.id)) {
+      await reloadSelectedOrder(selected.id);
+      await loadHistory(selected.id);
+    }
+
+    await loadOrders();
+    setSelectedOrderIds((current) =>
+      current.filter((id) => !uniqueOrderIds.includes(id)),
+    );
+    setStatusUpdatingIds([]);
+    setBulkUpdating(false);
+  }
+
+  function toggleOrderSelection(orderId: string, checked: boolean) {
+    setSelectedOrderIds((current) => {
+      if (checked) {
+        return current.includes(orderId) ? current : [...current, orderId];
+      }
+      return current.filter((id) => id !== orderId);
+    });
+  }
+
   // ✅ Remover item (RPC v2)
   async function removeOrderItem(item: OrderItemRow) {
     if (!selected) return;
@@ -878,9 +999,7 @@ export default function AdminOrders() {
     const canceled = orders.filter((o) => o.status === "cancelado").length;
     const delivered = orders.filter((o) => o.status === "entregue").length;
     const pending = orders.filter((o) =>
-      ["aguardando_separacao", "em_separacao", "pronto_para_retirada"].includes(
-        o.status || "",
-      ),
+      ["pedido_feito", "encaminhado_para_separacao"].includes(o.status || ""),
     ).length;
     const withWallet = orders.filter((o) => getWalletUsed(o) > 0).length;
     return { total, canceled, delivered, pending, withWallet };
@@ -919,6 +1038,16 @@ export default function AdminOrders() {
     const st = o?.status || "";
     return st === "cancelado" || st === "entregue";
   };
+
+  const selectableOrders = useMemo(
+    () => orders.filter((order) => !isStatusManageLocked(order)),
+    [orders],
+  );
+
+  const areAllSelectableOrdersSelected = useMemo(() => {
+    if (!selectableOrders.length) return false;
+    return selectableOrders.every((order) => selectedOrderIds.includes(order.id));
+  }, [selectableOrders, selectedOrderIds]);
 
   const kpisWrapStyle: CSSProperties = useMemo(() => {
     if (!isMobile) return styles.kpis;
@@ -1139,9 +1268,15 @@ export default function AdminOrders() {
                 onChange={(e) => setStatusFilter(e.target.value)}
               >
                 <option value="">Todos</option>
-                {Object.entries(STATUS_LABEL).map(([k, v]) => (
-                  <option key={k} value={k}>
-                    {v}
+                {[
+                  ...ORDER_STATUS_OPTIONS,
+                  { value: "cancelado", label: "Cancelado" },
+                  { value: "aguardando_separacao", label: "Aguardando separação" },
+                  { value: "em_separacao", label: "Em separação" },
+                  { value: "pronto_para_retirada", label: "Pronto para retirada" },
+                ].map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
                   </option>
                 ))}
               </select>
@@ -1190,6 +1325,72 @@ export default function AdminOrders() {
             </span>
           </div>
         </section>
+
+        {!loading && !err && orders.length > 0 && (
+          <section style={styles.bulkCard}>
+            <div>
+              <div style={styles.bulkTitle}>Atualização de status</div>
+              <div style={styles.bulkText}>
+                O admin pode alterar individualmente ou aplicar em lote.
+              </div>
+            </div>
+
+            <div style={styles.bulkControls}>
+              <label style={styles.bulkCheck}>
+                <input
+                  type="checkbox"
+                  checked={areAllSelectableOrdersSelected}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      setSelectedOrderIds(selectableOrders.map((order) => order.id));
+                      return;
+                    }
+                    setSelectedOrderIds([]);
+                  }}
+                />
+                <span>
+                  Selecionar todos ({selectedOrderIds.length} marcados)
+                </span>
+              </label>
+
+              <select
+                style={styles.select}
+                value={bulkStatus}
+                onChange={(e) => setBulkStatus(e.target.value)}
+              >
+                {ORDER_STATUS_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+
+              <button
+                style={{
+                  ...styles.primaryBtn,
+                  ...(bulkUpdating || selectedOrderIds.length === 0
+                    ? styles.disabledBtn
+                    : {}),
+                }}
+                disabled={bulkUpdating || selectedOrderIds.length === 0}
+                onClick={() => updateOrderStatuses(selectedOrderIds, bulkStatus)}
+              >
+                {bulkUpdating ? "Atualizando…" : "Aplicar em selecionados"}
+              </button>
+
+              <button
+                style={{
+                  ...styles.secondaryBtn,
+                  ...(selectedOrderIds.length === 0 ? styles.disabledBtn : {}),
+                }}
+                onClick={() => setSelectedOrderIds([])}
+                disabled={selectedOrderIds.length === 0}
+              >
+                Limpar seleção
+              </button>
+            </div>
+          </section>
+        )}
 
         {loading && (
           <div style={styles.stateBox}>
@@ -1241,11 +1442,26 @@ export default function AdminOrders() {
                   <table style={styles.table}>
                     <thead>
                       <tr>
-                        <th style={styles.th}>Pedido</th>
+                        <th style={styles.th}>
+                          <input
+                            type="checkbox"
+                            checked={areAllSelectableOrdersSelected}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedOrderIds(
+                                  selectableOrders.map((order) => order.id),
+                                );
+                                return;
+                              }
+                              setSelectedOrderIds([]);
+                            }}
+                          />
+                        </th>
                         <th style={styles.th}>Funcionário</th>
                         <th style={styles.th}>Pagamento</th>
                         <th style={styles.th}>Total</th>
                         <th style={styles.th}>Status</th>
+                        <th style={styles.th}>Atualizar status</th>
                         <th style={styles.th}>Data</th>
                         <th style={{ ...styles.th, textAlign: "right" }}>
                           Ações
@@ -1260,9 +1476,15 @@ export default function AdminOrders() {
 
                         return (
                           <tr key={o.id} style={styles.tr}>
-                            <td style={styles.tdStrong}>
-                              {o.order_number || "—"}
-                              <div style={styles.tdMuted}>{o.id}</div>
+                            <td style={styles.td}>
+                              <input
+                                type="checkbox"
+                                checked={selectedOrderIds.includes(o.id)}
+                                disabled={isStatusManageLocked(o)}
+                                onChange={(e) =>
+                                  toggleOrderSelection(o.id, e.target.checked)
+                                }
+                              />
                             </td>
 
                             <td style={styles.td}>
@@ -1302,6 +1524,61 @@ export default function AdminOrders() {
                                   o.status ||
                                   "—"}
                               </span>
+                            </td>
+
+                            <td style={styles.td}>
+                              <div style={styles.inlineStatusActions}>
+                                <select
+                                  style={styles.select}
+                                  value={
+                                    statusDrafts[o.id] ??
+                                    o.status ??
+                                    ORDER_STATUS_OPTIONS[0].value
+                                  }
+                                  disabled={isStatusManageLocked(o)}
+                                  onChange={(e) =>
+                                    setStatusDrafts((current) => ({
+                                      ...current,
+                                      [o.id]: e.target.value,
+                                    }))
+                                  }
+                                >
+                                  {ORDER_STATUS_OPTIONS.map((option) => (
+                                    <option
+                                      key={option.value}
+                                      value={option.value}
+                                    >
+                                      {option.label}
+                                    </option>
+                                  ))}
+                                </select>
+
+                                <button
+                                  style={{
+                                    ...styles.smallBtn,
+                                    ...(isStatusManageLocked(o) ||
+                                    statusUpdatingIds.includes(o.id)
+                                      ? styles.disabledBtn
+                                      : {}),
+                                  }}
+                                  disabled={
+                                    isStatusManageLocked(o) ||
+                                    statusUpdatingIds.includes(o.id)
+                                  }
+                                  onClick={() =>
+                                    updateOrderStatuses(
+                                      [o.id],
+                                      statusDrafts[o.id] ??
+                                        o.status ??
+                                        ORDER_STATUS_OPTIONS[0].value,
+                                    )
+                                  }
+                                >
+                                  {statusUpdatingIds.includes(o.id)
+                                    ? "Salvando…"
+                                    : "Salvar"}
+                                </button>
+                              </div>
                             </td>
 
                             <td style={styles.td}>
@@ -1398,19 +1675,84 @@ export default function AdminOrders() {
                           </div>
                         </div>
 
-                        <button
-                          style={{
-                            ...styles.primaryBtn,
-                            padding: "10px 12px",
-                            height: 42,
-                            borderRadius: 14,
-                            ...(isCanceled ? styles.disabledBtn : {}),
-                          }}
-                          disabled={isCanceled}
-                          onClick={() => setSelected(o)}
-                        >
-                          {isCanceled ? "Cancelado" : "Gerenciar"}
-                        </button>
+                        <div style={styles.mobileActions}>
+                          <label style={styles.bulkCheck}>
+                            <input
+                              type="checkbox"
+                              checked={selectedOrderIds.includes(o.id)}
+                              disabled={isStatusManageLocked(o)}
+                              onChange={(e) =>
+                                toggleOrderSelection(o.id, e.target.checked)
+                              }
+                            />
+                            <span>Selecionar</span>
+                          </label>
+
+                          <select
+                            style={styles.select}
+                            value={
+                              statusDrafts[o.id] ??
+                              o.status ??
+                              ORDER_STATUS_OPTIONS[0].value
+                            }
+                            disabled={isStatusManageLocked(o)}
+                            onChange={(e) =>
+                              setStatusDrafts((current) => ({
+                                ...current,
+                                [o.id]: e.target.value,
+                              }))
+                            }
+                          >
+                            {ORDER_STATUS_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+
+                          <button
+                            style={{
+                              ...styles.secondaryBtn,
+                              padding: "10px 12px",
+                              height: 42,
+                              borderRadius: 14,
+                              ...(isStatusManageLocked(o) ||
+                              statusUpdatingIds.includes(o.id)
+                                ? styles.disabledBtn
+                                : {}),
+                            }}
+                            disabled={
+                              isStatusManageLocked(o) ||
+                              statusUpdatingIds.includes(o.id)
+                            }
+                            onClick={() =>
+                              updateOrderStatuses(
+                                [o.id],
+                                statusDrafts[o.id] ??
+                                  o.status ??
+                                  ORDER_STATUS_OPTIONS[0].value,
+                              )
+                            }
+                          >
+                            {statusUpdatingIds.includes(o.id)
+                              ? "Atualizando…"
+                              : "Salvar status"}
+                          </button>
+
+                          <button
+                            style={{
+                              ...styles.primaryBtn,
+                              padding: "10px 12px",
+                              height: 42,
+                              borderRadius: 14,
+                              ...(isCanceled ? styles.disabledBtn : {}),
+                            }}
+                            disabled={isCanceled}
+                            onClick={() => setSelected(o)}
+                          >
+                            {isCanceled ? "Cancelado" : "Gerenciar"}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
@@ -1504,6 +1846,59 @@ export default function AdminOrders() {
                             selected.status ||
                             "—"}
                         </span>
+                      </div>
+
+                      <div style={summaryItemStyle}>
+                        <div style={styles.summaryLabel}>Alterar status</div>
+                        <div style={styles.summaryStatusActions}>
+                          <select
+                            style={styles.select}
+                            value={
+                              statusDrafts[selected.id] ??
+                              selected.status ??
+                              ORDER_STATUS_OPTIONS[0].value
+                            }
+                            disabled={isStatusManageLocked(selected)}
+                            onChange={(e) =>
+                              setStatusDrafts((current) => ({
+                                ...current,
+                                [selected.id]: e.target.value,
+                              }))
+                            }
+                          >
+                            {ORDER_STATUS_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            style={{
+                              ...styles.primaryBtn,
+                              height: 44,
+                              ...(isStatusManageLocked(selected) ||
+                              statusUpdatingIds.includes(selected.id)
+                                ? styles.disabledBtn
+                                : {}),
+                            }}
+                            disabled={
+                              isStatusManageLocked(selected) ||
+                              statusUpdatingIds.includes(selected.id)
+                            }
+                            onClick={() =>
+                              updateOrderStatuses(
+                                [selected.id],
+                                statusDrafts[selected.id] ??
+                                  selected.status ??
+                                  ORDER_STATUS_OPTIONS[0].value,
+                              )
+                            }
+                          >
+                            {statusUpdatingIds.includes(selected.id)
+                              ? "Salvando…"
+                              : "Salvar"}
+                          </button>
+                        </div>
                       </div>
 
                       <div style={summaryItemStyle}>
@@ -2512,6 +2907,38 @@ const styles: Record<string, CSSProperties> = {
   },
   helpText: { fontSize: 12, opacity: 0.65 },
 
+  bulkCard: {
+    borderRadius: 18,
+    border: "1px solid rgba(0,0,0,0.08)",
+    background: "#fff",
+    padding: 14,
+    boxShadow: "0 18px 45px rgba(0,0,0,0.06)",
+    marginBottom: 16,
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 14,
+    flexWrap: "wrap",
+  },
+
+  bulkTitle: { fontSize: 14, fontWeight: 1000 },
+  bulkText: { marginTop: 4, fontSize: 12, opacity: 0.72 },
+
+  bulkControls: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+
+  bulkCheck: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    fontSize: 12,
+    fontWeight: 800,
+  },
+
   tableCard: {
     borderRadius: 18,
     border: "1px solid rgba(0,0,0,0.08)",
@@ -2575,6 +3002,19 @@ const styles: Record<string, CSSProperties> = {
 
   payMini: { marginTop: 6, display: "flex", flexDirection: "column", gap: 2 },
   payLine: { fontSize: 12, opacity: 0.75 },
+
+  inlineStatusActions: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  summaryStatusActions: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "stretch",
+    gap: 8,
+  },
 
   smallBtn: {
     height: 36,
@@ -2671,6 +3111,14 @@ const styles: Record<string, CSSProperties> = {
   },
   mobileTotal: { fontSize: 18, fontWeight: 1000 },
 
+  mobileActions: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "stretch",
+    gap: 8,
+    minWidth: 180,
+  },
+
   overlay: {
     position: "fixed",
     inset: 0,
@@ -2737,7 +3185,7 @@ const styles: Record<string, CSSProperties> = {
   summaryGrid: {
     marginTop: 12,
     display: "grid",
-    gridTemplateColumns: "1fr 1fr 1fr",
+    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
     gap: 12,
   },
 

@@ -49,7 +49,7 @@ export async function createOrder({
     employee_name: employeeName ?? null,
     total_items: totalItems,            // 👈 qtd total de itens
     total_value: totalValue,            // 👈 valor total
-    status: "aguardando_separacao",
+    status: "pedido_feito",
   };
 
   // 1) Cria o pedido
