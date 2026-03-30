@@ -14,9 +14,11 @@ const Wrapper = styled.div`
 
 const Container = styled.div`
   width: 100%;
-  max-width: 420px;
+  max-width: 860px;
   display: flex;
   justify-content: center;
+  flex-wrap: wrap;
+  gap: 24px;
 `;
 
 const Box = styled.div`
@@ -74,6 +76,11 @@ const RhHome: React.FC = () => {
           <Box onClick={() => navigate("/rh/relatorio-gastos")}>
             <Title>Relatório de Gastos</Title>
             <Subtitle>Quanto cada funcionário gastou do saldo</Subtitle>
+          </Box>
+
+          <Box onClick={() => navigate("/catalogo")}>
+            <Title>Acessar Catálogo</Title>
+            <Subtitle>Voltar para o catálogo de produtos dos funcionários</Subtitle>
           </Box>
         </Container>
       </Wrapper>
