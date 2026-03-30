@@ -1,9 +1,8 @@
-// src/pages/rh/RhHome.tsx
 import { useState } from "react";
 import styled from "styled-components";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Bg } from "../../components/ui/app-surface";
+import { Bg } from "./../components/ui/app-surface";
 import { triggerEmployeeSyncNow } from "@/lib/employeeSync";
 
 const Wrapper = styled.div`
@@ -18,7 +17,7 @@ const Wrapper = styled.div`
 
 const Shell = styled.div`
   width: 100%;
-  max-width: 860px;
+  max-width: 1240px;
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -58,20 +57,13 @@ const BackButton = styled.button`
 
 const Container = styled.div`
   width: 100%;
-  max-width: 860px;
+  max-width: 1240px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-template-areas:
-    "sync sync"
-    "report catalog";
   gap: 24px;
 
   @media (max-width: 900px) {
     grid-template-columns: 1fr;
-    grid-template-areas:
-      "sync"
-      "report"
-      "catalog";
   }
 `;
 
@@ -94,7 +86,7 @@ const Box = styled.button`
   padding: 26px;
   text-align: center;
 
-  &:hover {
+  &:hover:not(:disabled) {
     transform: translateY(-10px) scale(1.02);
     border-color: #b82626;
     background: #faf7f7;
@@ -111,7 +103,6 @@ const Box = styled.button`
 `;
 
 const SyncBox = styled(Box)`
-  grid-area: sync;
   &::before {
     content: "";
     position: absolute;
@@ -154,32 +145,22 @@ const SyncBox = styled(Box)`
   }
 `;
 
-const ReportBox = styled(Box)`
-  grid-area: report;
-`;
-
-const CatalogBox = styled(Box)`
-  grid-area: catalog;
-`;
-
 const Title = styled.h2`
   color: #b82626;
   font-size: 1.8rem;
   font-weight: 800;
   margin: 0;
-  text-align: center;
 `;
 
 const Subtitle = styled.p`
   color: #555;
-  font-size: 1.1rem;
-  text-align: center;
+  font-size: 1.05rem;
   width: 85%;
   margin: 0;
-  line-height: 1.4;
+  line-height: 1.45;
 `;
 
-const RhHome: React.FC = () => {
+export default function AdminHome() {
   const navigate = useNavigate();
   const [syncingEmployees, setSyncingEmployees] = useState(false);
 
@@ -216,25 +197,32 @@ const RhHome: React.FC = () => {
 
         <Shell>
           <Container>
-            <SyncBox onClick={handleSyncEmployeesNow} disabled={syncingEmployees}>
-              <Title>{syncingEmployees ? "Sincronizando..." : "Sincronizar Funcionários"}</Title>
-              <Subtitle>Atualiza os dados do Sheets imediatamente, sem esperar 1 hora.</Subtitle>
+            <SyncBox type="button" onClick={handleSyncEmployeesNow} disabled={syncingEmployees}>
+              <Title>
+                {syncingEmployees ? "Sincronizando..." : "Sincronizar Funcionários"}
+              </Title>
+              <Subtitle>
+                Atualiza a base do Google Sheets na hora, sem esperar o ciclo automático.
+              </Subtitle>
             </SyncBox>
 
-            <ReportBox onClick={() => navigate("/rh/relatorio-gastos")}>
-              <Title>Relatório de Gastos</Title>
-              <Subtitle>Quanto cada funcionário gastou do saldo</Subtitle>
-            </ReportBox>
+            <Box type="button" onClick={() => navigate("/admin/produtos")}>
+              <Title>Produtos</Title>
+              <Subtitle>Editar produtos, preços, categorias, imagens e pesos.</Subtitle>
+            </Box>
 
-            <CatalogBox onClick={() => navigate("/catalogo")}>
+            <Box type="button" onClick={() => navigate("/admin/pedidos")}>
+              <Title>Pedidos</Title>
+              <Subtitle>Consultar, editar e acompanhar o histórico dos pedidos.</Subtitle>
+            </Box>
+
+            <Box type="button" onClick={() => navigate("/catalogo")}>
               <Title>Acessar Catálogo</Title>
-              <Subtitle>Voltar para o catálogo de produtos dos funcionários</Subtitle>
-            </CatalogBox>
+              <Subtitle>Voltar para o catálogo usado pelos funcionários.</Subtitle>
+            </Box>
           </Container>
         </Shell>
       </Wrapper>
     </Bg>
   );
-};
-
-export default RhHome;
+}

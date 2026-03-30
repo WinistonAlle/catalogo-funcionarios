@@ -560,12 +560,12 @@ export default function Admin() {
           <Button
             variant="secondary"
             onClick={() => {
-              window.location.href = "/catalogo";
+              window.location.href = "/admin";
             }}
           >
-            ← Voltar ao Catálogo
+            ← Voltar ao Painel Admin
           </Button>
-          <h1 className="text-xl font-semibold">Painel de Produtos (Admin)</h1>
+          <h1 className="text-xl font-semibold">Painel de Produtos</h1>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">

@@ -397,7 +397,9 @@ const Login: React.FC = () => {
 
       if (linkErr) throw linkErr;
 
-      if (session.role === "rh") {
+      if (session.role === "admin") {
+        window.location.href = "/admin";
+      } else if (session.role === "rh") {
         window.location.href = "/rh";
       } else {
         window.location.href = "/catalogo";

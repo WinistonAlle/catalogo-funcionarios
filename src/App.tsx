@@ -25,6 +25,7 @@ import Destaques from "./pages/Destaques";
 
 // Admin / RH / Relatórios / Separação
 import Admin from "./pages/Admin";
+import AdminHome from "./pages/AdminHome";
 import RhHome from "./pages/rh/RhHome";
 import EmployeesPage from "./pages/rh/EmployeesPage";
 import RHSpendingReport from "./pages/rh/RHSpendingReport";
@@ -201,6 +202,15 @@ function App() {
               {/* Admin */}
               <Route
                 path="/admin"
+                element={
+                  <RequireRole allow={["admin"]} redirectTo="/catalogo">
+                    <AdminHome />
+                  </RequireRole>
+                }
+              />
+
+              <Route
+                path="/admin/produtos"
                 element={
                   <RequireRole allow={["admin"]} redirectTo="/catalogo">
                     <Admin />
