@@ -73,11 +73,6 @@ const RhHome: React.FC = () => {
     <Bg>
       <Wrapper>
         <Container>
-          <Box onClick={() => navigate("/rh/relatorio-gastos")}>
-            <Title>Relatório de Gastos</Title>
-            <Subtitle>Quanto cada funcionário gastou do saldo</Subtitle>
-          </Box>
-
           <Box onClick={() => navigate("/catalogo")}>
             <Title>Acessar Catálogo</Title>
             <Subtitle>Voltar para o catálogo de produtos dos funcionários</Subtitle>
