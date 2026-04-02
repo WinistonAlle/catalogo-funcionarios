@@ -4,7 +4,17 @@ import styled from "styled-components";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Bg } from "../../components/ui/app-surface";
-import { triggerEmployeeSyncNow } from "@/lib/employeeSync";
+import { resetAllEmployeeBalances, triggerEmployeeSyncNow } from "@/lib/employeeSync";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const Wrapper = styled.div`
   position: relative;
@@ -62,7 +72,7 @@ const Container = styled.div`
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-areas:
-    "sync sync"
+    "sync reset"
     "report catalog";
   gap: 24px;
 
@@ -70,6 +80,7 @@ const Container = styled.div`
     grid-template-columns: 1fr;
     grid-template-areas:
       "sync"
+      "reset"
       "report"
       "catalog";
   }
@@ -158,6 +169,17 @@ const ReportBox = styled(Box)`
   grid-area: report;
 `;
 
+const ResetBox = styled(Box)`
+  grid-area: reset;
+  background: linear-gradient(180deg, #fff5f5 0%, #ffffff 100%);
+  border-color: rgba(184, 38, 38, 0.18);
+
+  &:hover:not(:disabled) {
+    border-color: #8f1717;
+    background: linear-gradient(180deg, #ffeaea 0%, #fff7f7 100%);
+  }
+`;
+
 const CatalogBox = styled(Box)`
   grid-area: catalog;
 `;
@@ -179,9 +201,73 @@ const Subtitle = styled.p`
   line-height: 1.4;
 `;
 
+function getSaoPauloDateParts(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+
+  const parts = formatter.formatToParts(date);
+  return {
+    year: Number(parts.find((part) => part.type === "year")?.value || 0),
+    month: Number(parts.find((part) => part.type === "month")?.value || 0),
+    day: Number(parts.find((part) => part.type === "day")?.value || 0),
+  };
+}
+
+function pad(value: number) {
+  return String(value).padStart(2, "0");
+}
+
+function formatDateLabel(year: number, month: number, day: number) {
+  return `${pad(day)}/${pad(month)}/${year}`;
+}
+
+function getBalanceResetWindow(date = new Date()) {
+  const { year, month, day } = getSaoPauloDateParts(date);
+  const allowed = day >= 28 || day <= 2;
+
+  if (day >= 28) {
+    const nextMonth = month === 12 ? 1 : month + 1;
+    const nextYear = month === 12 ? year + 1 : year;
+
+    return {
+      allowed,
+      start: formatDateLabel(year, month, 28),
+      end: formatDateLabel(nextYear, nextMonth, 2),
+    };
+  }
+
+  const previousMonth = month === 1 ? 12 : month - 1;
+  const previousYear = month === 1 ? year - 1 : year;
+
+  if (day <= 2) {
+    return {
+      allowed,
+      start: formatDateLabel(previousYear, previousMonth, 28),
+      end: formatDateLabel(year, month, 2),
+    };
+  }
+
+  const nextMonth = month === 12 ? 1 : month + 1;
+  const nextYear = month === 12 ? year + 1 : year;
+
+  return {
+    allowed,
+    start: formatDateLabel(year, month, 28),
+    end: formatDateLabel(nextYear, nextMonth, 2),
+  };
+}
+
 const RhHome: React.FC = () => {
   const navigate = useNavigate();
   const [syncingEmployees, setSyncingEmployees] = useState(false);
+  const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  const [resettingBalances, setResettingBalances] = useState(false);
+
+  const resetWindow = getBalanceResetWindow();
 
   const handleGoBack = () => {
     if (window.history.length > 1) {
@@ -206,6 +292,34 @@ const RhHome: React.FC = () => {
     }
   };
 
+  const handleOpenResetDialog = () => {
+    setResetDialogOpen(true);
+  };
+
+  const handleResetBalances = async () => {
+    if (!resetWindow.allowed) {
+      toast.error(`Você só pode resetar o saldo de ${resetWindow.start} até ${resetWindow.end}.`);
+      return;
+    }
+
+    setResettingBalances(true);
+
+    try {
+      const payload = await resetAllEmployeeBalances();
+      toast.success(
+        payload.updatedCount && payload.updatedCount > 0
+          ? `Saldo resetado com sucesso para ${payload.updatedCount} funcionário(s).`
+          : "Saldo resetado com sucesso. Nenhum funcionário tinha saldo consumido neste ciclo."
+      );
+      setResetDialogOpen(false);
+    } catch (err: any) {
+      console.error("Erro ao resetar saldo dos funcionários:", err);
+      toast.error(err?.message || "Erro ao resetar saldo dos funcionários.");
+    } finally {
+      setResettingBalances(false);
+    }
+  };
+
   return (
     <Bg>
       <Wrapper>
@@ -221,6 +335,15 @@ const RhHome: React.FC = () => {
               <Subtitle>Atualiza os dados do Sheets imediatamente, sem esperar 1 hora.</Subtitle>
             </SyncBox>
 
+            <ResetBox onClick={handleOpenResetDialog} disabled={resettingBalances}>
+              <Title>{resettingBalances ? "Restaurando..." : "Restaurar Saldo"}</Title>
+              <Subtitle>
+                Restaura o saldo de todos os funcionários para o valor inicial da planilha no ciclo atual.
+                Permitido somente de{" "}
+                {resetWindow.start} até {resetWindow.end}.
+              </Subtitle>
+            </ResetBox>
+
             <ReportBox onClick={() => navigate("/rh/relatorio-gastos")}>
               <Title>Relatório de Gastos</Title>
               <Subtitle>Quanto cada funcionário gastou do saldo</Subtitle>
@@ -233,6 +356,47 @@ const RhHome: React.FC = () => {
           </Container>
         </Shell>
       </Wrapper>
+
+      <AlertDialog open={resetDialogOpen} onOpenChange={setResetDialogOpen}>
+        <AlertDialogContent className="max-w-2xl border-red-200 bg-red-50">
+          <AlertDialogHeader className="space-y-4 text-left">
+            <AlertDialogTitle className="text-2xl font-extrabold text-red-800">
+              {resetWindow.allowed
+                ? "Você tem certeza que deseja continuar?"
+                : "Restauração de saldo indisponível agora"}
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-base leading-7 text-red-700">
+              {resetWindow.allowed
+                ? "Você clicou em restaurar o saldo de todos os usuários. Essa ação faz todos os funcionários voltarem ao valor inicial definido na planilha para o ciclo atual e deve ser usada com muito cuidado."
+                : `Você só pode resetar o saldo de ${resetWindow.start} até ${resetWindow.end}.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <div className="rounded-xl border border-red-200 bg-white/80 p-4 text-sm leading-6 text-red-900">
+            {resetWindow.allowed
+              ? "Tecnicamente, o sistema zera o gasto acumulado do ciclo atual para que o saldo disponível volte ao valor inicial vindo da planilha."
+              : "Fora da janela permitida, o sistema bloqueia a ação no frontend e também no backend."}
+          </div>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={resettingBalances}>
+              {resetWindow.allowed ? "Cancelar" : "Fechar"}
+            </AlertDialogCancel>
+            {resetWindow.allowed && (
+              <AlertDialogAction
+                onClick={(event) => {
+                  event.preventDefault();
+                  void handleResetBalances();
+                }}
+                className="bg-red-700 hover:bg-red-800"
+                disabled={resettingBalances}
+              >
+                {resettingBalances ? "Restaurando..." : "Sim, restaurar saldo"}
+              </AlertDialogAction>
+            )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Bg>
   );
 };

@@ -2,7 +2,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import express from "express";
-import { spawn } from "child_process";
+import { exec, spawn } from "child_process";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
@@ -42,6 +42,105 @@ const queue: string[] = [];
 const queuedOrRunning = new Set<string>();
 let isRunning = false;
 let lastRunAt: number | null = null;
+
+function getBearerToken(req: express.Request) {
+  const auth = req.headers.authorization || "";
+  const match = auth.match(/^Bearer\s+(.+)$/i);
+  return match?.[1] ?? null;
+}
+
+async function requirePrivilegedUser(req: express.Request) {
+  const token = getBearerToken(req);
+  if (!token) {
+    return { ok: false as const, status: 401, error: "Missing Bearer token" };
+  }
+
+  const { data: userData, error: userErr } = await supabase.auth.getUser(token);
+  if (userErr || !userData?.user) {
+    return { ok: false as const, status: 401, error: "Invalid session" };
+  }
+
+  const { data: emp, error: empErr } = await supabase
+    .from("employees")
+    .select("role, user_id")
+    .eq("user_id", userData.user.id)
+    .maybeSingle();
+
+  if (empErr) {
+    return { ok: false as const, status: 500, error: "Failed to check role" };
+  }
+
+  if (!emp) {
+    return { ok: false as const, status: 403, error: "Employee not found / not linked" };
+  }
+
+  const role = String((emp as any).role || "").toLowerCase();
+  if (role !== "admin" && role !== "rh") {
+    return { ok: false as const, status: 403, error: "Not allowed" };
+  }
+
+  return { ok: true as const, userId: userData.user.id, role };
+}
+
+function getZonedParts(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+
+  const parts = formatter.formatToParts(date);
+  const year = Number(parts.find((part) => part.type === "year")?.value || 0);
+  const month = Number(parts.find((part) => part.type === "month")?.value || 0);
+  const day = Number(parts.find((part) => part.type === "day")?.value || 0);
+
+  return { year, month, day };
+}
+
+function pad(value: number) {
+  return String(value).padStart(2, "0");
+}
+
+function buildDateLabel(year: number, month: number, day: number) {
+  return `${year}-${pad(month)}-${pad(day)}`;
+}
+
+function getResetWindow(date = new Date()) {
+  const { year, month, day } = getZonedParts(date);
+  const allowed = day >= 28 || day <= 2;
+
+  if (day >= 28) {
+    const nextMonth = month === 12 ? 1 : month + 1;
+    const nextYear = month === 12 ? year + 1 : year;
+
+    return {
+      allowed,
+      start: buildDateLabel(year, month, 28),
+      end: buildDateLabel(nextYear, nextMonth, 2),
+    };
+  }
+
+  const previousMonth = month === 1 ? 12 : month - 1;
+  const previousYear = month === 1 ? year - 1 : year;
+
+  if (day <= 2) {
+    return {
+      allowed,
+      start: buildDateLabel(previousYear, previousMonth, 28),
+      end: buildDateLabel(year, month, 2),
+    };
+  }
+
+  const nextMonth = month === 12 ? 1 : month + 1;
+  const nextYear = month === 12 ? year + 1 : year;
+
+  return {
+    allowed,
+    start: buildDateLabel(year, month, 28),
+    end: buildDateLabel(nextYear, nextMonth, 2),
+  };
+}
 
 /**
  * =====================
@@ -258,6 +357,103 @@ app.post("/webhook/new-order", (req, res) => {
   });
 
   void processQueue();
+});
+
+app.post("/sync-employees", async (req, res) => {
+  try {
+    const auth = await requirePrivilegedUser(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ ok: false, error: auth.error });
+    }
+
+    exec(
+      "npm run sync:employees",
+      {
+        cwd: PROJECT_ROOT,
+        windowsHide: true,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          return res.status(500).json({
+            ok: false,
+            error: "Sync failed",
+            stdout: (stdout || "").slice(0, 8000),
+            stderr: (stderr || "").slice(0, 8000),
+            code: (error as any).code ?? null,
+          });
+        }
+
+        return res.json({
+          ok: true,
+          message: "Sync completed",
+          stdout: (stdout || "").slice(0, 8000),
+          stderr: (stderr || "").slice(0, 8000),
+        });
+      }
+    );
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err?.message || "Unexpected error" });
+  }
+});
+
+app.post("/reset-employee-balances", async (req, res) => {
+  try {
+    const auth = await requirePrivilegedUser(req);
+    if (!auth.ok) {
+      return res.status(auth.status).json({ ok: false, message: auth.error });
+    }
+
+    const window = getResetWindow();
+    if (!window.allowed) {
+      return res.status(400).json({
+        ok: false,
+        message: `Você só pode resetar o saldo de ${window.start} até ${window.end}.`,
+        allowedWindow: window,
+      });
+    }
+
+    const { data: cycleData, error: cycleError } = await supabase.rpc("current_pay_cycle_key");
+    if (cycleError) {
+      return res.status(500).json({ ok: false, message: "Não foi possível identificar o ciclo atual." });
+    }
+
+    const monthKey =
+      typeof cycleData === "string"
+        ? cycleData
+        : (cycleData as any)?.key ??
+          (cycleData as any)?.month_key ??
+          (cycleData as any)?.current_pay_cycle_key ??
+          null;
+
+    if (!monthKey) {
+      return res.status(500).json({ ok: false, message: "O ciclo atual não retornou um month_key válido." });
+    }
+
+    const { data: updatedRows, error: updateError } = await supabase
+      .from("employee_monthly_spend")
+      .update({
+        spent_cents: 0,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("month_key", monthKey)
+      .gt("spent_cents", 0)
+      .select("employee_id");
+
+    if (updateError) {
+      return res.status(500).json({ ok: false, message: "Não foi possível restaurar o saldo atual." });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: "Saldo de todos os funcionários restaurado para o valor inicial da planilha.",
+      monthKey,
+      updatedCount: updatedRows?.length ?? 0,
+      allowedWindow: window,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
 });
 
 /**
