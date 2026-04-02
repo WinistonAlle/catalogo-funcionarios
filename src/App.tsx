@@ -12,6 +12,7 @@ import { CartProvider } from "@/contexts/CartContext";
 import EscolhaUsuario from "./pages/EscolhaUsuario";
 import Login from "./pages/Login";
 import Index from "./pages/Index";
+import Maintenance from "./pages/Maintenance";
 import Avisos from "./pages/Avisos";
 import Checkout from "./pages/Checkout";
 import MyOrdersPage from "./pages/MyOrdersPage";
@@ -38,6 +39,7 @@ import AdminOrders from "./pages/AdminOrders";
 // import AdminOrders from "./pages/admin/AdminOrders";
 
 const queryClient = new QueryClient();
+const MAINTENANCE_MODE = true;
 
 type EmployeeRole = "admin" | "rh" | string;
 
@@ -112,6 +114,9 @@ function App() {
         <Sonner />
 
         <CartProvider>
+          {MAINTENANCE_MODE ? (
+            <Maintenance />
+          ) : (
           <BrowserRouter>
             <Routes>
               {/* Home (escolha / entrada) */}
@@ -263,6 +268,7 @@ function App() {
               <Route path="*" element={<NotFound />} />
             </Routes>
           </BrowserRouter>
+          )}
         </CartProvider>
       </TooltipProvider>
     </QueryClientProvider>
