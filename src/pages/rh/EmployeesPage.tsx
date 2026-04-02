@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { listEmployees, Employee } from "@/lib/employeeService";
+import { listEmployees, Employee, getEmployeesBalanceSnapshots } from "@/lib/employeeService";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -43,12 +43,34 @@ export default function EmployeesPage() {
     if (query.isError) toast.error("Não foi possível carregar os funcionários.");
   }, [query.isError]);
 
+  const balanceQuery = useQuery({
+    queryKey: ["employee-balance-snapshots", query.data?.data?.map((employee) => employee.id).join("|")],
+    queryFn: () => getEmployeesBalanceSnapshots(query.data?.data ?? []),
+    enabled: !!query.data?.data?.length,
+    staleTime: 20_000,
+    retry: 1,
+  });
+
+  useEffect(() => {
+    if (balanceQuery.isError) {
+      toast.error("Não foi possível carregar os indicadores de saldo.");
+    }
+  }, [balanceQuery.isError]);
+
   const [openCreate, setOpenCreate] = useState(false);
   const [editEmployee, setEditEmployee] = useState<Employee | null>(null);
   const [terminateEmployee, setTerminateEmployee] = useState<Employee | null>(null);
 
   const total = query.data?.count ?? 0;
   const totalPages = useMemo(() => Math.max(1, Math.ceil(total / pageSize)), [total, pageSize]);
+  const currentMonthKey = balanceQuery.data?.monthKey ?? "";
+
+  function formatBRLFromCents(cents?: number | null) {
+    return (Number(cents || 0) / 100).toLocaleString("pt-BR", {
+      style: "currency",
+      currency: "BRL",
+    });
+  }
 
   if (loadingPerm) return <div className="p-6">Verificando permissões…</div>;
   if (!canHR) return <div className="p-6">Acesso restrito ao RH.</div>;
@@ -62,6 +84,18 @@ export default function EmployeesPage() {
 
       <Card>
         <CardContent className="p-4 space-y-3">
+          <div className="flex flex-col gap-2 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="font-semibold">Indicador de saldo individual</div>
+              <div className="text-amber-800/90">
+                O saldo disponível considera crédito da planilha menos gasto do ciclo atual.
+              </div>
+            </div>
+            <div className="rounded-full border border-amber-300 bg-white px-3 py-1 font-medium">
+              {currentMonthKey ? `Ciclo ${currentMonthKey}` : "Carregando ciclo..."}
+            </div>
+          </div>
+
           <div className="flex gap-3 flex-col sm:flex-row">
             <Input
               placeholder="Buscar por nome ou CPF"
@@ -91,25 +125,34 @@ export default function EmployeesPage() {
           </div>
 
           <div className="border rounded-lg">
-            <div className="grid grid-cols-12 text-sm font-medium p-3 border-b bg-muted/40">
-              <div className="col-span-3">Nome</div>
-              <div className="col-span-2">CPF</div>
-              <div className="col-span-2">Departamento</div>
-              <div className="col-span-2">Cargo</div>
-              <div className="col-span-1">Status</div>
-              <div className="col-span-2 text-right">Ações</div>
+            <div
+              className="grid items-center gap-3 border-b bg-muted/40 p-3 text-sm font-medium"
+              style={{ gridTemplateColumns: "2.3fr 1.5fr 1.3fr 1.3fr 1.8fr 1fr 1.5fr" }}
+            >
+              <div>Nome</div>
+              <div>CPF</div>
+              <div>Departamento</div>
+              <div>Cargo</div>
+              <div>Saldo</div>
+              <div>Status</div>
+              <div className="text-right">Ações</div>
             </div>
 
             {query.isLoading && (
               <>
                 {Array.from({ length: 6 }).map((_, i) => (
-                  <div key={i} className="grid grid-cols-12 p-3 border-b animate-pulse">
-                    <div className="col-span-3 h-4 bg-muted rounded" />
-                    <div className="col-span-2 h-4 bg-muted rounded" />
-                    <div className="col-span-2 h-4 bg-muted rounded" />
-                    <div className="col-span-2 h-4 bg-muted rounded" />
-                    <div className="col-span-1 h-4 bg-muted rounded" />
-                    <div className="col-span-2 h-8 bg-muted rounded" />
+                  <div
+                    key={i}
+                    className="grid items-center gap-3 border-b p-3 animate-pulse"
+                    style={{ gridTemplateColumns: "2.3fr 1.5fr 1.3fr 1.3fr 1.8fr 1fr 1.5fr" }}
+                  >
+                    <div className="h-4 bg-muted rounded" />
+                    <div className="h-4 bg-muted rounded" />
+                    <div className="h-4 bg-muted rounded" />
+                    <div className="h-4 bg-muted rounded" />
+                    <div className="h-10 bg-muted rounded" />
+                    <div className="h-4 bg-muted rounded" />
+                    <div className="h-8 bg-muted rounded" />
                   </div>
                 ))}
               </>
@@ -120,12 +163,35 @@ export default function EmployeesPage() {
             )}
 
             {query.data?.data?.map((emp) => (
-              <div key={emp.id} className="grid grid-cols-12 p-3 border-b last:border-b-0 items-center">
-                <div className="col-span-3">{emp.full_name}</div>
-                <div className="col-span-2">{emp.cpf}</div>
-                <div className="col-span-2">{emp.department ?? "—"}</div>
-                <div className="col-span-2">{emp.job_title ?? "—"}</div>
-                <div className="col-span-1">
+              <div
+                key={emp.id}
+                className="grid items-center gap-3 border-b p-3 last:border-b-0"
+                style={{ gridTemplateColumns: "2.3fr 1.5fr 1.3fr 1.3fr 1.8fr 1fr 1.5fr" }}
+              >
+                <div>{emp.full_name}</div>
+                <div>{emp.cpf}</div>
+                <div>{emp.department ?? "—"}</div>
+                <div>{emp.job_title ?? "—"}</div>
+                <div>
+                  {emp.id && balanceQuery.data?.byEmployeeId?.[emp.id] ? (
+                    <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-2 leading-5">
+                      <div className="font-semibold text-emerald-900">
+                        {formatBRLFromCents(balanceQuery.data.byEmployeeId[emp.id].availableCents)}
+                      </div>
+                      <div className="text-xs text-emerald-800">
+                        Gasto: {formatBRLFromCents(balanceQuery.data.byEmployeeId[emp.id].spentCents)}
+                      </div>
+                      <div className="text-xs text-emerald-800">
+                        Limite: {formatBRLFromCents(balanceQuery.data.byEmployeeId[emp.id].monthlyLimitCents)}
+                      </div>
+                    </div>
+                  ) : balanceQuery.isLoading ? (
+                    <div className="text-xs text-muted-foreground">Carregando saldo...</div>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">Sem saldo configurado</div>
+                  )}
+                </div>
+                <div>
                   <span
                     className={[
                       "text-xs px-2 py-1 rounded-full border",
@@ -139,7 +205,7 @@ export default function EmployeesPage() {
                     {emp.status}
                   </span>
                 </div>
-                <div className="col-span-2 flex gap-2 justify-end">
+                <div className="flex gap-2 justify-end">
                   <Button variant="outline" size="sm" onClick={() => setEditEmployee(emp)}>
                     Editar
                   </Button>

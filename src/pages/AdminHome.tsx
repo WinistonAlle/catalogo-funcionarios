@@ -1,9 +1,10 @@
 import { useState } from "react";
 import styled from "styled-components";
 import { useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Bg } from "./../components/ui/app-surface";
-import { resetAllEmployeeBalances, triggerEmployeeSyncNow } from "@/lib/employeeSync";
+import { getAdminOperationsStatus, resetAllEmployeeBalances, triggerEmployeeSyncNow } from "@/lib/adminOperations";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,6 +15,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import OperationsSummaryPanel from "@/components/operations/OperationsSummaryPanel";
 
 const Wrapper = styled.div`
   position: relative;
@@ -180,6 +182,8 @@ const ResetBox = styled(Box)`
   }
 `;
 
+const HistoryBox = styled(Box)``;
+
 function getSaoPauloDateParts(date = new Date()) {
   const formatter = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Sao_Paulo",
@@ -245,6 +249,12 @@ export default function AdminHome() {
   const [syncingEmployees, setSyncingEmployees] = useState(false);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const [resettingBalances, setResettingBalances] = useState(false);
+  const statusQuery = useQuery({
+    queryKey: ["admin-operations-status"],
+    queryFn: getAdminOperationsStatus,
+    staleTime: 20_000,
+    retry: 1,
+  });
 
   const resetWindow = getBalanceResetWindow();
 
@@ -263,6 +273,7 @@ export default function AdminHome() {
     try {
       await triggerEmployeeSyncNow();
       toast.success("Sincronização de funcionários concluída.");
+      await statusQuery.refetch();
     } catch (err: any) {
       console.error("Erro ao sincronizar funcionários:", err);
       toast.error(err?.message || "Erro ao sincronizar funcionários.");
@@ -272,6 +283,11 @@ export default function AdminHome() {
   };
 
   const handleOpenResetDialog = () => {
+    if (statusQuery.data?.restoredCurrentCycle) {
+      toast.error(`O saldo deste ciclo (${statusQuery.data.currentCycleKey}) já foi restaurado.`);
+      return;
+    }
+
     setResetDialogOpen(true);
   };
 
@@ -291,6 +307,7 @@ export default function AdminHome() {
           : "Saldo restaurado com sucesso. Nenhum funcionário tinha consumo neste ciclo."
       );
       setResetDialogOpen(false);
+      await statusQuery.refetch();
     } catch (err: any) {
       console.error("Erro ao restaurar saldo dos funcionários:", err);
       toast.error(err?.message || "Erro ao restaurar saldo dos funcionários.");
@@ -308,21 +325,37 @@ export default function AdminHome() {
         </BackButton>
 
         <Shell>
+          <OperationsSummaryPanel
+            loading={statusQuery.isLoading}
+            status={statusQuery.data}
+            onHistoryClick={() => navigate("/operacoes")}
+          />
+
           <Container>
             <SyncBox type="button" onClick={handleSyncEmployeesNow} disabled={syncingEmployees}>
               <Title>
                 {syncingEmployees ? "Sincronizando..." : "Sincronizar Funcionários"}
               </Title>
               <Subtitle>
-                Atualiza a base do Google Sheets na hora, sem esperar o ciclo automático.
+                Atualiza a base do Google Sheets na hora, sem esperar o ciclo automático.{" "}
+                {statusQuery.data?.latestSync?.created_at
+                  ? `Última sync: ${new Date(statusQuery.data.latestSync.created_at).toLocaleString("pt-BR")}.`
+                  : "Sem histórico recente."}
               </Subtitle>
             </SyncBox>
 
-            <ResetBox type="button" onClick={handleOpenResetDialog} disabled={resettingBalances}>
+            <ResetBox
+              type="button"
+              onClick={handleOpenResetDialog}
+              disabled={resettingBalances || statusQuery.data?.resetInProgress}
+            >
               <Title>{resettingBalances ? "Restaurando..." : "Restaurar Saldo"}</Title>
               <Subtitle>
                 Restaura o saldo de todos os funcionários para o valor inicial da planilha no ciclo
-                atual. Permitido somente de {resetWindow.start} até {resetWindow.end}.
+                atual. Permitido somente de {resetWindow.start} até {resetWindow.end}.{" "}
+                {statusQuery.data?.restoredCurrentCycle
+                  ? `Ciclo ${statusQuery.data.currentCycleKey} já restaurado.`
+                  : "Proteção ativa contra repetição no mesmo ciclo."}
               </Subtitle>
             </ResetBox>
 
@@ -335,6 +368,13 @@ export default function AdminHome() {
               <Title>Pedidos</Title>
               <Subtitle>Consultar, editar e acompanhar o histórico dos pedidos.</Subtitle>
             </Box>
+
+            <HistoryBox type="button" onClick={() => navigate("/operacoes")}>
+              <Title>Histórico Operacional</Title>
+              <Subtitle>
+                Ver auditoria de sincronizações, restaurações de saldo e bloqueios de operação.
+              </Subtitle>
+            </HistoryBox>
 
             <Box type="button" onClick={() => navigate("/catalogo")}>
               <Title>Acessar Catálogo</Title>
@@ -376,7 +416,7 @@ export default function AdminHome() {
                   void handleResetBalances();
                 }}
                 className="bg-red-700 hover:bg-red-800"
-                disabled={resettingBalances}
+                disabled={resettingBalances || statusQuery.data?.restoredCurrentCycle}
               >
                 {resettingBalances ? "Restaurando..." : "Sim, restaurar saldo"}
               </AlertDialogAction>

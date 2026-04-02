@@ -6,6 +6,17 @@ import { exec, spawn } from "child_process";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
+import {
+  authorizePrivilegedUser,
+  getBearerToken,
+  getOperationsStatus,
+  getResetWindow,
+  hasSuccessfulRestoreForCycle,
+  insertOperationLog,
+  listOperationHistory,
+  resolveCurrentCycleKey,
+  updateOperationLog,
+} from "../server/adminOperations";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -42,105 +53,8 @@ const queue: string[] = [];
 const queuedOrRunning = new Set<string>();
 let isRunning = false;
 let lastRunAt: number | null = null;
-
-function getBearerToken(req: express.Request) {
-  const auth = req.headers.authorization || "";
-  const match = auth.match(/^Bearer\s+(.+)$/i);
-  return match?.[1] ?? null;
-}
-
-async function requirePrivilegedUser(req: express.Request) {
-  const token = getBearerToken(req);
-  if (!token) {
-    return { ok: false as const, status: 401, error: "Missing Bearer token" };
-  }
-
-  const { data: userData, error: userErr } = await supabase.auth.getUser(token);
-  if (userErr || !userData?.user) {
-    return { ok: false as const, status: 401, error: "Invalid session" };
-  }
-
-  const { data: emp, error: empErr } = await supabase
-    .from("employees")
-    .select("role, user_id")
-    .eq("user_id", userData.user.id)
-    .maybeSingle();
-
-  if (empErr) {
-    return { ok: false as const, status: 500, error: "Failed to check role" };
-  }
-
-  if (!emp) {
-    return { ok: false as const, status: 403, error: "Employee not found / not linked" };
-  }
-
-  const role = String((emp as any).role || "").toLowerCase();
-  if (role !== "admin" && role !== "rh") {
-    return { ok: false as const, status: 403, error: "Not allowed" };
-  }
-
-  return { ok: true as const, userId: userData.user.id, role };
-}
-
-function getZonedParts(date = new Date()) {
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Sao_Paulo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-
-  const parts = formatter.formatToParts(date);
-  const year = Number(parts.find((part) => part.type === "year")?.value || 0);
-  const month = Number(parts.find((part) => part.type === "month")?.value || 0);
-  const day = Number(parts.find((part) => part.type === "day")?.value || 0);
-
-  return { year, month, day };
-}
-
-function pad(value: number) {
-  return String(value).padStart(2, "0");
-}
-
-function buildDateLabel(year: number, month: number, day: number) {
-  return `${year}-${pad(month)}-${pad(day)}`;
-}
-
-function getResetWindow(date = new Date()) {
-  const { year, month, day } = getZonedParts(date);
-  const allowed = day >= 28 || day <= 2;
-
-  if (day >= 28) {
-    const nextMonth = month === 12 ? 1 : month + 1;
-    const nextYear = month === 12 ? year + 1 : year;
-
-    return {
-      allowed,
-      start: buildDateLabel(year, month, 28),
-      end: buildDateLabel(nextYear, nextMonth, 2),
-    };
-  }
-
-  const previousMonth = month === 1 ? 12 : month - 1;
-  const previousYear = month === 1 ? year - 1 : year;
-
-  if (day <= 2) {
-    return {
-      allowed,
-      start: buildDateLabel(previousYear, previousMonth, 28),
-      end: buildDateLabel(year, month, 2),
-    };
-  }
-
-  const nextMonth = month === 12 ? 1 : month + 1;
-  const nextYear = month === 12 ? year + 1 : year;
-
-  return {
-    allowed,
-    start: buildDateLabel(year, month, 28),
-    end: buildDateLabel(nextYear, nextMonth, 2),
-  };
-}
+let sheetSyncRunning = false;
+let balanceRestoreRunning = false;
 
 /**
  * =====================
@@ -361,10 +275,25 @@ app.post("/webhook/new-order", (req, res) => {
 
 app.post("/sync-employees", async (req, res) => {
   try {
-    const auth = await requirePrivilegedUser(req);
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
     if (!auth.ok) {
       return res.status(auth.status).json({ ok: false, error: auth.error });
     }
+
+    if (sheetSyncRunning) {
+      return res.status(409).json({
+        ok: false,
+        error: "Já existe uma sincronização de funcionários em andamento.",
+      });
+    }
+
+    sheetSyncRunning = true;
+    const runningLog = await insertOperationLog(supabase, {
+      action: "sync_employees",
+      status: "running",
+      actor: auth.actor,
+      message: "Sincronização manual iniciada.",
+    }).catch(() => null);
 
     exec(
       "npm run sync:employees",
@@ -373,8 +302,20 @@ app.post("/sync-employees", async (req, res) => {
         windowsHide: true,
         maxBuffer: 10 * 1024 * 1024,
       },
-      (error, stdout, stderr) => {
+      async (error, stdout, stderr) => {
+        sheetSyncRunning = false;
+
         if (error) {
+          await updateOperationLog(supabase, runningLog?.id, {
+            status: "failed",
+            message: "Falha na sincronização manual de funcionários.",
+            metadata: {
+              code: (error as any).code ?? null,
+              stdout: (stdout || "").slice(0, 2000),
+              stderr: (stderr || "").slice(0, 2000),
+            },
+          }).catch(() => null);
+
           return res.status(500).json({
             ok: false,
             error: "Sync failed",
@@ -383,6 +324,15 @@ app.post("/sync-employees", async (req, res) => {
             code: (error as any).code ?? null,
           });
         }
+
+        await updateOperationLog(supabase, runningLog?.id, {
+          status: "success",
+          message: "Sincronização de funcionários concluída com sucesso.",
+          metadata: {
+            stdout: (stdout || "").slice(0, 2000),
+            stderr: (stderr || "").slice(0, 2000),
+          },
+        }).catch(() => null);
 
         return res.json({
           ok: true,
@@ -393,19 +343,34 @@ app.post("/sync-employees", async (req, res) => {
       }
     );
   } catch (err: any) {
+    sheetSyncRunning = false;
     return res.status(500).json({ ok: false, error: err?.message || "Unexpected error" });
   }
 });
 
 app.post("/reset-employee-balances", async (req, res) => {
   try {
-    const auth = await requirePrivilegedUser(req);
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
     if (!auth.ok) {
       return res.status(auth.status).json({ ok: false, message: auth.error });
     }
 
+    if (balanceRestoreRunning) {
+      return res.status(409).json({
+        ok: false,
+        message: "Já existe uma restauração de saldo em andamento.",
+      });
+    }
+
     const window = getResetWindow();
     if (!window.allowed) {
+      await insertOperationLog(supabase, {
+        action: "restore_employee_balances",
+        status: "blocked",
+        actor: auth.actor,
+        message: `Tentativa fora da janela permitida (${window.start} até ${window.end}).`,
+      }).catch(() => null);
+
       return res.status(400).json({
         ok: false,
         message: `Você só pode resetar o saldo de ${window.start} até ${window.end}.`,
@@ -413,22 +378,32 @@ app.post("/reset-employee-balances", async (req, res) => {
       });
     }
 
-    const { data: cycleData, error: cycleError } = await supabase.rpc("current_pay_cycle_key");
-    if (cycleError) {
-      return res.status(500).json({ ok: false, message: "Não foi possível identificar o ciclo atual." });
+    const monthKey = await resolveCurrentCycleKey(supabase);
+    const alreadyRestored = await hasSuccessfulRestoreForCycle(supabase, monthKey);
+    if (alreadyRestored) {
+      await insertOperationLog(supabase, {
+        action: "restore_employee_balances",
+        status: "blocked",
+        actor: auth.actor,
+        targetMonthKey: monthKey,
+        message: `Restauração bloqueada: o ciclo ${monthKey} já foi restaurado.`,
+      }).catch(() => null);
+
+      return res.status(409).json({
+        ok: false,
+        message: `O saldo deste ciclo (${monthKey}) já foi restaurado anteriormente.`,
+        monthKey,
+      });
     }
 
-    const monthKey =
-      typeof cycleData === "string"
-        ? cycleData
-        : (cycleData as any)?.key ??
-          (cycleData as any)?.month_key ??
-          (cycleData as any)?.current_pay_cycle_key ??
-          null;
-
-    if (!monthKey) {
-      return res.status(500).json({ ok: false, message: "O ciclo atual não retornou um month_key válido." });
-    }
+    balanceRestoreRunning = true;
+    const runningLog = await insertOperationLog(supabase, {
+      action: "restore_employee_balances",
+      status: "running",
+      actor: auth.actor,
+      targetMonthKey: monthKey,
+      message: `Restauração iniciada para o ciclo ${monthKey}.`,
+    }).catch(() => null);
 
     const { data: updatedRows, error: updateError } = await supabase
       .from("employee_monthly_spend")
@@ -441,8 +416,24 @@ app.post("/reset-employee-balances", async (req, res) => {
       .select("employee_id");
 
     if (updateError) {
+      balanceRestoreRunning = false;
+      await updateOperationLog(supabase, runningLog?.id, {
+        status: "failed",
+        message: `Falha ao restaurar saldo do ciclo ${monthKey}.`,
+        metadata: { error: updateError.message },
+      }).catch(() => null);
+
       return res.status(500).json({ ok: false, message: "Não foi possível restaurar o saldo atual." });
     }
+
+    balanceRestoreRunning = false;
+    await updateOperationLog(supabase, runningLog?.id, {
+      status: "success",
+      message: "Saldo de todos os funcionários restaurado para o valor inicial da planilha.",
+      metadata: {
+        updatedCount: updatedRows?.length ?? 0,
+      },
+    }).catch(() => null);
 
     return res.status(200).json({
       ok: true,
@@ -450,6 +441,50 @@ app.post("/reset-employee-balances", async (req, res) => {
       monthKey,
       updatedCount: updatedRows?.length ?? 0,
       allowedWindow: window,
+    });
+  } catch (err: any) {
+    balanceRestoreRunning = false;
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
+app.get("/operations/status", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) {
+      return res.status(auth.status).json({ ok: false, message: auth.error });
+    }
+
+    const payload = await getOperationsStatus(supabase, {
+      syncInProgress: sheetSyncRunning,
+      resetInProgress: balanceRestoreRunning,
+    });
+
+    return res.status(200).json(payload);
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
+app.get("/operations/history", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) {
+      return res.status(auth.status).json({ ok: false, message: auth.error });
+    }
+
+    const limit = Number(req.query.limit ?? 30);
+    const action =
+      typeof req.query.action === "string" && req.query.action.trim() ? req.query.action.trim() : "all";
+    const payload = await listOperationHistory(supabase, {
+      limit,
+      action: action as any,
+    });
+
+    return res.status(200).json({
+      ok: true,
+      storageReady: payload.storageReady,
+      rows: payload.rows,
     });
   } catch (err: any) {
     return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });

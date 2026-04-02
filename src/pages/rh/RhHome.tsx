@@ -2,9 +2,10 @@
 import { useState } from "react";
 import styled from "styled-components";
 import { useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Bg } from "../../components/ui/app-surface";
-import { resetAllEmployeeBalances, triggerEmployeeSyncNow } from "@/lib/employeeSync";
+import { getAdminOperationsStatus, resetAllEmployeeBalances, triggerEmployeeSyncNow } from "@/lib/adminOperations";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,6 +16,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import OperationsSummaryPanel from "@/components/operations/OperationsSummaryPanel";
 
 const Wrapper = styled.div`
   position: relative;
@@ -73,7 +75,8 @@ const Container = styled.div`
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-areas:
     "sync reset"
-    "report catalog";
+    "report history"
+    "catalog catalog";
   gap: 24px;
 
   @media (max-width: 900px) {
@@ -82,6 +85,7 @@ const Container = styled.div`
       "sync"
       "reset"
       "report"
+      "history"
       "catalog";
   }
 `;
@@ -184,6 +188,10 @@ const CatalogBox = styled(Box)`
   grid-area: catalog;
 `;
 
+const HistoryBox = styled(Box)`
+  grid-area: history;
+`;
+
 const Title = styled.h2`
   color: #b82626;
   font-size: 1.8rem;
@@ -266,6 +274,12 @@ const RhHome: React.FC = () => {
   const [syncingEmployees, setSyncingEmployees] = useState(false);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const [resettingBalances, setResettingBalances] = useState(false);
+  const statusQuery = useQuery({
+    queryKey: ["admin-operations-status"],
+    queryFn: getAdminOperationsStatus,
+    staleTime: 20_000,
+    retry: 1,
+  });
 
   const resetWindow = getBalanceResetWindow();
 
@@ -284,6 +298,7 @@ const RhHome: React.FC = () => {
     try {
       await triggerEmployeeSyncNow();
       toast.success("Sincronização de funcionários concluída.");
+      await statusQuery.refetch();
     } catch (err: any) {
       console.error("Erro ao sincronizar funcionários:", err);
       toast.error(err?.message || "Erro ao sincronizar funcionários.");
@@ -293,6 +308,11 @@ const RhHome: React.FC = () => {
   };
 
   const handleOpenResetDialog = () => {
+    if (statusQuery.data?.restoredCurrentCycle) {
+      toast.error(`O saldo deste ciclo (${statusQuery.data.currentCycleKey}) já foi restaurado.`);
+      return;
+    }
+
     setResetDialogOpen(true);
   };
 
@@ -308,13 +328,14 @@ const RhHome: React.FC = () => {
       const payload = await resetAllEmployeeBalances();
       toast.success(
         payload.updatedCount && payload.updatedCount > 0
-          ? `Saldo resetado com sucesso para ${payload.updatedCount} funcionário(s).`
-          : "Saldo resetado com sucesso. Nenhum funcionário tinha saldo consumido neste ciclo."
+          ? `Saldo restaurado com sucesso para ${payload.updatedCount} funcionário(s).`
+          : "Saldo restaurado com sucesso. Nenhum funcionário tinha saldo consumido neste ciclo."
       );
       setResetDialogOpen(false);
+      await statusQuery.refetch();
     } catch (err: any) {
-      console.error("Erro ao resetar saldo dos funcionários:", err);
-      toast.error(err?.message || "Erro ao resetar saldo dos funcionários.");
+      console.error("Erro ao restaurar saldo dos funcionários:", err);
+      toast.error(err?.message || "Erro ao restaurar saldo dos funcionários.");
     } finally {
       setResettingBalances(false);
     }
@@ -329,18 +350,32 @@ const RhHome: React.FC = () => {
         </BackButton>
 
         <Shell>
+          <OperationsSummaryPanel
+            loading={statusQuery.isLoading}
+            status={statusQuery.data}
+            onHistoryClick={() => navigate("/operacoes")}
+          />
+
           <Container>
             <SyncBox onClick={handleSyncEmployeesNow} disabled={syncingEmployees}>
               <Title>{syncingEmployees ? "Sincronizando..." : "Sincronizar Funcionários"}</Title>
-              <Subtitle>Atualiza os dados do Sheets imediatamente, sem esperar 1 hora.</Subtitle>
+              <Subtitle>
+                Atualiza os dados do Sheets imediatamente, sem esperar 1 hora.{" "}
+                {statusQuery.data?.latestSync?.created_at
+                  ? `Última sync: ${new Date(statusQuery.data.latestSync.created_at).toLocaleString("pt-BR")}.`
+                  : "Sem histórico recente."}
+              </Subtitle>
             </SyncBox>
 
-            <ResetBox onClick={handleOpenResetDialog} disabled={resettingBalances}>
+            <ResetBox onClick={handleOpenResetDialog} disabled={resettingBalances || statusQuery.data?.resetInProgress}>
               <Title>{resettingBalances ? "Restaurando..." : "Restaurar Saldo"}</Title>
               <Subtitle>
                 Restaura o saldo de todos os funcionários para o valor inicial da planilha no ciclo atual.
                 Permitido somente de{" "}
-                {resetWindow.start} até {resetWindow.end}.
+                {resetWindow.start} até {resetWindow.end}.{" "}
+                {statusQuery.data?.restoredCurrentCycle
+                  ? `Ciclo ${statusQuery.data.currentCycleKey} já restaurado.`
+                  : "Proteção ativa contra repetição no mesmo ciclo."}
               </Subtitle>
             </ResetBox>
 
@@ -348,6 +383,11 @@ const RhHome: React.FC = () => {
               <Title>Relatório de Gastos</Title>
               <Subtitle>Quanto cada funcionário gastou do saldo</Subtitle>
             </ReportBox>
+
+            <HistoryBox onClick={() => navigate("/operacoes")}>
+              <Title>Histórico Operacional</Title>
+              <Subtitle>Auditoria de sincronizações, restaurações e bloqueios de operação.</Subtitle>
+            </HistoryBox>
 
             <CatalogBox onClick={() => navigate("/catalogo")}>
               <Title>Acessar Catálogo</Title>
@@ -389,7 +429,7 @@ const RhHome: React.FC = () => {
                   void handleResetBalances();
                 }}
                 className="bg-red-700 hover:bg-red-800"
-                disabled={resettingBalances}
+                disabled={resettingBalances || statusQuery.data?.restoredCurrentCycle}
               >
                 {resettingBalances ? "Restaurando..." : "Sim, restaurar saldo"}
               </AlertDialogAction>

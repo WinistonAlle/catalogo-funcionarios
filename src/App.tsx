@@ -30,6 +30,7 @@ import RhHome from "./pages/rh/RhHome";
 import EmployeesPage from "./pages/rh/EmployeesPage";
 import RHSpendingReport from "./pages/rh/RHSpendingReport";
 import ReportsDashboard from "./pages/ReportsDashboard";
+import OperationsHistory from "./pages/OperationsHistory";
 
 // ✅ NOVO: AdminOrders
 import AdminOrders from "./pages/AdminOrders"; 
@@ -245,6 +246,15 @@ function App() {
                 element={
                   <RequireRole allow={["admin", "rh"]} redirectTo="/catalogo">
                     <ReportsDashboard />
+                  </RequireRole>
+                }
+              />
+
+              <Route
+                path="/operacoes"
+                element={
+                  <RequireRole allow={["admin", "rh"]} redirectTo="/catalogo">
+                    <OperationsHistory />
                   </RequireRole>
                 }
               />
