@@ -212,7 +212,9 @@ async function syncEmployees() {
     const cpfsInSheetSet = new Set(cpfsInSheet);
 
     console.log("🔎 Buscando funcionários atuais no Supabase...");
-    const { data: dbEmployees, error: dbError } = await supabase.from("employees").select("id, cpf");
+    const { data: dbEmployees, error: dbError } = await supabase
+      .from("employees")
+      .select("id, cpf, credito_mensal_cents");
 
     if (dbError) {
       console.error("❌ Erro ao buscar employees no Supabase:", dbError);
@@ -224,8 +226,16 @@ async function syncEmployees() {
         id: e.id,
         cpf_raw: e.cpf,
         cpf_normalized: normalizeCpf(e.cpf),
+        credito_mensal_cents:
+          e.credito_mensal_cents === null || e.credito_mensal_cents === undefined
+            ? null
+            : Number(e.credito_mensal_cents),
       }))
       .filter((e) => e.cpf_normalized);
+
+    const existingCreditByCpf = new Map(
+      dbEmployeesNormalized.map((employee) => [employee.cpf_normalized, employee.credito_mensal_cents])
+    );
 
     const cpfsInDb = unique(dbEmployeesNormalized.map((e) => e.cpf_normalized));
     const cpfsInDbSet = new Set(cpfsInDb);
@@ -250,15 +260,16 @@ async function syncEmployees() {
       };
 
       const isNew = !cpfsInDbSet.has(e.cpf);
+      const currentCredit = existingCreditByCpf.get(e.cpf);
+      const credito_mensal_cents =
+        syncCredit || isNew || currentCredit === null || currentCredit === undefined
+          ? e.credito_mensal_cents
+          : currentCredit;
 
-      if (syncCredit || isNew) {
-        return {
-          ...base,
-          credito_mensal_cents: e.credito_mensal_cents,
-        };
-      }
-
-      return base;
+      return {
+        ...base,
+        credito_mensal_cents,
+      };
     });
 
     console.log("⬆️ Fazendo upsert dos funcionários da planilha...");

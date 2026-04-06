@@ -39,7 +39,7 @@ import AdminOrders from "./pages/AdminOrders";
 // import AdminOrders from "./pages/admin/AdminOrders";
 
 const queryClient = new QueryClient();
-const MAINTENANCE_MODE = true;
+const MAINTENANCE_MODE = false;
 
 type EmployeeRole = "admin" | "rh" | string;
 

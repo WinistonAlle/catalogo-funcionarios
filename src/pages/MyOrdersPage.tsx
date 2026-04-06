@@ -44,6 +44,10 @@ function safeGetEmployee() {
   }
 }
 
+function normalizeCpf(value: string | null | undefined) {
+  return String(value || "").replace(/\D/g, "");
+}
+
 /* --------------------------------------------------------
    TYPES
 -------------------------------------------------------- */
@@ -219,7 +223,7 @@ const MyOrdersPage: React.FC = () => {
 
   const employee: any = safeGetEmployee();
 
-  const employeeCpf: string | null = employee?.cpf ?? null;
+  const employeeCpf = normalizeCpf(employee?.cpf);
   const employeeName: string =
     employee?.full_name ??
     employee?.name ??
