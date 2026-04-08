@@ -2322,8 +2322,10 @@ export default function AdminOrders() {
             style={{
               ...styles.modal,
               width: isMobile ? "100%" : "min(1100px, 100%)",
-              height: isMobile ? "min(100vh - 24px, 900px)" : undefined,
-              maxHeight: isMobile ? "calc(100vh - 24px)" : undefined,
+              height: isMobile
+                ? "min(100vh - 24px, 900px)"
+                : "min(88vh, 920px)",
+              maxHeight: isMobile ? "calc(100vh - 24px)" : "88vh",
               borderRadius: isMobile ? 18 : styles.modal.borderRadius,
             }}
           >
@@ -3132,6 +3134,7 @@ const styles: Record<string, CSSProperties> = {
 
   modal: {
     width: "min(860px, 100%)",
+    height: "min(88vh, 920px)",
     maxHeight: "88vh",
     borderRadius: 22,
     background: "#fff",
@@ -3140,6 +3143,7 @@ const styles: Record<string, CSSProperties> = {
     overflow: "hidden",
     display: "flex",
     flexDirection: "column",
+    minHeight: 0,
   },
 
   modalTop: {
@@ -3168,6 +3172,7 @@ const styles: Record<string, CSSProperties> = {
     padding: 14,
     overflowY: "auto",
     flex: 1,
+    minHeight: 0,
     WebkitOverflowScrolling: "touch",
   },
 

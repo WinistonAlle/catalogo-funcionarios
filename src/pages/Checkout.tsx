@@ -458,7 +458,7 @@ const Checkout: React.FC = () => {
         } enviado para separação. ${descParts.join(" • ")}`,
       });
 
-      navigate("/meus-pedidos");
+      navigate("/catalogo");
     } catch (err: any) {
       console.error("Erro ao finalizar pedido:", err);
       toast.error("Erro ao finalizar pedido", {
