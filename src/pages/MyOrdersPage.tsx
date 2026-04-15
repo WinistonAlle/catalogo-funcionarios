@@ -156,6 +156,7 @@ function getStatusClasses(status: string) {
 
   if (s.includes("pend")) return "bg-amber-100 text-amber-800 border-amber-200";
   if (s.includes("separa")) return "bg-amber-100 text-amber-800 border-amber-200";
+  if (s.includes("pronto")) return "bg-emerald-100 text-emerald-800 border-emerald-200";
   if (s.includes("final") || s.includes("concl"))
     return "bg-emerald-100 text-emerald-800 border-emerald-200";
   if (s.includes("entreg")) return "bg-emerald-100 text-emerald-800 border-emerald-200";
@@ -169,8 +170,11 @@ function getStatusClasses(status: string) {
 function getStatusLabel(status: string) {
   const labels: Record<string, string> = {
     pedido_feito: "Pedido feito",
-    encaminhado_para_separacao: "Encaminhado para separação",
+    aguardando_separacao: "Aguardando separação",
+    em_separacao: "Em separação",
+    pronto_para_retirada: "Pronto para retirada",
     entregue: "Entregue",
+    cancelado: "Cancelado",
   };
 
   return labels[status] || status;

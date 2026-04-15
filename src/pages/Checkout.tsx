@@ -67,65 +67,7 @@ function isWeekendInSaoPaulo(now = new Date()) {
   return weekday === "Sat" || weekday === "Sun";
 }
 
-/** ✅ Checkbox UI (Uiverse 31) mas usado como "radio" (seleção única) */
-function CheckRadio31({
-  checked,
-  onChange,
-  disabled,
-  label,
-  subLabel,
-  warn,
-  title,
-}: {
-  checked: boolean;
-  onChange: () => void;
-  disabled?: boolean;
-  label: string;
-  subLabel?: string;
-  warn?: string;
-  title?: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        if (!disabled) onChange();
-      }}
-      className={`w-full rounded-xl border p-3 text-left transition bg-white ${
-        checked ? "border-gray-900" : "border-gray-200"
-      } ${disabled ? "opacity-60 cursor-not-allowed" : "hover:border-gray-400"}`}
-      role="radio"
-      aria-checked={checked}
-      aria-disabled={disabled ? "true" : "false"}
-      title={title}
-      disabled={disabled}
-    >
-      <div className="flex items-start gap-3">
-        <div className="checkbox-wrapper-31 mt-0.5" aria-hidden>
-          <input
-            type="checkbox"
-            checked={checked}
-            onChange={() => {
-              if (!disabled) onChange();
-            }}
-            disabled={disabled}
-          />
-          <svg viewBox="0 0 35.6 35.6">
-            <circle className="background" cx="17.8" cy="17.8" r="17.8" />
-            <circle className="stroke" cx="17.8" cy="17.8" r="14.37" />
-            <polyline className="check" points="11.78 18.12 15.55 22.23 25.17 12.87" />
-          </svg>
-        </div>
-
-        <div className="flex-1">
-          <p className="text-sm font-semibold">{label}</p>
-          {subLabel ? <p className="text-xs text-gray-600">{subLabel}</p> : null}
-          {warn ? <p className="mt-1 text-xs text-amber-700">{warn}</p> : null}
-        </div>
-      </div>
-    </button>
-  );
-}
+type PurchaseFlowNotice = "insufficient_balance" | "physical_store_only";
 
 const Checkout: React.FC = () => {
   const { cartItems, cartTotal, clearCart } = useCart();
@@ -137,9 +79,7 @@ const Checkout: React.FC = () => {
   const [employeeReady, setEmployeeReady] = useState(false);
   const [showLateOrderPopup, setShowLateOrderPopup] = useState(false);
 
-  // UI pagamento
-  const [payMode, setPayMode] = useState<"wallet" | "pickup">("wallet");
-  const [userTouchedPayMode, setUserTouchedPayMode] = useState(false);
+  const [purchaseFlowNotice, setPurchaseFlowNotice] = useState<PurchaseFlowNotice | null>(null);
 
   // Saldo mensal
   const [walletLoading, setWalletLoading] = useState(true);
@@ -171,33 +111,15 @@ const Checkout: React.FC = () => {
     return availableCents >= totalCents && totalCents > 0;
   }, [walletLoading, walletError, availableCents, totalCents]);
 
-  useEffect(() => {
-    if (walletLoading) return;
-
-    if (payMode === "wallet" && !canPayWithWallet) {
-      setPayMode("pickup");
-      return;
-    }
-
-    if (!userTouchedPayMode && canPayWithWallet && payMode !== "wallet") {
-      setPayMode("wallet");
-    }
-  }, [walletLoading, canPayWithWallet, payMode, userTouchedPayMode]);
-
   const walletUsedCents = useMemo(() => {
-    if (payMode !== "wallet") return 0;
     if (!canPayWithWallet) return 0;
     return totalCents;
-  }, [payMode, canPayWithWallet, totalCents]);
-
-  const payOnPickupCents = useMemo(() => {
-    return payMode === "pickup" ? totalCents : 0;
-  }, [payMode, totalCents]);
+  }, [canPayWithWallet, totalCents]);
 
   const afterOrderAvailableCents = useMemo(() => {
-    if (payMode !== "wallet") return availableCents;
+    if (!canPayWithWallet) return availableCents;
     return Math.max(availableCents - totalCents, 0);
-  }, [payMode, availableCents, totalCents]);
+  }, [canPayWithWallet, availableCents, totalCents]);
 
   useEffect(() => {
     if (isLateOrder) {
@@ -370,11 +292,8 @@ const Checkout: React.FC = () => {
       return;
     }
 
-    if (payMode === "wallet" && !canPayWithWallet) {
-      toast.error("Saldo insuficiente para pagar com saldo", {
-        description: "Este pedido deve ser pago na retirada.",
-      });
-      setPayMode("pickup");
+    if (!canPayWithWallet) {
+      setPurchaseFlowNotice("insufficient_balance");
       return;
     }
 
@@ -393,12 +312,10 @@ const Checkout: React.FC = () => {
 
       if (!orderId) throw new Error("Falha ao criar pedido (orderId vazio).");
 
-      const useWallet = payMode === "wallet" && canPayWithWallet;
-
       const { data, error } = await supabase.rpc("place_order_with_wallet_v2", {
         p_order_id: orderId,
         p_employee_id: employeeId,
-        p_use_wallet: useWallet,
+        p_use_wallet: true,
       });
 
       if (error) {
@@ -412,24 +329,18 @@ const Checkout: React.FC = () => {
         const newSpent = Number(row.new_spent_cents) || 0;
         setSpentCents(newSpent);
       } else {
-        if (useWallet && totalCents > 0) {
+        if (totalCents > 0) {
           setSpentCents((prev) => (Number.isFinite(prev) ? prev : 0) + totalCents);
         }
       }
 
-      const paymentMethod = useWallet ? "wallet" : "pickup";
-      const walletDebited = useWallet;
-
-      const spentFromBalance = useWallet ? totalCents : 0;
-      const payOnPickup = useWallet ? 0 : totalCents;
-
       const { data: updated, error: upErr } = await supabase
         .from("orders")
         .update({
-          payment_method: paymentMethod,
-          wallet_debited: walletDebited,
-          spent_from_balance_cents: spentFromBalance,
-          pay_on_pickup_cents: payOnPickup,
+          payment_method: "wallet",
+          wallet_debited: true,
+          spent_from_balance_cents: totalCents,
+          pay_on_pickup_cents: 0,
         })
         .eq("id", orderId)
         .select("id, payment_method, wallet_debited, spent_from_balance_cents, pay_on_pickup_cents")
@@ -444,13 +355,8 @@ const Checkout: React.FC = () => {
       clearCart();
 
       const descParts: string[] = [];
-      if (useWallet) {
-        descParts.push(`Pago com saldo: ${formatBRLFromCents(totalCents)}`);
-        descParts.push(`Saldo após: ${formatBRLFromCents(afterOrderAvailableCents)}`);
-      } else {
-        descParts.push(`Pagamento na retirada: ${formatBRLFromCents(totalCents)}`);
-        descParts.push(`Saldo após: ${formatBRLFromCents(afterOrderAvailableCents)}`);
-      }
+      descParts.push(`Pago com saldo: ${formatBRLFromCents(totalCents)}`);
+      descParts.push(`Saldo após: ${formatBRLFromCents(afterOrderAvailableCents)}`);
 
       toast.success("Pedido confirmado!", {
         description: `Pedido ${
@@ -492,65 +398,6 @@ const Checkout: React.FC = () => {
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4 py-8">
       <style>{`
-        /* Uiverse checkbox 31 (scoped via className) */
-        .checkbox-wrapper-31:hover .check { stroke-dashoffset: 0; }
-
-        .checkbox-wrapper-31 {
-          position: relative;
-          display: inline-block;
-          width: 28px;
-          height: 28px;
-          flex: 0 0 auto;
-        }
-
-        .checkbox-wrapper-31 .background {
-          fill: #ccc;
-          transition: ease all 0.6s;
-          -webkit-transition: ease all 0.6s;
-        }
-
-        .checkbox-wrapper-31 .stroke {
-          fill: none;
-          stroke: #fff;
-          stroke-miterlimit: 10;
-          stroke-width: 2px;
-          stroke-dashoffset: 100;
-          stroke-dasharray: 100;
-          transition: ease all 0.6s;
-          -webkit-transition: ease all 0.6s;
-        }
-
-        .checkbox-wrapper-31 .check {
-          fill: none;
-          stroke: #fff;
-          stroke-linecap: round;
-          stroke-linejoin: round;
-          stroke-width: 2px;
-          stroke-dashoffset: 22;
-          stroke-dasharray: 22;
-          transition: ease all 0.6s;
-          -webkit-transition: ease all 0.6s;
-        }
-
-        .checkbox-wrapper-31 input[type=checkbox] {
-          position: absolute;
-          width: 100%;
-          height: 100%;
-          left: 0;
-          top: 0;
-          margin: 0;
-          opacity: 0;
-          appearance: none;
-          -webkit-appearance: none;
-        }
-
-        .checkbox-wrapper-31 input[type=checkbox]:hover { cursor: pointer; }
-
-        /* cor do "checked" */
-        .checkbox-wrapper-31 input[type=checkbox]:checked + svg .background { fill: #111827; }
-        .checkbox-wrapper-31 input[type=checkbox]:checked + svg .stroke { stroke-dashoffset: 0; }
-        .checkbox-wrapper-31 input[type=checkbox]:checked + svg .check { stroke-dashoffset: 0; }
-
         /* ✅ Uiverse button (arieshiphop) - ESCOPADO */
         .uiverse-aries {
           font-size: 17px;
@@ -606,6 +453,62 @@ const Checkout: React.FC = () => {
           animation: late-order-pop 0.35s cubic-bezier(.22,1,.36,1);
         }
 
+        .glass-store-backdrop {
+          position: fixed;
+          inset: 0;
+          z-index: 70;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 24px;
+          background:
+            radial-gradient(circle at top, rgba(255,255,255,0.22), transparent 36%),
+            rgba(9, 14, 26, 0.38);
+          backdrop-filter: blur(22px) saturate(180%);
+          -webkit-backdrop-filter: blur(22px) saturate(180%);
+          animation: late-order-fade 0.25s ease-out;
+        }
+
+        .glass-store-modal {
+          position: relative;
+          overflow: hidden;
+          width: min(560px, 100%);
+          border-radius: 34px;
+          padding: 30px;
+          color: #0f172a;
+          background: linear-gradient(135deg, rgba(255,255,255,0.72), rgba(255,255,255,0.38));
+          border: 1px solid rgba(255,255,255,0.55);
+          box-shadow:
+            0 30px 80px rgba(15, 23, 42, 0.28),
+            inset 0 1px 0 rgba(255,255,255,0.65);
+          animation: late-order-pop 0.35s cubic-bezier(.22,1,.36,1);
+        }
+
+        .glass-store-modal::before {
+          content: "";
+          position: absolute;
+          inset: -30% auto auto -10%;
+          width: 220px;
+          height: 220px;
+          border-radius: 999px;
+          background: rgba(255,255,255,0.42);
+          filter: blur(18px);
+          pointer-events: none;
+        }
+
+        .glass-store-modal::after {
+          content: "";
+          position: absolute;
+          right: -40px;
+          bottom: -50px;
+          width: 210px;
+          height: 210px;
+          border-radius: 999px;
+          background: rgba(191, 219, 254, 0.36);
+          filter: blur(24px);
+          pointer-events: none;
+        }
+
         @keyframes late-order-fade {
           from { opacity: 0; }
           to { opacity: 1; }
@@ -648,6 +551,66 @@ const Checkout: React.FC = () => {
               >
                 Entendi
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {purchaseFlowNotice ? (
+        <div className="glass-store-backdrop" role="dialog" aria-modal="true">
+          <div className="glass-store-modal">
+            <div className="relative z-10">
+              <div className="inline-flex rounded-full border border-white/60 bg-white/45 px-4 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-slate-600">
+                Loja física
+              </div>
+
+              <h2 className="mt-5 text-3xl font-black leading-tight text-slate-900 md:text-4xl">
+                {purchaseFlowNotice === "insufficient_balance"
+                  ? "Seu saldo não cobre este pedido."
+                  : "Esta compra precisa ser feita presencialmente."}
+              </h2>
+
+              <p className="mt-4 text-base leading-7 text-slate-700">
+                {purchaseFlowNotice === "insufficient_balance"
+                  ? "As compras no sistema agora são feitas exclusivamente com saldo. Como o valor disponível não cobre 100% do pedido, finalize essa compra na loja física."
+                  : "Quando você não quiser usar o saldo para esta compra, o atendimento deve acontecer diretamente na loja física."}
+              </p>
+
+              <div className="mt-6 rounded-[28px] border border-white/60 bg-white/40 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.55)]">
+                <div className="flex items-center justify-between text-sm text-slate-600">
+                  <span>Total do pedido</span>
+                  <span className="font-semibold text-slate-900">
+                    {formatBRLFromCents(totalCents)}
+                  </span>
+                </div>
+
+                <div className="mt-2 flex items-center justify-between text-sm text-slate-600">
+                  <span>Saldo disponível</span>
+                  <span className="font-semibold text-slate-900">
+                    {walletLoading || walletError ? "—" : formatBRLFromCents(availableCents)}
+                  </span>
+                </div>
+              </div>
+
+              <div className="mt-8 flex flex-col gap-3 md:flex-row md:justify-end">
+                <button
+                  type="button"
+                  className="rounded-2xl border border-white/60 bg-white/35 px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-white/55"
+                  onClick={() => setPurchaseFlowNotice(null)}
+                >
+                  Entendi
+                </button>
+                <button
+                  type="button"
+                  className="rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white shadow-[0_18px_40px_rgba(15,23,42,0.25)] transition hover:bg-slate-800"
+                  onClick={() => {
+                    setPurchaseFlowNotice(null);
+                    navigate("/catalogo");
+                  }}
+                >
+                  Voltar ao catálogo
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -705,34 +668,31 @@ const Checkout: React.FC = () => {
             </div>
           </div>
 
-          <div className="mt-4 grid gap-2" role="radiogroup" aria-label="Forma de pagamento">
-            <CheckRadio31
-              checked={payMode === "wallet"}
-              onChange={() => {
-                setUserTouchedPayMode(true);
-                setPayMode("wallet");
-              }}
-              disabled={walletLoading || !canPayWithWallet}
-              label="Usar saldo do mês"
-              subLabel="Disponível precisa cobrir 100% do total do pedido."
-              warn={
-                !walletLoading && !walletError && !canPayWithWallet
-                  ? "Saldo insuficiente para este pedido — pagamento será na retirada."
-                  : undefined
-              }
-              title={!canPayWithWallet ? "Saldo insuficiente para pagar este pedido com saldo." : ""}
-            />
+          <div className="mt-4 rounded-2xl border border-emerald-100 bg-emerald-50/70 p-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="text-sm font-semibold text-emerald-950">
+                  Pagamento exclusivo com saldo
+                </p>
+                <p className="text-xs text-emerald-900/80">
+                  O saldo disponível precisa cobrir 100% do total do pedido para concluir no sistema.
+                </p>
+              </div>
 
-            <CheckRadio31
-              checked={payMode === "pickup"}
-              onChange={() => {
-                setUserTouchedPayMode(true);
-                setPayMode("pickup");
-              }}
-              disabled={walletLoading}
-              label="Pagar tudo na retirada"
-              subLabel="Não utiliza seu saldo mensal."
-            />
+              <button
+                type="button"
+                className="rounded-xl border border-emerald-200 bg-white/90 px-4 py-2 text-sm font-semibold text-emerald-950 transition hover:bg-white"
+                onClick={() => setPurchaseFlowNotice("physical_store_only")}
+              >
+                Não quero usar saldo
+              </button>
+            </div>
+
+            {!walletLoading && !walletError && !canPayWithWallet ? (
+              <p className="mt-3 text-xs font-medium text-amber-800">
+                Saldo insuficiente para este pedido. Nesse caso, a compra deve ser feita na loja física.
+              </p>
+            ) : null}
           </div>
 
           <div className="mt-4 rounded-xl bg-white border p-3">
@@ -742,13 +702,8 @@ const Checkout: React.FC = () => {
             </div>
 
             <div className="flex justify-between text-sm mt-1">
-              <span className="text-gray-600">Pago com saldo</span>
+              <span className="text-gray-600">Será descontado do saldo</span>
               <span className="font-semibold">{formatBRLFromCents(walletUsedCents)}</span>
-            </div>
-
-            <div className="flex justify-between text-sm mt-1">
-              <span className="text-gray-600">Pagar na retirada</span>
-              <span className="font-semibold">{formatBRLFromCents(payOnPickupCents)}</span>
             </div>
 
             <div className="flex justify-between text-sm mt-1">
@@ -808,7 +763,7 @@ const Checkout: React.FC = () => {
             type="button"
             className="uiverse-aries flex-1"
             onClick={handleConfirm}
-            disabled={isSubmitting}
+            disabled={isSubmitting || walletLoading || Boolean(walletError)}
             aria-busy={isSubmitting ? "true" : "false"}
           >
             {isSubmitting ? "Enviando..." : "Confirmar pedido"}
@@ -816,8 +771,8 @@ const Checkout: React.FC = () => {
         </div>
 
         <p className="mt-4 text-xs text-gray-500">
-          O pagamento com saldo só é liberado quando o saldo disponível cobre 100% do pedido. Caso
-          contrário, o pedido deve ser pago na retirada.
+          Este checkout aceita apenas compras com saldo. Se o valor disponível não cobrir o pedido,
+          ou se você preferir não usar saldo, a compra precisa ser feita na loja física.
         </p>
       </div>
     </div>

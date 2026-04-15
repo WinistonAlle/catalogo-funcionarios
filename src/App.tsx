@@ -40,7 +40,6 @@ import AdminOrders from "./pages/AdminOrders";
 
 const queryClient = new QueryClient();
 const MAINTENANCE_MODE = false;
-
 type EmployeeRole = "admin" | "rh" | string;
 
 type EmployeeSession = {

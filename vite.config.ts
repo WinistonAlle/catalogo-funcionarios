@@ -11,6 +11,18 @@ export default defineConfig(({ mode }) => ({
     port: 4174,
     strictPort: true,
     allowedHosts: ["funcionarios.gostinhomineiro.com"],
+    proxy: {
+      "/automation": {
+        target: "http://127.0.0.1:3333",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/automation/, ""),
+      },
+      "/api": {
+        target: "http://127.0.0.1:3333",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ""),
+      },
+    },
   },
 
   plugins: [

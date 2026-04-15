@@ -70,10 +70,9 @@ const CATALOG_ROUTE = "/catalogo"; // ajuste se seu catálogo tiver outro path
 
 const ORDER_STATUS_OPTIONS = [
   { value: "pedido_feito", label: "Pedido feito" },
-  {
-    value: "encaminhado_para_separacao",
-    label: "Encaminhado para separação",
-  },
+  { value: "aguardando_separacao", label: "Aguardando separação" },
+  { value: "em_separacao", label: "Em separação" },
+  { value: "pronto_para_retirada", label: "Pronto para retirada" },
   { value: "entregue", label: "Entregue" },
 ] as const;
 
@@ -81,7 +80,6 @@ const ORDER_STATUS_VALUES = ORDER_STATUS_OPTIONS.map((option) => option.value);
 
 const STATUS_LABEL: Record<string, string> = {
   pedido_feito: "Pedido feito",
-  encaminhado_para_separacao: "Encaminhado para separação",
   entregue: "Entregue",
   aguardando_separacao: "Aguardando separação",
   em_separacao: "Em separação",
@@ -155,7 +153,7 @@ function getWalletUsed(
   return Number(order.spent_from_balance_cents ?? 0);
 }
 
-type PaymentKind = "wallet" | "pickup" | "mixed" | "none";
+type PaymentKind = "wallet" | "store" | "mixed" | "none";
 
 function getPaymentMeta(
   order: Pick<
@@ -178,16 +176,16 @@ function getPaymentMeta(
   let kind: PaymentKind = "none";
   if (wallet > 0 && pickup > 0) kind = "mixed";
   else if (wallet > 0) kind = "wallet";
-  else if (pickup > 0) kind = "pickup";
+  else if (pickup > 0) kind = "store";
   else kind = "none";
 
   const tooltip =
     kind === "wallet"
       ? `Pago com saldo: ${brlFromCents(wallet)}`
-      : kind === "pickup"
-        ? `Pagar na retirada: ${brlFromCents(pickup)}`
+      : kind === "store"
+        ? `Compra em loja física: ${brlFromCents(pickup)}`
         : kind === "mixed"
-          ? `Saldo: ${brlFromCents(wallet)}\nRetirada: ${brlFromCents(pickup)}`
+          ? `Saldo: ${brlFromCents(wallet)}\nLoja física: ${brlFromCents(pickup)}`
           : "Sem informação";
 
   return { total, wallet, pickup, kind, tooltip };
@@ -312,9 +310,9 @@ function Badge({ kind, tooltip }: { kind: PaymentKind; tooltip: string }) {
         },
       };
     }
-    if (kind === "pickup") {
+    if (kind === "store") {
       return {
-        label: "Retirada",
+        label: "Loja",
         icon: <IconPickup />,
         style: {
           background: "rgba(107,114,128,0.10)",
@@ -325,7 +323,7 @@ function Badge({ kind, tooltip }: { kind: PaymentKind; tooltip: string }) {
     }
     if (kind === "mixed") {
       return {
-        label: "Misto",
+        label: "Saldo + loja",
         icon: <IconMixed />,
         style: {
           background: "rgba(99,102,241,0.12)",
@@ -374,8 +372,6 @@ function statusPill(status?: string | null): CSSProperties {
   switch (status) {
     case "pedido_feito":
       return { ...base, background: "rgba(59,130,246,0.10)", color: "#1D4ED8" };
-    case "encaminhado_para_separacao":
-      return { ...base, background: "rgba(245,158,11,0.12)", color: "#92400E" };
     case "aguardando_separacao":
       return { ...base, background: "rgba(59,130,246,0.10)", color: "#1D4ED8" };
     case "em_separacao":
@@ -999,7 +995,7 @@ export default function AdminOrders() {
     const canceled = orders.filter((o) => o.status === "cancelado").length;
     const delivered = orders.filter((o) => o.status === "entregue").length;
     const pending = orders.filter((o) =>
-      ["pedido_feito", "encaminhado_para_separacao"].includes(o.status || ""),
+      ["pedido_feito", "aguardando_separacao", "em_separacao"].includes(o.status || ""),
     ).length;
     const withWallet = orders.filter((o) => getWalletUsed(o) > 0).length;
     return { total, canceled, delivered, pending, withWallet };
@@ -1506,7 +1502,7 @@ export default function AdminOrders() {
                                 )}
                                 {meta.pickup > 0 && (
                                   <span style={styles.payLine}>
-                                    Retirada: {brlFromCents(meta.pickup)}
+                                    Loja física: {brlFromCents(meta.pickup)}
                                   </span>
                                 )}
                               </div>
@@ -1669,7 +1665,7 @@ export default function AdminOrders() {
                             )}
                             {meta.pickup > 0 && (
                               <span style={styles.payLine}>
-                                Retirada: {brlFromCents(meta.pickup)}
+                                Loja física: {brlFromCents(meta.pickup)}
                               </span>
                             )}
                           </div>
@@ -1923,7 +1919,7 @@ export default function AdminOrders() {
                       </div>
 
                       <div style={summaryItemStyle}>
-                        <div style={styles.summaryLabel}>Retirada</div>
+                        <div style={styles.summaryLabel}>Loja física</div>
                         <div style={styles.summaryValue}>
                           {brlFromCents(meta.pickup)}
                         </div>
@@ -2461,7 +2457,7 @@ export default function AdminOrders() {
                                         )}
                                         {meta.pickup > 0 && (
                                           <span style={styles.payLine}>
-                                            Retirada:{" "}
+                                            Loja física:{" "}
                                             {brlFromCents(meta.pickup)}
                                           </span>
                                         )}
@@ -2592,7 +2588,7 @@ export default function AdminOrders() {
                                     )}
                                     {meta.pickup > 0 && (
                                       <span style={styles.payLine}>
-                                        Retirada: {brlFromCents(meta.pickup)}
+                                        Loja física: {brlFromCents(meta.pickup)}
                                       </span>
                                     )}
                                   </div>

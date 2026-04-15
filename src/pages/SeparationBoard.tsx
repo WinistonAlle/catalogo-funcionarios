@@ -2,10 +2,9 @@ import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { CheckCircle2, Maximize2, Minimize2, ClipboardList } from "lucide-react";
 
-// Status reais usados no banco (ajuste aqui se o nome for diferente)
-const STATUS_SEPARATION = "aguardando_separacao"; // Em separação
-const STATUS_PENDING = "aguardando_pagamento"; // Aguardando pagamento
-const STATUS_PAID = "pago"; // Pago
+const STATUS_WAITING_SEPARATION = "aguardando_separacao";
+const STATUS_IN_SEPARATION = "em_separacao";
+const STATUS_READY = "pronto_para_retirada";
 const STATUS_DELIVERED = "entregue"; // Retirado / entregue
 
 type OrderStatus = string;
@@ -21,10 +20,7 @@ type Order = {
   created_at: string;
   notes: string | null;
 
-  paid_at?: string | null;
   ready_at?: string | null;
-
-  // "pickup" | "wallet" | "split"
   payment_method?: string | null;
 
   // opcional se existir
@@ -63,9 +59,8 @@ const SeparationBoard: React.FC = () => {
     order: null,
   });
 
-  // painel mostra: separação + aguardando pagamento + pago (pra filtrar wallet)
   const relevantStatuses = useMemo(
-    () => [STATUS_SEPARATION, STATUS_PENDING, STATUS_PAID],
+    () => [STATUS_WAITING_SEPARATION, STATUS_IN_SEPARATION, STATUS_READY],
     []
   );
 
@@ -92,18 +87,7 @@ const SeparationBoard: React.FC = () => {
   }, []);
   // -------------------------------
 
-  // ✅ pronto para retirada SOMENTE se payment_method === "wallet"
-  const isWalletOnly = (order: Order) => {
-    const pm = (order.payment_method || "").toLowerCase().trim();
-    return pm === "wallet";
-  };
-
-  const paymentMethodLabelPT = (order: Order) => {
-    const pm = (order.payment_method || "").toLowerCase().trim();
-    if (pm === "wallet") return "Pago com saldo";
-    // split entra como pagar na retirada (como você pediu)
-    return "Pagar na retirada";
-  };
+  const paymentMethodLabelPT = (_order: Order) => "Pago com saldo";
 
   const closeHoverModal = () => {
     setHoverModal((s) => ({ ...s, open: false, order: null }));
@@ -242,7 +226,12 @@ const SeparationBoard: React.FC = () => {
               if (relevantStatuses.includes(newRow.status)) {
                 updated = updated.filter((o) => o.id !== newRow.id);
                 updated.push(newRow);
-                if (newRow.status === STATUS_SEPARATION) markPulse(newRow.id);
+                if (
+                  newRow.status === STATUS_WAITING_SEPARATION ||
+                  newRow.status === STATUS_IN_SEPARATION
+                ) {
+                  markPulse(newRow.id);
+                }
               }
             }
 
@@ -253,8 +242,8 @@ const SeparationBoard: React.FC = () => {
                 updated.push(newRow);
 
                 if (
-                  oldRow.status !== STATUS_SEPARATION &&
-                  newRow.status === STATUS_SEPARATION
+                  ![STATUS_WAITING_SEPARATION, STATUS_IN_SEPARATION].includes(oldRow.status) &&
+                  [STATUS_WAITING_SEPARATION, STATUS_IN_SEPARATION].includes(newRow.status)
                 ) {
                   markPulse(newRow.id);
                 }
@@ -281,13 +270,10 @@ const SeparationBoard: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const separatingOrders = orders.filter((o) => o.status === STATUS_SEPARATION);
-  const pendingOrders = orders.filter((o) => o.status === STATUS_PENDING);
-
-  // pronto para retirada: status pago + wallet-only
-  const readyForPickupOrders = orders.filter(
-    (o) => o.status === STATUS_PAID && isWalletOnly(o)
+  const separationOrders = orders.filter((o) =>
+    [STATUS_WAITING_SEPARATION, STATUS_IN_SEPARATION].includes(o.status)
   );
+  const readyForPickupOrders = orders.filter((o) => o.status === STATUS_READY);
 
   const formatTime = (iso: string | null | undefined) => {
     if (!iso) return "";
@@ -325,26 +311,14 @@ const SeparationBoard: React.FC = () => {
     return "Pedido";
   };
 
-  // fluxo:
-  // Em separação:
-  //  - wallet => pago (vai pra pronto retirada)
-  //  - pickup/split => aguardando pagamento
-  // Aguardando pagamento => Pago (some do painel)
-  // Pronto para retirada => finaliza retirada e some do painel
   const advanceOrder = async (order: Order) => {
     // ✅ fecha o modal imediatamente ao clicar (evita “modal preso”)
     closeHoverModal();
 
     const nowIso = new Date().toISOString();
 
-    // 1) Em separação
-    if (order.status === STATUS_SEPARATION) {
-      const pm = (order.payment_method || "").toLowerCase().trim();
-
-      const next: Partial<Order> =
-        pm === "wallet"
-          ? { status: STATUS_PAID, ready_at: nowIso, paid_at: nowIso }
-          : { status: STATUS_PENDING, ready_at: nowIso };
+    if ([STATUS_WAITING_SEPARATION, STATUS_IN_SEPARATION].includes(order.status)) {
+      const next: Partial<Order> = { status: STATUS_READY, ready_at: nowIso };
 
       // otimista
       setOrders((curr) =>
@@ -364,30 +338,7 @@ const SeparationBoard: React.FC = () => {
       return;
     }
 
-    // 2) Aguardando pagamento -> Pago
-    if (order.status === STATUS_PENDING) {
-      const next: Partial<Order> = { status: STATUS_PAID, paid_at: nowIso };
-
-      // otimista
-      setOrders((curr) =>
-        curr.map((o) => (o.id === order.id ? ({ ...o, ...next } as Order) : o))
-      );
-      setLastUpdated(new Date());
-
-      const { error } = await supabase
-        .from("orders")
-        .update(next)
-        .eq("id", order.id);
-
-      if (error) {
-        console.error("Erro ao avançar pedido:", error);
-        await fetchOrders();
-      }
-      return;
-    }
-
-    // 3) Pronto para retirada (pago + wallet) -> finalizar retirada
-    if (order.status === STATUS_PAID && isWalletOnly(order)) {
+    if (order.status === STATUS_READY) {
       const next: Partial<Order> = { status: STATUS_DELIVERED, picked_up_at: nowIso };
 
       // otimista: some do painel
@@ -429,7 +380,7 @@ const SeparationBoard: React.FC = () => {
 
   const renderOrderCard = (
     order: Order,
-    variant: "yellow" | "red" | "green",
+    variant: "yellow" | "green",
     hintText: string
   ) => {
     const name = getDisplayName(order);
@@ -439,11 +390,6 @@ const SeparationBoard: React.FC = () => {
         ? {
             border: "border-yellow-400 shadow-[0_0_20px_rgba(250,204,21,0.35)]",
             bg: "bg-yellow-50",
-          }
-        : variant === "red"
-        ? {
-            border: "border-red-400 shadow-[0_0_20px_rgba(248,113,113,0.35)]",
-            bg: "bg-red-50",
           }
         : {
             border: "border-emerald-400 shadow-[0_0_20px_rgba(52,211,153,0.35)]",
@@ -491,13 +437,6 @@ const SeparationBoard: React.FC = () => {
             <div>
               Pronto às{" "}
               <span className="font-semibold">{formatTime(order.ready_at)}</span>
-            </div>
-          )}
-
-          {order.paid_at && (
-            <div>
-              Pago às{" "}
-              <span className="font-semibold">{formatTime(order.paid_at)}</span>
             </div>
           )}
 
@@ -549,10 +488,9 @@ const SeparationBoard: React.FC = () => {
           </div>
         )}
 
-        <div className="hidden md:block pointer-events-none absolute inset-y-0 left-1/3 w-px bg-slate-200" />
-        <div className="hidden md:block pointer-events-none absolute inset-y-0 left-2/3 w-px bg-slate-200" />
+        <div className="hidden md:block pointer-events-none absolute inset-y-0 left-1/2 w-px bg-slate-200" />
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 h-full">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 h-full">
           {/* Em separação */}
           <section className="bg-white rounded-3xl border border-slate-200 shadow-lg p-4 md:p-5 flex flex-col min-h-[320px]">
             <div className="flex items-center justify-between mb-4">
@@ -561,61 +499,27 @@ const SeparationBoard: React.FC = () => {
                 Em separação
               </h2>
               <span className="text-xs md:text-sm text-slate-500">
-                {separatingOrders.length} pedido
-                {separatingOrders.length === 1 ? "" : "s"}
+                {separationOrders.length} pedido
+                {separationOrders.length === 1 ? "" : "s"}
               </span>
             </div>
 
             <div className="flex-1 overflow-hidden">
-              {separatingOrders.length === 0 ? (
+              {separationOrders.length === 0 ? (
                 <div className="h-full flex items-center justify-center text-slate-400 text-base md:text-lg text-center px-4">
                   Nenhum pedido em separação
                 </div>
               ) : (
                 <div className="space-y-3 md:space-y-4 overflow-y-auto pr-1 pb-2">
-                  {separatingOrders.map((order) =>
-                    renderOrderCard(
-                      order,
-                      "yellow",
-                      isWalletOnly(order)
-                        ? "Clique: pronto para retirada"
-                        : "Clique: enviar para pagamento"
-                    )
+                  {separationOrders.map((order) =>
+                    renderOrderCard(order, "yellow", "Clique: marcar como pronto para retirada")
                   )}
                 </div>
               )}
             </div>
           </section>
 
-          {/* Aguardando pagamento */}
-          <section className="bg-white rounded-3xl border border-slate-200 shadow-lg p-4 md:p-5 flex flex-col min-h-[320px]">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl md:text-2xl font-bold flex items-center gap-2">
-                <span className="inline-block h-3 w-3 rounded-full bg-red-500 shadow-[0_0_10px_rgba(248,113,113,0.9)]" />
-                Aguardando pagamento
-              </h2>
-              <span className="text-xs md:text-sm text-slate-500">
-                {pendingOrders.length} pedido
-                {pendingOrders.length === 1 ? "" : "s"}
-              </span>
-            </div>
-
-            <div className="flex-1 overflow-hidden">
-              {pendingOrders.length === 0 ? (
-                <div className="h-full flex items-center justify-center text-slate-400 text-base md:text-lg text-center px-4">
-                  Nenhum pedido aguardando pagamento
-                </div>
-              ) : (
-                <div className="space-y-3 md:space-y-4 overflow-y-auto pr-1 pb-2">
-                  {pendingOrders.map((order) =>
-                    renderOrderCard(order, "red", "Clique: marcar como pago")
-                  )}
-                </div>
-              )}
-            </div>
-          </section>
-
-          {/* Pronto para retirada (wallet only) */}
+          {/* Pronto para retirada */}
           <section className="bg-white rounded-3xl border border-slate-200 shadow-lg p-4 md:p-5 flex flex-col min-h-[320px]">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl md:text-2xl font-bold flex items-center gap-2">
@@ -664,11 +568,9 @@ const SeparationBoard: React.FC = () => {
               </div>
 
               <span className="text-xs font-semibold px-2 py-1 rounded-full bg-slate-100 text-slate-700">
-                {hoverModal.order.status === STATUS_SEPARATION
-                  ? "Em separação"
-                  : hoverModal.order.status === STATUS_PENDING
-                  ? "Aguardando pagamento"
-                  : "Pronto p/ retirada"}
+                {hoverModal.order.status === STATUS_READY
+                  ? "Pronto p/ retirada"
+                  : "Em separação"}
               </span>
             </div>
 
