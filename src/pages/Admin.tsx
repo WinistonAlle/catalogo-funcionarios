@@ -125,6 +125,7 @@ function mapRowToProduct(row: any): Product {
 
     isLaunch: row.isLaunch ?? row.is_launch ?? false,
     extraInfo: row.extraInfo ?? row.extra_info ?? null,
+    isHidden: row.isHidden ?? row.is_hidden ?? false,
   } as Product;
 }
 
@@ -162,9 +163,15 @@ function mapEditingToDbPayload(editing: Editable) {
     is_package: !!(editing as any).isPackage,
     featured: !!(editing as any).featured,
     is_launch: !!(editing as any).isLaunch,
+    is_hidden: !!(editing as any).isHidden,
   };
 
   return payload;
+}
+
+function withoutHiddenField(payload: Record<string, any>) {
+  const { is_hidden, ...rest } = payload;
+  return rest;
 }
 
 function mapPayloadBackToProduct(editing: Editable, payload: any): Product {
@@ -197,6 +204,7 @@ function mapPayloadBackToProduct(editing: Editable, payload: any): Product {
 
     isLaunch: !!editing.isLaunch,
     extraInfo: editing.extraInfo ?? null,
+    isHidden: !!editing.isHidden,
   } as Product;
 }
 
@@ -345,6 +353,7 @@ export default function Admin() {
       isLaunch: false,
       featured: false,
       inStock: true,
+      isHidden: false,
       extraInfo: null,
     });
     setOpenForm(true);
@@ -365,6 +374,7 @@ export default function Admin() {
 
       employee_price: priceNum,
       employee_price_input: String(priceNum).replace(".", ","),
+      isHidden: !!(p as any).isHidden,
     });
     setOpenForm(true);
   };
@@ -478,17 +488,27 @@ export default function Admin() {
 
       // payload apenas do products (sem in_stock)
       const payload = mapEditingToDbPayload(editing);
+      const persistProduct = async (dbPayload: Record<string, any>) => {
+        if (existsInState) {
+          return supabase.from("products").update(dbPayload).eq("id", editing.id);
+        }
 
-      if (existsInState) {
-        const { error } = await supabase
-          .from("products")
-          .update(payload)
-          .eq("id", editing.id);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.from("products").insert(payload);
-        if (error) throw error;
+        return supabase.from("products").insert(dbPayload);
+      };
+
+      let payloadPersisted = payload;
+      let { error } = await persistProduct(payload);
+
+      if (error) {
+        const message = String(error.message || "").toLowerCase();
+        if (message.includes("is_hidden")) {
+          payloadPersisted = withoutHiddenField(payload);
+          const fallback = await persistProduct(payloadPersisted);
+          error = fallback.error;
+        }
       }
+
+      if (error) throw error;
 
       // ✅ peso -> tabela weight
       const weightValue = parseBRNumber(
@@ -506,7 +526,7 @@ export default function Admin() {
       if (wErr) throw wErr;
 
       // ✅ atualiza estado local
-      const saved = mapPayloadBackToProduct(editing, payload);
+      const saved = mapPayloadBackToProduct(editing, payloadPersisted);
 
       setItems((prev) => {
         const idx = prev.findIndex((p) => p.id === saved.id);
@@ -535,20 +555,82 @@ export default function Admin() {
   // --------- Excluir ----------
   const confirmDelete = (p: Product) => setToDelete(p);
 
+  const toggleHidden = async (product: Product) => {
+    const nextHidden = !product.isHidden;
+
+    try {
+      const { error } = await supabase
+        .from("products")
+        .update({ is_hidden: nextHidden })
+        .eq("id", product.id);
+
+      if (error) {
+        const message = String(error.message || "").toLowerCase();
+        if (message.includes("is_hidden")) {
+          throw new Error(
+            'A coluna "is_hidden" ainda nao existe no banco. Rode o SQL em scripts/add-product-visibility.sql no Supabase e tente novamente.'
+          );
+        }
+        throw error;
+      }
+
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === product.id ? { ...item, isHidden: nextHidden } : item
+        )
+      );
+    } catch (err: any) {
+      console.error("Erro ao alternar visibilidade do produto:", err);
+      alert(
+        "Nao foi possivel alterar a visibilidade do produto.\n\n" +
+          (err?.message || err?.hint || "Erro desconhecido.")
+      );
+    }
+  };
+
   const doDelete = async () => {
     if (!toDelete) return;
 
     try {
-      await supabase.from("weight").delete().eq("product_id", toDelete.id);
+      // Mantém o histórico dos pedidos e solta as referências antes de apagar o cadastro.
+      const { error: orderItemsError } = await supabase
+        .from("order_items")
+        .update({
+          product_id: null,
+          product_name: toDelete.name,
+        })
+        .eq("product_id", toDelete.id);
+      if (orderItemsError) throw orderItemsError;
+
+      const { error: favoritesError } = await supabase
+        .from("favorites")
+        .delete()
+        .eq("product_id", toDelete.id);
+      if (favoritesError) throw favoritesError;
+
+      const { error: featuredError } = await supabase
+        .from("featured_products")
+        .delete()
+        .eq("product_id", toDelete.id);
+      if (featuredError) throw featuredError;
+
+      const { error: weightError } = await supabase
+        .from("weight")
+        .delete()
+        .eq("product_id", toDelete.id);
+      if (weightError) throw weightError;
 
       const { error } = await supabase.from("products").delete().eq("id", toDelete.id);
       if (error) throw error;
 
       setItems((prev) => prev.filter((p) => p.id !== toDelete.id));
       setToDelete(null);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Erro ao excluir produto:", err);
-      alert("Erro ao excluir produto no banco.");
+      alert(
+        "Erro ao excluir produto no banco.\n\n" +
+          (err?.message || err?.hint || "Erro desconhecido.")
+      );
     }
   };
 
@@ -648,6 +730,7 @@ export default function Admin() {
                       {p.inStock === false && (
                         <Badge variant="destructive">Sem estoque</Badge>
                       )}
+                      {p.isHidden && <Badge variant="outline">Oculto</Badge>}
                       {p.isLaunch && <Badge variant="outline">Lançamento</Badge>}
                     </div>
 
@@ -663,6 +746,14 @@ export default function Admin() {
                     <div className="mt-3 flex gap-2">
                       <Button size="sm" onClick={() => startEdit(p)}>
                         Editar
+                      </Button>
+
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => toggleHidden(p)}
+                      >
+                        {p.isHidden ? "Mostrar" : "Ocultar"}
                       </Button>
 
                       <Button
@@ -896,6 +987,11 @@ export default function Admin() {
                   onCheckedChange={(v) => setEditing({ ...editing, inStock: v })}
                 />
                 <Flag
+                  label="Oculto"
+                  checked={!!editing.isHidden}
+                  onCheckedChange={(v) => setEditing({ ...editing, isHidden: v })}
+                />
+                <Flag
                   label="Lançamento"
                   checked={!!editing.isLaunch}
                   onCheckedChange={(v) => setEditing({ ...editing, isLaunch: v })}
@@ -922,6 +1018,9 @@ export default function Admin() {
           </AlertDialogHeader>
           <div className="text-sm text-muted-foreground">
             {toDelete?.name} (ID: {toDelete?.old_id ?? toDelete?.id})
+            <br />
+            O produto será removido do catálogo mesmo se já existir em pedidos.
+            Os pedidos vão manter o nome gravado no item para preservar o histórico.
           </div>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => setToDelete(null)}>Cancelar</AlertDialogCancel>

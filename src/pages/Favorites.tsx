@@ -203,6 +203,7 @@ const FavoritesPage: React.FC = () => {
       const mapped: Product[] = rows
         .map((r: any) => r.product)
         .filter(Boolean)
+        .filter((row: any) => (row?.isHidden ?? row?.is_hidden ?? false) !== true)
         .map((row: any) => {
           const employeePrice = Number(row.employee_price ?? row.price ?? 0);
           return {
@@ -222,6 +223,7 @@ const FavoritesPage: React.FC = () => {
             inStock: row.inStock ?? row.in_stock ?? true,
             isLaunch: row.isLaunch ?? row.is_launch ?? false,
             extraInfo: row.extraInfo ?? undefined,
+            isHidden: row.isHidden ?? row.is_hidden ?? false,
           };
         });
 

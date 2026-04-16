@@ -48,6 +48,7 @@ export interface Product {
   featured?: boolean; // Se deve aparecer em destaque
   extraInfo?: ProductExtraInfo; // Info adicional para a view expandida
   inStock?: boolean; // Se está em estoque (opcional, default true)
+  isHidden?: boolean; // Se está oculto do catálogo, mas preservado para uso futuro
 }
 
 export interface CartItem {

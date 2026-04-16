@@ -65,6 +65,10 @@ const CATEGORY_NAME_BY_ID: Record<number, string> = {
   8: "Outros",
 };
 
+function isProductVisible(row: any) {
+  return (row?.isHidden ?? row?.is_hidden ?? false) !== true;
+}
+
 /* --------------------------------------------------------
    TYPES
 -------------------------------------------------------- */
@@ -444,7 +448,9 @@ const Destaques: React.FC = () => {
       return;
     }
 
-    const mapped: ProductLite[] = ((data as any[]) ?? []).map((row: any) => {
+    const mapped: ProductLite[] = ((data as any[]) ?? [])
+      .filter(isProductVisible)
+      .map((row: any) => {
       const categoryName =
         CATEGORY_NAME_BY_ID[row.category_id as number] ??
         row.category ??
@@ -465,7 +471,7 @@ const Destaques: React.FC = () => {
         unit: row.unit ?? row.unidade ?? null,
         category: categoryName,
       };
-    });
+      });
 
     setProducts(mapped);
   }
@@ -510,7 +516,7 @@ const Destaques: React.FC = () => {
       const mappedOrdered: ProductLite[] = ordered
         .map((r) => {
           const row = mapById.get(String(r.product_id));
-          if (!row) return null;
+          if (!row || !isProductVisible(row)) return null;
 
           const categoryName =
             CATEGORY_NAME_BY_ID[row.category_id as number] ??

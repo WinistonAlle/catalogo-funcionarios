@@ -110,6 +110,10 @@ function getMonthKey() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+function isProductVisible(row: any) {
+  return (row?.isHidden ?? row?.is_hidden ?? false) !== true;
+}
+
 /* --------------------------------------------------------
    TYPES
 -------------------------------------------------------- */
@@ -648,6 +652,7 @@ const Index: React.FC = () => {
       inStock: row.inStock ?? row.in_stock ?? true,
       isLaunch: row.isLaunch ?? row.is_launch ?? false,
       extraInfo: row.extraInfo ?? undefined,
+      isHidden: row.isHidden ?? row.is_hidden ?? false,
     };
   }
 
@@ -686,7 +691,9 @@ const Index: React.FC = () => {
         }
 
         if (isMounted && data) {
-          const mapped: Product[] = (data as any[]).map(mapRowToProduct);
+          const mapped: Product[] = (data as any[])
+            .filter(isProductVisible)
+            .map(mapRowToProduct);
 
           setProducts(mapped);
 
@@ -781,6 +788,7 @@ const Index: React.FC = () => {
 
               const mappedManual = ordered
                 .map((r) => byId.get(String(r.product_id)))
+                .filter(isProductVisible)
                 .filter(Boolean)
                 .map(mapRowToProduct);
 
@@ -806,7 +814,7 @@ const Index: React.FC = () => {
         const mappedAuto: Product[] = rows
           .map((r) => {
             const local = byId.get(String(r.product_id));
-            if (local) return local;
+            if (local) return isProductVisible(local) ? local : null;
 
             return {
               id: r.product_id as any,
@@ -825,8 +833,10 @@ const Index: React.FC = () => {
               inStock: true,
               isLaunch: false,
               extraInfo: undefined,
+              isHidden: false,
             } as Product;
           })
+          .filter(Boolean)
           .slice(0, 5);
 
         setFeaturedProducts(mappedAuto);
