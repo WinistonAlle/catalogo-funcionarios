@@ -36,7 +36,8 @@ import { Switch } from "@/components/ui/switch";
 const FALLBACK_IMG = "/placeholder.png";
 
 // ✅ bucket criado no Supabase Storage via SQL
-const STORAGE_BUCKET = "products";
+const STORAGE_BUCKET = import.meta.env.VITE_SUPABASE_PRODUCTS_BUCKET || "products";
+const PRODUCTS_CACHE_KEY = "gm_catalog_products_v1";
 
 const CATEGORY_LABELS: Record<string, string> = {
   "1": "Pão de Queijo",
@@ -172,6 +173,37 @@ function mapEditingToDbPayload(editing: Editable) {
 function withoutHiddenField(payload: Record<string, any>) {
   const { is_hidden, ...rest } = payload;
   return rest;
+}
+
+function invalidateProductCaches() {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.removeItem(PRODUCTS_CACHE_KEY);
+  } catch (err) {
+    console.warn("Nao foi possivel limpar o cache local de produtos:", err);
+  }
+}
+
+function isMissingHiddenColumnError(error: unknown) {
+  const message = String((error as any)?.message || "").toLowerCase();
+  const details = String((error as any)?.details || "").toLowerCase();
+  const hint = String((error as any)?.hint || "").toLowerCase();
+
+  return [message, details, hint].some(
+    (part) => part.includes("is_hidden") || part.includes("column") && part.includes("hidden")
+  );
+}
+
+function isBucketNotFoundError(error: unknown) {
+  const message = String((error as any)?.message || "").toLowerCase();
+  const details = String((error as any)?.details || "").toLowerCase();
+
+  return [message, details].some(
+    (part) =>
+      part.includes("bucket") &&
+      (part.includes("not found") || part.includes("does not exist") || part.includes("no encontrado"))
+  );
 }
 
 function mapPayloadBackToProduct(editing: Editable, payload: any): Product {
@@ -391,6 +423,10 @@ export default function Admin() {
     setUploadError(null);
 
     try {
+      if (!file.type.startsWith("image/")) {
+        throw new Error("Selecione um arquivo de imagem valido.");
+      }
+
       const productId = editing?.id ?? "unknown";
       const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
       const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
@@ -418,7 +454,11 @@ export default function Admin() {
       return url;
     } catch (err: any) {
       console.error("Erro ao enviar imagem:", err);
-      setUploadError(err?.message || "Erro ao enviar imagem. Tente novamente.");
+      const message = isBucketNotFoundError(err)
+        ? `O bucket "${STORAGE_BUCKET}" nao existe no Supabase Storage. Crie esse bucket antes de enviar imagens.`
+        : err?.message || "Erro ao enviar imagem. Tente novamente.";
+
+      setUploadError(message);
       throw err;
     } finally {
       setUploadingImage(false);
@@ -500,11 +540,17 @@ export default function Admin() {
       let { error } = await persistProduct(payload);
 
       if (error) {
-        const message = String(error.message || "").toLowerCase();
-        if (message.includes("is_hidden")) {
+        if (isMissingHiddenColumnError(error)) {
+          const wantedHidden = !!payload.is_hidden;
           payloadPersisted = withoutHiddenField(payload);
           const fallback = await persistProduct(payloadPersisted);
           error = fallback.error;
+
+          if (!error && wantedHidden) {
+            throw new Error(
+              'A coluna "is_hidden" ainda nao existe no banco. Rode o SQL de visibilidade no Supabase para conseguir ocultar produtos.'
+            );
+          }
         }
       }
 
@@ -540,6 +586,7 @@ export default function Admin() {
         return next;
       });
 
+      invalidateProductCaches();
       closeForm();
     } catch (err: any) {
       console.error("Erro ao salvar produto:", err);
@@ -565,8 +612,7 @@ export default function Admin() {
         .eq("id", product.id);
 
       if (error) {
-        const message = String(error.message || "").toLowerCase();
-        if (message.includes("is_hidden")) {
+        if (isMissingHiddenColumnError(error)) {
           throw new Error(
             'A coluna "is_hidden" ainda nao existe no banco. Rode o SQL em scripts/add-product-visibility.sql no Supabase e tente novamente.'
           );
@@ -579,6 +625,7 @@ export default function Admin() {
           item.id === product.id ? { ...item, isHidden: nextHidden } : item
         )
       );
+      invalidateProductCaches();
     } catch (err: any) {
       console.error("Erro ao alternar visibilidade do produto:", err);
       alert(
@@ -624,6 +671,7 @@ export default function Admin() {
       if (error) throw error;
 
       setItems((prev) => prev.filter((p) => p.id !== toDelete.id));
+      invalidateProductCaches();
       setToDelete(null);
     } catch (err: any) {
       console.error("Erro ao excluir produto:", err);
