@@ -21,6 +21,8 @@ const KEEP_OPEN = process.env.SAIBWEB_KEEP_OPEN === "1";
 const HEADLESS = !KEEP_OPEN;
 
 const TYPE_DELAY = Number(process.env.SAIBWEB_TYPE_DELAY ?? 0);
+const STEP_SETTLE_MS = Number(process.env.SAIBWEB_STEP_SETTLE_MS ?? 3000);
+const FIELD_RETRY_ATTEMPTS = Number(process.env.SAIBWEB_FIELD_RETRY_ATTEMPTS ?? 3);
 
 // ✅ Quando estiver no servidor, você NÃO quer pausar pedindo ENTER
 // Se quiser pausar em teste, use SAIBWEB_PAUSE=1 (opcional)
@@ -155,6 +157,22 @@ function computeSaibwebQtyFromWeightAndQty(weight: number | null, orderQty: numb
 function formatQtyForInput(q: number): string {
   if (!Number.isFinite(q)) return "0";
   return q.toFixed(3).replace(/\.?0+$/, "");
+}
+
+function normalizeFieldValue(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function fieldLooksFilled(actual: string, expected: string) {
+  const normalizedActual = normalizeFieldValue(actual);
+  const normalizedExpected = normalizeFieldValue(expected);
+
+  if (!normalizedExpected) return normalizedActual.length === 0;
+  return (
+    normalizedActual === normalizedExpected ||
+    normalizedActual.includes(normalizedExpected) ||
+    normalizedExpected.includes(normalizedActual)
+  );
 }
 
 // =====================
@@ -411,26 +429,66 @@ async function clearAndType(page: Page, value: string) {
   }
 }
 
-async function fillByXPathAndEnter(page: Page, clickXpath: string, value: string) {
-  await clickByXPathPreferButton(page, clickXpath, { timeout: 15000 });
-  await page.waitForTimeout(60);
+async function readFocusedFieldValue(page: Page) {
+  return await page.evaluate(() => {
+    const el = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
+    if (!el) return "";
+    if ("value" in el && typeof el.value === "string") return el.value;
+    return (el.textContent || "").trim();
+  });
+}
 
-  await clearAndType(page, value);
+async function clearAndFillFocusedFieldWithRetry(
+  page: Page,
+  value: string,
+  opts?: { label?: string; attempts?: number }
+) {
+  const attempts = Math.max(1, opts?.attempts ?? FIELD_RETRY_ATTEMPTS);
+  const label = opts?.label ?? "campo";
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    await clearAndType(page, value);
+    await page.waitForTimeout(STEP_SETTLE_MS);
+
+    const currentValue = await readFocusedFieldValue(page);
+    if (fieldLooksFilled(currentValue, value)) {
+      console.log(`✅ ${label} preenchido (${attempt}/${attempts})`);
+      return;
+    }
+
+    console.warn(
+      `⚠️ ${label} não confirmou o valor esperado (${attempt}/${attempts}). Atual="${currentValue}" Esperado="${value}"`
+    );
+  }
+
+  throw new Error(`Não consegui confirmar o preenchimento do campo ${label}.`);
+}
+
+async function fillByXPathAndEnter(
+  page: Page,
+  clickXpath: string,
+  value: string,
+  opts?: { label?: string; attempts?: number }
+) {
+  await clickByXPathPreferButton(page, clickXpath, { timeout: 15000 });
+  await page.waitForTimeout(STEP_SETTLE_MS);
+
+  await clearAndFillFocusedFieldWithRetry(page, value, opts);
 
   await page.keyboard.press("Enter").catch(() => {});
-  await page.waitForTimeout(140);
+  await page.waitForTimeout(STEP_SETTLE_MS);
 
   await page.keyboard.press("Tab").catch(() => {});
-  await page.waitForTimeout(90);
+  await page.waitForTimeout(STEP_SETTLE_MS);
 }
 
 async function selectOperationByEnterOnly(page: Page, clickXpath: string) {
   await clickByXPathPreferButton(page, clickXpath, { timeout: 15000 });
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(STEP_SETTLE_MS);
   await page.keyboard.press("Enter").catch(() => {});
-  await page.waitForTimeout(150);
+  await page.waitForTimeout(STEP_SETTLE_MS);
   await page.keyboard.press("Tab").catch(() => {});
-  await page.waitForTimeout(100);
+  await page.waitForTimeout(STEP_SETTLE_MS);
 }
 
 // =====================
@@ -545,17 +603,17 @@ async function preencherNovoCadastro(page: Page, cpf: string, obs: string) {
   const operacaoXPath =
     '//*[@id="scrollable-force-tabpanel-1"]/div/div/div[2]/form/div[2]/div[1]/div/div[2]/div/div/div[1]/div[2]';
 
-  await fillByXPathAndEnter(page, clienteXPath, cpf);
+  await fillByXPathAndEnter(page, clienteXPath, cpf, { label: "CPF do cliente" });
   await selectOperationByEnterOnly(page, operacaoXPath);
 
   const obsEl = page.locator("#obs_nota").first();
   await obsEl.waitFor({ state: "visible", timeout: 15000 });
   await obsEl.scrollIntoViewIfNeeded().catch(() => {});
   await obsEl.click({ delay: 30 }).catch(() => {});
-  await obsEl.fill("").catch(() => {});
-  await obsEl.fill(obs);
+  await clearAndFillFocusedFieldWithRetry(page, obs, { label: "observação da nota" });
 
-  await page.waitForTimeout(150);
+  await page.keyboard.press("Enter").catch(() => {});
+  await page.waitForTimeout(STEP_SETTLE_MS);
   console.log("✅ Campos preenchidos");
 }
 
@@ -577,8 +635,8 @@ async function selecionarTabelaPrecoAntesDosItens(page: Page) {
   const tabelaPrecoXPath =
     '//*[@id="scrollable-force-tabpanel-2"]/div/div/div[2]/span/form/div/div[1]/div/div[2]/div/div/div[1]/div[2]';
 
-  await fillByXPathAndEnter(page, tabelaPrecoXPath, "18");
-  await page.waitForTimeout(250);
+  await fillByXPathAndEnter(page, tabelaPrecoXPath, "18", { label: "tabela de preço" });
+  await page.waitForTimeout(STEP_SETTLE_MS);
 
   console.log("✅ Tabela de preço definida: 18");
 }
@@ -592,16 +650,17 @@ async function adicionarItemDoPedido(page: Page, itemCode: string, qtdSaibweb: n
   const adicionarXPath =
     '//*[@id="scrollable-force-tabpanel-2"]/div/div/div[1]/div[1]/button[4]';
 
-  await fillByXPathAndEnter(page, pesquisarItemXPath, itemCode);
+  await fillByXPathAndEnter(page, pesquisarItemXPath, itemCode, { label: `código do item ${itemCode}` });
 
   const qtdEl = page.locator("#qtd_produto_add").first();
   await qtdEl.waitFor({ state: "visible", timeout: 15000 });
   await qtdEl.scrollIntoViewIfNeeded().catch(() => {});
   await qtdEl.click({ delay: 30 }).catch(() => {});
-  await qtdEl.fill("").catch(() => {});
-  await qtdEl.fill(formatQtyForInput(qtdSaibweb));
+  await clearAndFillFocusedFieldWithRetry(page, formatQtyForInput(qtdSaibweb), {
+    label: `quantidade do item ${itemCode}`,
+  });
 
-  await page.waitForTimeout(120);
+  await page.waitForTimeout(STEP_SETTLE_MS);
 
   await clickByXPath(page, adicionarXPath, { timeout: 15000 });
   await sleep(520);
