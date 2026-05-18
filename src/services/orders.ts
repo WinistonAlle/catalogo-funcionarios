@@ -1,5 +1,6 @@
 // src/services/orders.ts
 import { supabase } from "@/lib/supabase";
+import { getLineSubtotal, getUnitPrice } from "@/lib/pricing";
 import type { Product } from "@/types/products";
 
 export interface CartItem {
@@ -36,8 +37,7 @@ export async function createOrder({
   const totalItems = items.reduce((sum, item) => sum + item.quantity, 0);
 
   const totalValue = items.reduce(
-    (sum, item) =>
-      sum + (Number(item.product.employee_price) || 0) * item.quantity,
+    (sum, item) => sum + getLineSubtotal(item.product, item.quantity),
     0
   );
 
@@ -71,7 +71,7 @@ export async function createOrder({
     product_id: item.product.id,
     product_old_id: (item.product as any).old_id ?? null,   // 👈 old_id
     product_name: item.product.name,
-    unit_price: Number(item.product.employee_price) || 0,
+    unit_price: getUnitPrice(item.product),
     quantity: item.quantity,                                // 👈 qtd do item
   }));
 

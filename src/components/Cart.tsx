@@ -7,6 +7,7 @@ import { ScrollArea } from "./ui/scroll-area";
 import { toast } from "./ui/sonner";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/lib/supabase";
+import { getLineSubtotal, getUnitPrice } from "@/lib/pricing";
 
 /* --------------------------------------------------------
    HELPERS
@@ -188,8 +189,11 @@ const Cart: React.FC = () => {
                       item.product.image_path ||
                       "/placeholder.svg";
 
-                    const price = Number(item.product.employee_price ?? 0);
-                    const subtotal = price * item.quantity;
+                    const price = getUnitPrice(item.product);
+                    const subtotal = getLineSubtotal(
+                      item.product,
+                      item.quantity
+                    );
 
                     return (
                       <div

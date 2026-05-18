@@ -13,6 +13,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { useCart } from "@/contexts/CartContext";
 import { toast } from "./ui/sonner";
+import { getUnitPrice } from "@/lib/pricing";
 
 interface ProductDetailProps {
   product: Product;
@@ -50,10 +51,7 @@ const ProductDetail: React.FC<ProductDetailProps> = ({
     (product as any).in_stock ??
     true;
 
-  const employeePrice =
-    (product as any).employee_price ??
-    (product as any).price ??
-    0;
+  const unitPrice = getUnitPrice(product);
 
   const extraInfo = (product as any).extraInfo ?? {};
 
@@ -239,7 +237,7 @@ const ProductDetail: React.FC<ProductDetailProps> = ({
 
           <div className="flex justify-between items-center">
             <span className="text-xl font-bold text-red-600">
-              {Number(employeePrice || 0).toLocaleString("pt-BR", {
+              {unitPrice.toLocaleString("pt-BR", {
                 style: "currency",
                 currency: "BRL",
               })}

@@ -3,23 +3,17 @@ import { ShoppingCart } from "lucide-react";
 import { useCart } from "../contexts/CartContext";
 import { Button } from "./ui/button";
 import clsx from "clsx";
+import { getLineSubtotal } from "@/lib/pricing";
 
 const CartToggle: React.FC = () => {
   const { cartItems, openCart } = useCart();
 
   const itemsCount = cartItems.reduce((sum, item) => sum + item.quantity, 0);
 
-  const total = cartItems.reduce((sum, item) => {
-    const raw =
-      (item.product as any).employee_price ??
-      (item.product as any).price ??
-      0;
-
-    const price = Number(raw);
-    if (!Number.isFinite(price)) return sum;
-
-    return sum + price * item.quantity;
-  }, 0);
+  const total = cartItems.reduce(
+    (sum, item) => sum + getLineSubtotal(item.product, item.quantity),
+    0
+  );
 
   const formattedTotal = total.toLocaleString("pt-BR", {
     style: "currency",

@@ -9,6 +9,7 @@ import ProductImageCarousel from "./ProductImageCarousel";
 import ProductDetail from "./ProductDetail";
 import { toast } from "./ui/sonner";
 import { supabase } from "@/lib/supabase";
+import { getUnitPrice } from "@/lib/pricing";
 
 interface ProductCardProps {
   product: Product;
@@ -37,7 +38,7 @@ const ProductCard: React.FC<ProductCardProps> = ({
   const { addToCart, decreaseQuantity, updateQuantity, cartItems } = useCart();
   const [isDetailOpen, setIsDetailOpen] = useState(false);
 
-  const employeePrice = Number(product.employee_price ?? 0);
+  const unitPrice = getUnitPrice(product);
   const isAvailable = product.inStock !== false;
 
   const currentItem = cartItems.find((item) => item.product.id === product.id);
@@ -386,7 +387,7 @@ const ProductCard: React.FC<ProductCardProps> = ({
             </div>
 
             <p className="text-[15px] md:text-lg font-bold text-red-600 mt-1">
-              {employeePrice.toLocaleString("pt-BR", {
+              {unitPrice.toLocaleString("pt-BR", {
                 style: "currency",
                 currency: "BRL",
               })}

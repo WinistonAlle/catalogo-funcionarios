@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect } from "react";
 import { Product, CartItem } from "../types/products";
 import { FREE_SHIPPING_THRESHOLD } from "../data/shipping";
 import { MIN_PACKAGES, MIN_WEIGHT_KG } from "@/data/products";
+import { getLineSubtotal, getProductWeight } from "@/lib/pricing";
 
 interface CartContextType {
   cartItems: CartItem[];
@@ -120,7 +121,7 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({
 
   // 💰 Total do carrinho
   const cartTotal = cartItems.reduce(
-    (total, item) => total + item.product.price * item.quantity,
+    (total, item) => total + getLineSubtotal(item.product, item.quantity),
     0
   );
 
@@ -262,7 +263,7 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({
   const itemsCount = cartItems.reduce((total, item) => total + item.quantity, 0);
 
   const totalWeight = cartItems.reduce(
-    (total, item) => total + item.product.weight * item.quantity,
+    (total, item) => total + getProductWeight(item.product) * item.quantity,
     0
   );
 

@@ -6,6 +6,7 @@ import { toast } from "@/components/ui/sonner";
 import { useNavigate } from "react-router-dom";
 import { createOrder } from "@/services/orders";
 import { supabase } from "@/lib/supabase";
+import { getLineSubtotal, getUnitPrice } from "@/lib/pricing";
 
 import logo from "../images/logoc.png";
 
@@ -722,7 +723,7 @@ const Checkout: React.FC = () => {
                 <p className="font-medium text-sm md:text-base">{item.product.name}</p>
                 <p className="text-xs md:text-sm text-gray-600">
                   {item.quantity} ×{" "}
-                  {Number(item.product.employee_price ?? 0).toLocaleString("pt-BR", {
+                  {getUnitPrice(item.product).toLocaleString("pt-BR", {
                     style: "currency",
                     currency: "BRL",
                   })}
@@ -730,7 +731,7 @@ const Checkout: React.FC = () => {
               </div>
 
               <p className="font-semibold text-sm md:text-base">
-                {(Number(item.product.employee_price ?? 0) * item.quantity).toLocaleString(
+                {getLineSubtotal(item.product, item.quantity).toLocaleString(
                   "pt-BR",
                   { style: "currency", currency: "BRL" }
                 )}
