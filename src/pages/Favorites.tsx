@@ -227,6 +227,24 @@ const FavoritesPage: React.FC = () => {
           };
         });
 
+      // Merge weights from separate weight table
+      const ids = mapped.map((p) => p.id).filter(Boolean);
+      if (ids.length) {
+        const { data: wData } = await supabase
+          .from("weight")
+          .select("product_id, weight")
+          .in("product_id", ids);
+
+        const byWeight = new Map<string, number>();
+        (wData ?? []).forEach((r: any) => {
+          if (r?.product_id) byWeight.set(String(r.product_id), Number(r.weight ?? 0));
+        });
+        for (const p of mapped) {
+          const w = byWeight.get(String(p.id));
+          if (w !== undefined) p.weight = w;
+        }
+      }
+
       setProducts(mapped);
     } catch (err: any) {
       setLoadError(err?.message ?? "Erro ao carregar favoritos.");

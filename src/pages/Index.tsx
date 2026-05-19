@@ -695,6 +695,24 @@ const Index: React.FC = () => {
             .filter(isProductVisible)
             .map(mapRowToProduct);
 
+          // Merge weights from separate weight table
+          const ids = mapped.map((p) => p.id).filter(Boolean);
+          if (ids.length) {
+            const { data: wData } = await supabase
+              .from("weight")
+              .select("product_id, weight")
+              .in("product_id", ids);
+
+            const byWeight = new Map<string, number>();
+            (wData ?? []).forEach((r: any) => {
+              if (r?.product_id) byWeight.set(String(r.product_id), Number(r.weight ?? 0));
+            });
+            for (const p of mapped) {
+              const w = byWeight.get(String(p.id));
+              if (w !== undefined) p.weight = w;
+            }
+          }
+
           setProducts(mapped);
 
           try {
@@ -791,6 +809,24 @@ const Index: React.FC = () => {
                 .filter(isProductVisible)
                 .filter(Boolean)
                 .map(mapRowToProduct);
+
+              // Merge weights from separate weight table
+              const featuredIds = mappedManual.map((p) => p.id).filter(Boolean);
+              if (featuredIds.length) {
+                const { data: wData } = await supabase
+                  .from("weight")
+                  .select("product_id, weight")
+                  .in("product_id", featuredIds);
+
+                const byWeight = new Map<string, number>();
+                (wData ?? []).forEach((r: any) => {
+                  if (r?.product_id) byWeight.set(String(r.product_id), Number(r.weight ?? 0));
+                });
+                for (const p of mappedManual) {
+                  const w = byWeight.get(String(p.id));
+                  if (w !== undefined) p.weight = w;
+                }
+              }
 
               if (mappedManual.length > 0) {
                 setFeaturedProducts(mappedManual);
