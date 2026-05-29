@@ -235,15 +235,15 @@ function formatDateLabel(year: number, month: number, day: number) {
 
 function getBalanceResetWindow(date = new Date()) {
   const { year, month, day } = getSaoPauloDateParts(date);
-  const allowed = day >= 28 || day <= 2;
+  const allowed = day >= 27 || day <= 2;
 
-  if (day >= 28) {
+  if (day >= 27) {
     const nextMonth = month === 12 ? 1 : month + 1;
     const nextYear = month === 12 ? year + 1 : year;
 
     return {
       allowed,
-      start: formatDateLabel(year, month, 28),
+      start: formatDateLabel(year, month, 27),
       end: formatDateLabel(nextYear, nextMonth, 2),
     };
   }
@@ -254,7 +254,7 @@ function getBalanceResetWindow(date = new Date()) {
   if (day <= 2) {
     return {
       allowed,
-      start: formatDateLabel(previousYear, previousMonth, 28),
+      start: formatDateLabel(previousYear, previousMonth, 27),
       end: formatDateLabel(year, month, 2),
     };
   }
@@ -264,7 +264,7 @@ function getBalanceResetWindow(date = new Date()) {
 
   return {
     allowed,
-    start: formatDateLabel(year, month, 28),
+    start: formatDateLabel(year, month, 27),
     end: formatDateLabel(nextYear, nextMonth, 2),
   };
 }

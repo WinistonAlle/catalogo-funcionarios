@@ -5,6 +5,7 @@ import FeaturedProductsCarousel from "@/components/FeaturedProductsCarousel";
 import ProductCard from "@/components/ProductCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { getPositivePrice } from "@/lib/pricing";
 
 import logoGostinho from "@/images/logoc.png";
 
@@ -466,8 +467,8 @@ const Destaques: React.FC = () => {
         name: row.name ?? "",
         image_path: row.image_path ?? null,
         images: imagesArr,
-        price: Number(row.price ?? 0),
-        employee_price: Number(row.employee_price ?? row.price ?? 0),
+        price: getPositivePrice(row.employee_price, row.price),
+        employee_price: getPositivePrice(row.employee_price, row.price),
         unit: row.unit ?? row.unidade ?? null,
         category: categoryName,
       };
@@ -533,8 +534,8 @@ const Destaques: React.FC = () => {
             name: row.name ?? "",
             image_path: row.image_path ?? null,
             images: imagesArr,
-            price: Number(row.price ?? 0),
-            employee_price: Number(row.employee_price ?? row.price ?? 0),
+            price: getPositivePrice(row.employee_price, row.price),
+            employee_price: getPositivePrice(row.employee_price, row.price),
             unit: row.unit ?? row.unidade ?? null,
             category: categoryName,
           } as ProductLite;
@@ -732,8 +733,8 @@ const Destaques: React.FC = () => {
       const productForCard: any = {
         id: p.id,
         name: p.name,
-        price: Number(p.employee_price ?? p.price ?? 0),
-        employee_price: Number(p.employee_price ?? p.price ?? 0),
+        price: getPositivePrice(p.employee_price, p.price),
+        employee_price: getPositivePrice(p.employee_price, p.price),
         images: p.images ?? [],
         image_path: p.image_path ?? null,
         category: p.category ?? "Outros",

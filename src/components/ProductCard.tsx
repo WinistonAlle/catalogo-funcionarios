@@ -62,6 +62,13 @@ const ProductCard: React.FC<ProductCardProps> = ({
   };
 
   const applyQuantity = () => {
+    if (unitPrice <= 0) {
+      toast.error("Produto sem preço válido", {
+        description: "Atualize o preço do produto antes de adicionar ao carrinho.",
+      });
+      return;
+    }
+
     const newQuantity = parseInt(inputValue) || 0;
 
     if (newQuantity > 0) {
@@ -89,6 +96,14 @@ const ProductCard: React.FC<ProductCardProps> = ({
       });
       return;
     }
+
+    if (unitPrice <= 0) {
+      toast.error("Produto sem preço válido", {
+        description: "Atualize o preço do produto antes de adicionar ao carrinho.",
+      });
+      return;
+    }
+
     addToCart(product);
   };
 

@@ -10,6 +10,8 @@ import CartToggle from "../components/CartToggle";
 import Cart from "../components/Cart";
 import { normalizeText as normalizeTextUtil } from "@/utils/stringUtils";
 import FeaturedProductsCarousel from "@/components/FeaturedProductsCarousel";
+import { getPositivePrice } from "@/lib/pricing";
+import { getSaoPauloPayCycleKey } from "@/lib/payCycle";
 
 // ✅ LOGO (substitui "GOSTINHO MINEIRO" no header)
 import logoGostinho from "@/images/logoc.png";
@@ -103,11 +105,6 @@ function formatBRLFromCents(cents: number) {
     style: "currency",
     currency: "BRL",
   });
-}
-
-function getMonthKey() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
 function isProductVisible(row: any) {
@@ -586,7 +583,7 @@ const Index: React.FC = () => {
           .from("employee_monthly_spend")
           .select("spent_cents")
           .eq("employee_id", walletRow.employee_id)
-          .eq("month_key", getMonthKey())
+          .eq("month_key", getSaoPauloPayCycleKey())
           .maybeSingle();
 
         const spent = Number(spendRow?.spent_cents ?? 0);
@@ -627,7 +624,7 @@ const Index: React.FC = () => {
   }, [lightMode]);
 
   function mapRowToProduct(row: any): Product {
-    const employeePrice = Number(row.employee_price ?? row.price ?? 0);
+    const employeePrice = getPositivePrice(row.employee_price, row.price);
 
     const categoryName =
       CATEGORY_NAME_BY_ID[row.category_id as number] ??

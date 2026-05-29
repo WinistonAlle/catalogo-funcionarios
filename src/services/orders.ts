@@ -1,6 +1,7 @@
 // src/services/orders.ts
 import { supabase } from "@/lib/supabase";
 import { getLineSubtotal, getUnitPrice } from "@/lib/pricing";
+import { getSaoPauloPayCycleKey } from "@/lib/payCycle";
 import type { Product } from "@/types/products";
 
 export interface CartItem {
@@ -41,6 +42,10 @@ export async function createOrder({
     0
   );
 
+  if (!Number.isFinite(totalValue) || totalValue <= 0) {
+    throw new Error("Pedido bloqueado: total zerado ou inválido.");
+  }
+
   const orderNumber = generateOrderNumber();
 
   const orderPayload: any = {
@@ -49,7 +54,9 @@ export async function createOrder({
     employee_name: employeeName ?? null,
     total_items: totalItems,            // 👈 qtd total de itens
     total_value: totalValue,            // 👈 valor total
+    month_key: getSaoPauloPayCycleKey(),
     status: "pedido_feito",
+    saibweb_status: "WAITING_PAYMENT",
   };
 
   // 1) Cria o pedido
@@ -66,14 +73,27 @@ export async function createOrder({
 
   // 2) Cria os itens do pedido
   // ❗ NÃO enviamos subtotal porque sua coluna é gerada no banco
-  const itemsPayload = items.map((item) => ({
-    order_id: order.id,                                     // uuid do pedido
-    product_id: item.product.id,
-    product_old_id: (item.product as any).old_id ?? null,   // 👈 old_id
-    product_name: item.product.name,
-    unit_price: getUnitPrice(item.product),
-    quantity: item.quantity,                                // 👈 qtd do item
-  }));
+  const itemsPayload = items.map((item) => {
+    const unitPrice = getUnitPrice(item.product);
+    const quantity = Number(item.quantity);
+
+    if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+      throw new Error(`Pedido bloqueado: item "${item.product.name}" está com preço zerado.`);
+    }
+
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      throw new Error(`Pedido bloqueado: item "${item.product.name}" está com quantidade inválida.`);
+    }
+
+    return {
+      order_id: order.id,                                     // uuid do pedido
+      product_id: item.product.id,
+      product_old_id: (item.product as any).old_id ?? null,   // 👈 old_id
+      product_name: item.product.name,
+      unit_price: unitPrice,
+      quantity,                                               // 👈 qtd do item
+    };
+  });
 
   const { error: itemsError } = await supabase
     .from("order_items")

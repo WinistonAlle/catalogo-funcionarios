@@ -84,6 +84,7 @@ type OrderItemRow = {
 };
 
 type ProductRow = {
+  id: string | null;
   old_id: string | number | null;
   weight: number | string | null;
 };
@@ -132,6 +133,13 @@ function toFiniteNumberOrNull(v: unknown): number | null {
 function getErrorMessage(err: unknown): string {
   if (err instanceof Error && err.message) return err.message;
   return String(err ?? "Erro desconhecido");
+}
+
+class FatalSaibwebError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FatalSaibwebError";
+  }
 }
 
 function orderTag(order: Pick<DbOrder, "id" | "order_number"> | { id: string; order_number?: string | null }) {
@@ -311,11 +319,12 @@ async function lockAndLoadOrder(order: DbOrder): Promise<{ order: DbOrder; items
   const uniqueOldIdsAsNumber = uniqueCodes.map((c) => Number(c)).filter((n) => Number.isFinite(n));
 
   const weightByOldId = new Map<string, number | null>();
+  const productIdByOldId = new Map<string, string>();
 
   if (uniqueOldIdsAsNumber.length > 0) {
     const { data: products, error: prodErr } = await supabase
       .from("products")
-      .select("old_id, weight")
+      .select("id, old_id, weight")
       .in("old_id", uniqueOldIdsAsNumber);
 
     if (prodErr) throw prodErr;
@@ -325,12 +334,13 @@ async function lockAndLoadOrder(order: DbOrder): Promise<{ order: DbOrder; items
       const w = toFiniteNumberOrNull(p.weight);
       if (oldId !== null && oldId !== undefined) {
         weightByOldId.set(String(oldId), w);
+        if (p.id) productIdByOldId.set(String(oldId), String(p.id));
       }
     }
   } else {
     const { data: products, error: prodErr } = await supabase
       .from("products")
-      .select("old_id, weight")
+      .select("id, old_id, weight")
       .in("old_id", uniqueCodes);
 
     if (prodErr) throw prodErr;
@@ -340,7 +350,30 @@ async function lockAndLoadOrder(order: DbOrder): Promise<{ order: DbOrder; items
       const w = toFiniteNumberOrNull(p.weight);
       if (oldId !== null && oldId !== undefined) {
         weightByOldId.set(String(oldId), w);
+        if (p.id) productIdByOldId.set(String(oldId), String(p.id));
       }
+    }
+  }
+
+  const productIds = Array.from(new Set(Array.from(productIdByOldId.values())));
+  if (productIds.length > 0) {
+    const { data: weightRows, error: weightErr } = await supabase
+      .from("weight")
+      .select("product_id, weight")
+      .in("product_id", productIds);
+
+    if (weightErr) throw weightErr;
+
+    const weightByProductId = new Map<string, number | null>();
+    for (const row of weightRows ?? []) {
+      const productId = String((row as any).product_id ?? "");
+      if (!productId) continue;
+      weightByProductId.set(productId, toFiniteNumberOrNull((row as any).weight));
+    }
+
+    for (const [oldId, productId] of productIdByOldId.entries()) {
+      if (!weightByProductId.has(productId)) continue;
+      weightByOldId.set(oldId, weightByProductId.get(productId) ?? null);
     }
   }
 
@@ -499,14 +532,41 @@ async function loginSaibweb(page: Page) {
 
   await page.goto(SAIBWEB_URL!, { waitUntil: "domcontentloaded" });
 
+  await page.locator("input").first().waitFor({ state: "visible", timeout: 30000 });
   await page.locator("input").first().fill(SAIBWEB_USER!);
+  await page.locator("input[type='password']").waitFor({ state: "visible", timeout: 30000 });
   await page.locator("input[type='password']").fill(SAIBWEB_PASS!);
   await page.keyboard.press("Enter");
 
-  await page.waitForLoadState("networkidle");
-  await sleep(250);
+  await page.waitForLoadState("networkidle", { timeout: 45000 }).catch(() => {});
+  await sleep(750);
+
+  await assertNoMandatoryPasswordChange(page);
 
   console.log("✅ Login OK");
+}
+
+async function assertNoMandatoryPasswordChange(page: Page) {
+  const passwordManager = page.getByText(/Gerenciamento de Senha/i).first();
+  const isVisible = await passwordManager.isVisible({ timeout: 1500 }).catch(() => false);
+  if (!isVisible) return;
+
+  const bodyText = await page.locator("body").innerText().catch(() => "");
+  if (/Alteração de senha obrigatória/i.test(bodyText)) {
+    throw new FatalSaibwebError(
+      "SAIBWEB exigiu alteração de senha obrigatória para o usuário da automação. Atualize a senha no SAIBWEB e depois atualize SAIBWEB_PASS no servidor."
+    );
+  }
+
+  await page.keyboard.press("Escape").catch(() => {});
+  await sleep(500);
+
+  const stillVisible = await passwordManager.isVisible({ timeout: 1000 }).catch(() => false);
+  if (stillVisible) {
+    throw new FatalSaibwebError(
+      "SAIBWEB abriu o gerenciamento de senha e bloqueou a tela da automação."
+    );
+  }
 }
 
 // =====================
@@ -514,6 +574,15 @@ async function loginSaibweb(page: Page) {
 // =====================
 async function clickHamburgerMenu(page: Page) {
   console.log("🍔 Menu hamburger");
+
+  const drawerButton = page.getByRole("button", { name: /open drawer/i }).first();
+  if ((await drawerButton.count().catch(() => 0)) > 0) {
+    await drawerButton.waitFor({ state: "visible", timeout: 15000 });
+    await drawerButton.click({ delay: 30 });
+    await sleep(250);
+    console.log("✅ Menu hamburger aberto");
+    return;
+  }
 
   const hamburgerSvgXPath = '//*[@id="root"]/div/main/div/div[1]/div[1]/nav/div/button/span[1]/svg';
   const hamburgerButtonXPath = '//*[@id="root"]/div/main/div/div[1]/div[1]/nav/div/button';
@@ -528,27 +597,51 @@ async function clickHamburgerMenu(page: Page) {
 
 async function clickSFA(page: Page) {
   console.log("📂 SFA");
-  await clickByXPath(page, '//*[@id="root"]/div/main/div/div[1]/div[1]/nav/div/aside/div[1]/div[2]/a[4]');
+
+  const sfaLink = page.locator("a").filter({ hasText: /SFA/i }).first();
+  if ((await sfaLink.count().catch(() => 0)) > 0) {
+    await sfaLink.waitFor({ state: "visible", timeout: 15000 });
+    await sfaLink.click({ delay: 30 });
+  } else {
+    await clickByXPath(page, '//*[@id="root"]/div/main/div/div[1]/div[1]/nav/div/aside/div[1]/div[2]/a[4]');
+  }
+
   await sleep(220);
   console.log("✅ SFA clicado");
 }
 
 async function clickMovimentacoes(page: Page) {
   console.log("📦 Movimentações");
-  await clickByXPath(
-    page,
-    '//*[@id="root"]/div/main/div/div[1]/div[1]/nav/div/aside/div[1]/div[2]/div[3]/a[4]'
-  );
+
+  const movimentacoesLink = page.locator("a").filter({ hasText: /MOVIMENTAÇÕES/i }).first();
+  if ((await movimentacoesLink.count().catch(() => 0)) > 0) {
+    await movimentacoesLink.waitFor({ state: "visible", timeout: 15000 });
+    await movimentacoesLink.click({ delay: 30 });
+  } else {
+    await clickByXPath(
+      page,
+      '//*[@id="root"]/div/main/div/div[1]/div[1]/nav/div/aside/div[1]/div[2]/div[3]/a[4]'
+    );
+  }
+
   await sleep(220);
   console.log("✅ Movimentações clicado");
 }
 
 async function clickSFAPedidoFaturamento(page: Page) {
   console.log("🧾 SFA - Pedido de Faturamento");
-  await clickByXPath(
-    page,
-    '//*[@id="root"]/div/main/div/div[1]/div[1]/nav/div/aside/div[1]/div[2]/div[3]/a[1]'
-  );
+
+  const pedidoLink = page.locator("a").filter({ hasText: /SFA\s*-\s*PEDIDO DE FATURAMENTO/i }).first();
+  if ((await pedidoLink.count().catch(() => 0)) > 0) {
+    await pedidoLink.waitFor({ state: "visible", timeout: 15000 });
+    await pedidoLink.click({ delay: 30 });
+  } else {
+    await clickByXPath(
+      page,
+      '//*[@id="root"]/div/main/div/div[1]/div[1]/nav/div/aside/div[1]/div[2]/div[3]/a[1]'
+    );
+  }
+
   await sleep(650);
   console.log("✅ Tela Pedido de Faturamento aberta");
 }
@@ -679,10 +772,22 @@ async function confirmarPedido(page: Page) {
   console.log("🎉 Pedido confirmado");
 }
 
+async function assertSaibwebAutomationReady() {
+  const browser = await chromium.launch({ headless: HEADLESS, slowMo: SLOW_MO });
+  const context = await browser.newContext({ viewport: { width: 1366, height: 768 } });
+  const page = await context.newPage();
+
+  try {
+    await loginSaibweb(page);
+  } finally {
+    await browser.close();
+  }
+}
+
 // =====================
 // PROCESSA 1 PEDIDO (extraído do antigo main)
 // =====================
-async function processOne(orderIdHint?: string | null) {
+async function processOne(orderIdHint?: string | null): Promise<{ processed: boolean; fatal?: boolean }> {
   const job = await pickNextOrderToProcess(orderIdHint);
 
   if (!job) {
@@ -763,6 +868,10 @@ async function processOne(orderIdHint?: string | null) {
     await markOrderError(orderId, msg);
 
     await waitForEnter("👉 Aperte ENTER para encerrar...");
+
+    if (err instanceof FatalSaibwebError) {
+      return { processed: true, fatal: true };
+    }
   } finally {
     if (KEEP_OPEN) {
       console.log("🟣 SAIBWEB_KEEP_OPEN=1 -> mantendo navegador aberto.");
@@ -784,6 +893,8 @@ async function main() {
 
   ensureDir(path.resolve("automation_screenshots"));
 
+  await assertSaibwebAutomationReady();
+
   if (TARGET_ORDER_ID) {
     const { processed } = await processOne(TARGET_ORDER_ID);
     console.log(
@@ -795,9 +906,13 @@ async function main() {
   }
 
   while (true) {
-    const { processed } = await processOne(null);
+    const { processed, fatal } = await processOne(null);
 
     if (!processed) break;
+    if (fatal) {
+      console.error("🛑 Erro fatal do SAIBWEB. Parando drain para não marcar outros pedidos como ERROR.");
+      break;
+    }
 
     // Pequeno respiro pra não martelar
     await sleep(250);

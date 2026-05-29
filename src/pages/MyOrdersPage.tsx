@@ -27,6 +27,7 @@ import {
 import { Button } from "@/components/ui/button";
 import CartToggle from "@/components/CartToggle";
 import Cart from "@/components/Cart";
+import { getPositivePrice } from "@/lib/pricing";
 
 /* --------------------------------------------------------
    HELPER: SESSION
@@ -190,7 +191,7 @@ const formatCurrency = (value: number) =>
    MAPEAR PRODUTO DO SUPABASE -> Product DO CATÁLOGO
 -------------------------------------------------------- */
 function mapSupabaseProduct(row: any): Product {
-  const employeePrice = Number(row.employee_price ?? row.price ?? 0);
+  const employeePrice = getPositivePrice(row.employee_price, row.price);
 
   return {
     id: row.id,

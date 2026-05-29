@@ -13,25 +13,30 @@ function finiteNumber(value: unknown): number {
   return Number.isFinite(numberValue) ? numberValue : 0;
 }
 
+export function getPositivePrice(primary: unknown, fallback?: unknown): number {
+  const primaryPrice = finiteNumber(primary);
+  if (primaryPrice > 0) return primaryPrice;
+
+  const fallbackPrice = finiteNumber(fallback);
+  return fallbackPrice > 0 ? fallbackPrice : 0;
+}
+
 export function getKgPrice(product: PriceableProduct | null | undefined): number {
   if (!product) return 0;
 
-  const employeePrice = finiteNumber(product.employee_price);
-  if (employeePrice > 0) return employeePrice;
-
-  return finiteNumber(product.price);
+  return getPositivePrice(product.employee_price, product.price);
 }
 
 export function getProductWeight(product: PriceableProduct | null | undefined): number {
-  if (!product) return 0;
+  if (!product) return 1;
 
   const weight = finiteNumber(product.weight);
-  return weight > 0 ? weight : 0;
+  return weight > 0 ? weight : 1;
 }
 
 export function getUnitPrice(product: PriceableProduct | null | undefined): number {
   const unitPrice = getKgPrice(product) * getProductWeight(product);
-  return Number.isFinite(unitPrice) ? unitPrice : 0;
+  return Number.isFinite(unitPrice) && unitPrice > 0 ? unitPrice : 0;
 }
 
 export function getLineSubtotal(

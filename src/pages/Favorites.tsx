@@ -6,6 +6,7 @@ import type { Product } from "../types/products";
 import ProductCard from "../components/ProductCard";
 import CartToggle from "../components/CartToggle";
 import Cart from "../components/Cart";
+import { getPositivePrice } from "@/lib/pricing";
 
 // ✅ LOGO (mesmo padrão do Index/Avisos)
 import logoGostinho from "@/images/logoc.png";
@@ -205,7 +206,7 @@ const FavoritesPage: React.FC = () => {
         .filter(Boolean)
         .filter((row: any) => (row?.isHidden ?? row?.is_hidden ?? false) !== true)
         .map((row: any) => {
-          const employeePrice = Number(row.employee_price ?? row.price ?? 0);
+          const employeePrice = getPositivePrice(row.employee_price, row.price);
           return {
             id: row.id,
             old_id: row.old_id ?? null,

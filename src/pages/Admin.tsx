@@ -1,6 +1,7 @@
 // src/pages/Admin.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { getPositivePrice } from "@/lib/pricing";
 import type { Product } from "@/types/products";
 
 import { Input } from "@/components/ui/input";
@@ -94,7 +95,7 @@ function normalizeImages(row: any): string[] {
 }
 
 function mapRowToProduct(row: any): Product {
-  const employeePrice = safeNumber(row.employee_price ?? row.price, 0);
+  const employeePrice = getPositivePrice(row.employee_price, row.price);
 
   const categoryId =
     row.category_id ?? row.category ?? row.category_name ?? row.categoryId ?? null;

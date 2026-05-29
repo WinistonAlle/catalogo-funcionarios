@@ -300,8 +300,8 @@ O script:
 - espera colunas como `full_name`, `cpf`, `credito_mensal` e `role`;
 - normaliza CPF;
 - cadastra/atualiza funcionários no Supabase;
-- sincroniza `credito_mensal_cents` para todos no dia 28;
-- fora do dia 28, sincroniza crédito apenas para funcionários novos;
+- sincroniza `credito_mensal_cents` para todos no dia 27;
+- fora do dia 27, sincroniza crédito apenas para funcionários novos;
 - opcionalmente remove funcionários ausentes da planilha se `SYNC_DELETE_MISSING_FROM_SHEET=1`.
 
 Credencial Google:
@@ -354,7 +354,7 @@ Os endpoints administrativos exigem Bearer token válido de um usuário autentic
 
 ## Regras operacionais relevantes
 
-- o reset de saldo só pode acontecer entre os dias `28` e `2`, considerando `America/Sao_Paulo`;
+- o reset de saldo só pode acontecer entre os dias `27` e `2`, considerando `America/Sao_Paulo`;
 - o sistema bloqueia nova restauração do mesmo ciclo quando já houve execução bem-sucedida;
 - o checkout possui regra de horário de corte após `13:40` no fuso de São Paulo;
 - há lógica específica para fim de semana no checkout;

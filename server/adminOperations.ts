@@ -116,15 +116,15 @@ export function formatIsoDate(year: number, month: number, day: number) {
 
 export function getResetWindow(date = new Date()): ResetWindow {
   const { year, month, day } = getSaoPauloDateParts(date);
-  const allowed = day >= 28 || day <= 2;
+  const allowed = day >= 27 || day <= 2;
 
-  if (day >= 28) {
+  if (day >= 27) {
     const nextMonth = month === 12 ? 1 : month + 1;
     const nextYear = month === 12 ? year + 1 : year;
 
     return {
       allowed,
-      start: formatIsoDate(year, month, 28),
+      start: formatIsoDate(year, month, 27),
       end: formatIsoDate(nextYear, nextMonth, 2),
     };
   }
@@ -135,7 +135,7 @@ export function getResetWindow(date = new Date()): ResetWindow {
   if (day <= 2) {
     return {
       allowed,
-      start: formatIsoDate(previousYear, previousMonth, 28),
+      start: formatIsoDate(previousYear, previousMonth, 27),
       end: formatIsoDate(year, month, 2),
     };
   }
@@ -145,7 +145,7 @@ export function getResetWindow(date = new Date()): ResetWindow {
 
   return {
     allowed,
-    start: formatIsoDate(year, month, 28),
+    start: formatIsoDate(year, month, 27),
     end: formatIsoDate(nextYear, nextMonth, 2),
   };
 }

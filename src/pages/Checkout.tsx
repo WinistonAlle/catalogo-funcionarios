@@ -7,6 +7,7 @@ import { useNavigate } from "react-router-dom";
 import { createOrder } from "@/services/orders";
 import { supabase } from "@/lib/supabase";
 import { getLineSubtotal, getUnitPrice } from "@/lib/pricing";
+import { getSaoPauloPayCycleKey } from "@/lib/payCycle";
 
 import logo from "../images/logoc.png";
 
@@ -31,17 +32,6 @@ function safeGetEmployee() {
 function formatBRLFromCents(cents: number) {
   const v = (Number.isFinite(cents) ? cents : 0) / 100;
   return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-}
-
-function getMonthKeySaoPaulo() {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Sao_Paulo",
-    year: "numeric",
-    month: "2-digit",
-  }).formatToParts(new Date());
-  const y = parts.find((p) => p.type === "year")?.value ?? "0000";
-  const m = parts.find((p) => p.type === "month")?.value ?? "01";
-  return `${y}-${m}`;
 }
 
 function isAfterSeparationCutoff(now = new Date()) {
@@ -96,7 +86,7 @@ const Checkout: React.FC = () => {
   const safeCartTotal = Number.isFinite(cartTotal) ? cartTotal : 0;
   const totalCents = useMemo(() => Math.round(safeCartTotal * 100), [safeCartTotal]);
 
-  const monthKey = useMemo(() => getMonthKeySaoPaulo(), []);
+  const monthKey = useMemo(() => getSaoPauloPayCycleKey(), []);
   const isWeekendOrder = useMemo(() => isWeekendInSaoPaulo(), []);
   const isLateOrder = useMemo(() => isAfterSeparationCutoff(), []);
 
@@ -274,6 +264,21 @@ const Checkout: React.FC = () => {
       return;
     }
 
+    const invalidItem = cartItems.find((item) => getUnitPrice(item.product) <= 0);
+    if (invalidItem) {
+      toast.error("Produto sem preço válido", {
+        description: `"${invalidItem.product.name}" está com preço zerado. Remova do carrinho ou atualize o produto.`,
+      });
+      return;
+    }
+
+    if (totalCents <= 0) {
+      toast.error("Total inválido", {
+        description: "Não é possível confirmar pedido com total zerado.",
+      });
+      return;
+    }
+
     const employeeCpf = (employee?.cpf ?? "").toString().trim();
     if (!employeeCpf) {
       toast.error("Erro ao identificar funcionário", {
@@ -342,9 +347,11 @@ const Checkout: React.FC = () => {
           wallet_debited: true,
           spent_from_balance_cents: totalCents,
           pay_on_pickup_cents: 0,
+          saibweb_status: "PENDING",
+          saibweb_error: null,
         })
         .eq("id", orderId)
-        .select("id, payment_method, wallet_debited, spent_from_balance_cents, pay_on_pickup_cents")
+        .select("id, payment_method, wallet_debited, spent_from_balance_cents, pay_on_pickup_cents, saibweb_status")
         .maybeSingle();
 
       if (upErr) {

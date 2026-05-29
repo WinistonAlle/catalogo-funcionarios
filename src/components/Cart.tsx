@@ -8,6 +8,7 @@ import { toast } from "./ui/sonner";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/lib/supabase";
 import { getLineSubtotal, getUnitPrice } from "@/lib/pricing";
+import { getSaoPauloPayCycleKey } from "@/lib/payCycle";
 
 /* --------------------------------------------------------
    HELPERS
@@ -27,11 +28,6 @@ function formatBRLFromCents(cents: number) {
     style: "currency",
     currency: "BRL",
   });
-}
-
-function getMonthKey() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
 /* --------------------------------------------------------
@@ -81,7 +77,7 @@ const Cart: React.FC = () => {
           .from("employee_monthly_spend")
           .select("spent_cents")
           .eq("employee_id", walletRow.employee_id)
-          .eq("month_key", getMonthKey())
+          .eq("month_key", getSaoPauloPayCycleKey())
           .maybeSingle();
 
         const spent = Number(spendRow?.spent_cents ?? 0);
