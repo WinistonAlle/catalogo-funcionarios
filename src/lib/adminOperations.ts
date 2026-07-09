@@ -75,11 +75,20 @@ async function requestWithAuth<T>(paths: string[], init?: RequestInit) {
         },
       });
 
-      const payload = (await response.json().catch(() => null)) as T & {
+      const responseText = await response.text().catch(() => "");
+      let payload: (T & {
         ok?: boolean;
         error?: string;
         message?: string;
-      } | null;
+      }) | null = null;
+
+      if (responseText) {
+        try {
+          payload = JSON.parse(responseText);
+        } catch {
+          payload = null;
+        }
+      }
 
       if (response.ok && payload?.ok !== false) {
         return payload as T;
@@ -87,6 +96,10 @@ async function requestWithAuth<T>(paths: string[], init?: RequestInit) {
 
       lastErrorMessage =
         payload?.message || payload?.error || `Falha ao executar a ação em ${path}.`;
+
+      if (response.status !== 404) {
+        break;
+      }
     } catch (error: any) {
       lastErrorMessage = error?.message || `Falha de rede ao acessar ${path}.`;
     }

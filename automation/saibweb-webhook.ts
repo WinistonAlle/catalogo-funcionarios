@@ -2,7 +2,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import express from "express";
-import { exec, spawn } from "child_process";
+import { spawn } from "child_process";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
@@ -56,6 +56,11 @@ let lastRunAt: number | null = null;
 let sheetSyncRunning = false;
 let balanceRestoreRunning = false;
 
+type ChildOutput = {
+  stdout: string;
+  stderr: string;
+};
+
 /**
  * =====================
  * HELPERS
@@ -90,6 +95,53 @@ function buildChildEnv(orderId?: string | null): NodeJS.ProcessEnv {
     ...(process.env.SAIBWEB_PAUSE === "1" ? { SAIBWEB_PAUSE: "1" } : {}),
     ...(orderId ? { ORDER_ID: String(orderId) } : {}), // ✅ agora o runner usa isso
   };
+}
+
+function appendLimited(current: string, chunk: Buffer, maxLength: number) {
+  const next = current + chunk.toString();
+  return next.length > maxLength ? next.slice(next.length - maxLength) : next;
+}
+
+function runEmployeeSyncScript(): Promise<ChildOutput> {
+  return new Promise((resolve, reject) => {
+    const scriptPath = path.resolve(PROJECT_ROOT, "scripts", "syncEmployeesFromSheet.mjs");
+    const child = spawn(process.execPath, [scriptPath], {
+      cwd: PROJECT_ROOT,
+      env: process.env,
+      windowsHide: true,
+    });
+
+    let stdout = "";
+    let stderr = "";
+    const maxOutput = 10 * 1024 * 1024;
+
+    child.stdout.on("data", (chunk) => {
+      stdout = appendLimited(stdout, chunk, maxOutput);
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr = appendLimited(stderr, chunk, maxOutput);
+    });
+
+    child.on("error", (error: any) => {
+      error.stdout = stdout;
+      error.stderr = stderr;
+      reject(error);
+    });
+
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+
+      const error: any = new Error(`Employee sync failed with exit code ${code}`);
+      error.code = code;
+      error.stdout = stdout;
+      error.stderr = stderr;
+      reject(error);
+    });
+  });
 }
 
 async function recoverStuckOrders() {
@@ -295,53 +347,48 @@ app.post("/sync-employees", async (req, res) => {
       message: "Sincronização manual iniciada.",
     }).catch(() => null);
 
-    exec(
-      "npm run sync:employees",
-      {
-        cwd: PROJECT_ROOT,
-        windowsHide: true,
-        maxBuffer: 10 * 1024 * 1024,
-      },
-      async (error, stdout, stderr) => {
-        sheetSyncRunning = false;
+    try {
+      const { stdout, stderr } = await runEmployeeSyncScript();
+      sheetSyncRunning = false;
 
-        if (error) {
-          await updateOperationLog(supabase, runningLog?.id, {
-            status: "failed",
-            message: "Falha na sincronização manual de funcionários.",
-            metadata: {
-              code: (error as any).code ?? null,
-              stdout: (stdout || "").slice(0, 2000),
-              stderr: (stderr || "").slice(0, 2000),
-            },
-          }).catch(() => null);
+      await updateOperationLog(supabase, runningLog?.id, {
+        status: "success",
+        message: "Sincronização de funcionários concluída com sucesso.",
+        metadata: {
+          stdout: (stdout || "").slice(0, 2000),
+          stderr: (stderr || "").slice(0, 2000),
+        },
+      }).catch(() => null);
 
-          return res.status(500).json({
-            ok: false,
-            error: "Sync failed",
-            stdout: (stdout || "").slice(0, 8000),
-            stderr: (stderr || "").slice(0, 8000),
-            code: (error as any).code ?? null,
-          });
-        }
+      return res.json({
+        ok: true,
+        message: "Sync completed",
+        stdout: (stdout || "").slice(0, 8000),
+        stderr: (stderr || "").slice(0, 8000),
+      });
+    } catch (error: any) {
+      sheetSyncRunning = false;
+      const stdout = String(error?.stdout || "");
+      const stderr = String(error?.stderr || "");
 
-        await updateOperationLog(supabase, runningLog?.id, {
-          status: "success",
-          message: "Sincronização de funcionários concluída com sucesso.",
-          metadata: {
-            stdout: (stdout || "").slice(0, 2000),
-            stderr: (stderr || "").slice(0, 2000),
-          },
-        }).catch(() => null);
+      await updateOperationLog(supabase, runningLog?.id, {
+        status: "failed",
+        message: "Falha na sincronização manual de funcionários.",
+        metadata: {
+          code: error?.code ?? null,
+          stdout: stdout.slice(0, 2000),
+          stderr: stderr.slice(0, 2000),
+        },
+      }).catch(() => null);
 
-        return res.json({
-          ok: true,
-          message: "Sync completed",
-          stdout: (stdout || "").slice(0, 8000),
-          stderr: (stderr || "").slice(0, 8000),
-        });
-      }
-    );
+      return res.status(500).json({
+        ok: false,
+        error: "Sync failed",
+        stdout: stdout.slice(0, 8000),
+        stderr: stderr.slice(0, 8000),
+        code: error?.code ?? null,
+      });
+    }
   } catch (err: any) {
     sheetSyncRunning = false;
     return res.status(500).json({ ok: false, error: err?.message || "Unexpected error" });

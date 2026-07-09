@@ -93,6 +93,16 @@ function unique(values) {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
+function failSync(message, error) {
+  if (error) {
+    console.error(message, error);
+  } else {
+    console.error(message);
+  }
+
+  throw new Error(message);
+}
+
 // Aceita "350", "350,00", "R$ 350,00", "1.234,56", etc.
 function parseMoneyToCentsBR(value) {
   if (value === null || value === undefined) return 0;
@@ -217,8 +227,7 @@ async function syncEmployees() {
       .select("id, cpf, credito_mensal_cents");
 
     if (dbError) {
-      console.error("❌ Erro ao buscar employees no Supabase:", dbError);
-      return;
+      failSync("❌ Erro ao buscar employees no Supabase:", dbError);
     }
 
     const dbEmployeesNormalized = (dbEmployees || [])
@@ -278,8 +287,7 @@ async function syncEmployees() {
     });
 
     if (upsertError) {
-      console.error("❌ Erro no upsert de employees:", upsertError);
-      return;
+      failSync("❌ Erro no upsert de employees:", upsertError);
     }
 
     const allowDelete = shouldDeleteMissingEmployees();
@@ -290,8 +298,7 @@ async function syncEmployees() {
       .select("id, cpf");
 
     if (dbAfterError) {
-      console.error("❌ Erro ao recarregar employees após upsert:", dbAfterError);
-      return;
+      failSync("❌ Erro ao recarregar employees após upsert:", dbAfterError);
     }
 
     const dbEmployeesAfterNormalized = (dbEmployeesAfterUpsert || [])
@@ -321,8 +328,7 @@ async function syncEmployees() {
       const { error: deleteError } = await supabase.from("employees").delete().in("id", idsToDelete);
 
       if (deleteError) {
-        console.error("❌ Erro ao deletar employees:", deleteError);
-        return;
+        failSync("❌ Erro ao deletar employees:", deleteError);
       }
     } else if (idsToDelete.length > 0) {
       console.log(

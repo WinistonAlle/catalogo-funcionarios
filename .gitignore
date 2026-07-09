@@ -33,3 +33,7 @@ automation_screenshots
 # misc
 *.pem
 *.key
+
+# tooling local
+.claude/
+.codex
