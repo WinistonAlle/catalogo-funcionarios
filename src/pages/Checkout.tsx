@@ -347,11 +347,9 @@ const Checkout: React.FC = () => {
           wallet_debited: true,
           spent_from_balance_cents: totalCents,
           pay_on_pickup_cents: 0,
-          saibweb_status: "PENDING",
-          saibweb_error: null,
         })
         .eq("id", orderId)
-        .select("id, payment_method, wallet_debited, spent_from_balance_cents, pay_on_pickup_cents, saibweb_status")
+        .select("id, payment_method, wallet_debited, spent_from_balance_cents, pay_on_pickup_cents")
         .maybeSingle();
 
       if (upErr) {

@@ -56,7 +56,6 @@ export async function createOrder({
     total_value: totalValue,            // 👈 valor total
     month_key: getSaoPauloPayCycleKey(),
     status: "pedido_feito",
-    saibweb_status: "WAITING_PAYMENT",
   };
 
   // 1) Cria o pedido

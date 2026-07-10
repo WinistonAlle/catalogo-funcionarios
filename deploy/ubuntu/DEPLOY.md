@@ -3,7 +3,7 @@
 ## Arquitetura recomendada
 
 - `Nginx` serve o frontend estático (`dist/`)
-- `systemd` mantém a automação `automation/saibweb-webhook.ts`
+- `systemd` mantém o webhook de operações `automation/operations-webhook.ts`
 - `systemd` mantém um segundo serviço para o sync do Google Sheets
 - o webhook Node fica interno em `127.0.0.1:3333`
 - o Nginx expõe esse webhook em `/automation/`
@@ -26,12 +26,6 @@ curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
 ```
 
-Se a automação Playwright for rodar nesse Ubuntu:
-
-```bash
-npx playwright install --with-deps chromium
-```
-
 ## 2. Código e build
 
 ```bash
@@ -49,7 +43,6 @@ Edite `/var/www/catalogo/shared/.env` com as variáveis reais.
 Variáveis mínimas novas para automação:
 
 ```env
-SAIBWEB_RECOVER_PROCESSING_ON_BOOT=1
 SHEET_SYNC_INTERVAL_MS=3600000
 SHEET_SYNC_INITIAL_DELAY_MS=5000
 ```
@@ -59,9 +52,6 @@ Variáveis já esperadas pelos serviços:
 ```env
 SUPABASE_URL=...
 SUPABASE_SERVICE_ROLE_KEY=...
-SAIBWEB_URL=...
-SAIBWEB_USER=...
-SAIBWEB_PASS=...
 GOOGLE_SHEETS_SPREADSHEET_ID=...
 GOOGLE_SHEETS_RANGE=Funcionarios!A1:Z
 GOOGLE_SERVICE_ACCOUNT_JSON=...
@@ -126,14 +116,6 @@ curl http://127.0.0.1:3333/health
 curl http://funcionarios.gostinhomineiro.com/automation/health
 ```
 
-Webhook:
-
-```bash
-curl -X POST http://funcionarios.gostinhomineiro.com/automation/webhook/new-order \
-  -H 'Content-Type: application/json' \
-  -d '{"order_id":"test"}'
-```
-
 ## 6. Aplicando em servidor já existente
 
 ```bash
@@ -154,5 +136,3 @@ sudo systemctl status catalogo-sheet-sync --no-pager
 
 - `npm run preview` não é recomendado para produção; o Nginx deve servir `dist/`.
 - o arquivo `.env` atual do projeto contém segredos reais. Mova os segredos para `/var/www/catalogo/shared/.env` no servidor.
-- o serviço do webhook só recupera pedidos presos em `PROCESSING` ao subir se `SAIBWEB_RECOVER_PROCESSING_ON_BOOT=1`.
-- a fila do webhook ainda é em memória. O recovery no boot reduz impacto, mas não substitui uma fila persistida em banco.

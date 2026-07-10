@@ -1,6 +1,6 @@
 # Catálogo para Funcionários
 
-Aplicação interna para catálogo de produtos, pedidos de funcionários, controle de saldo mensal e rotinas operacionais de RH/Admin. O projeto combina um frontend React/Vite com Supabase, endpoints serverless e automações Node/Playwright para integrar o fluxo de pedidos com o SAIBWEB e sincronizar funcionários via Google Sheets.
+Aplicação interna para catálogo de produtos, pedidos de funcionários, controle de saldo mensal e rotinas operacionais de RH/Admin. O projeto combina um frontend React/Vite com Supabase, endpoints serverless e automações Node para sincronizar funcionários via Google Sheets. A integração de pedidos com o ERP (CIGAM, via API) está planejada.
 
 ## Visão geral
 
@@ -13,7 +13,6 @@ O sistema foi construído para atender um fluxo interno de compras de funcionár
 - consulta de pedidos do funcionário;
 - área administrativa para produtos, pedidos, relatórios e operações;
 - área de RH para gestão de funcionários, relatórios e restauração de saldo;
-- automação para processar pedidos no SAIBWEB;
 - sincronização da base de funcionários a partir de planilha Google Sheets.
 
 ## Stack
@@ -22,7 +21,7 @@ O sistema foi construído para atender um fluxo interno de compras de funcionár
 - UI: Tailwind CSS, styled-components, Radix UI, shadcn/ui, Framer Motion
 - Dados e autenticação: Supabase
 - Gráficos e exportação: Recharts, jsPDF
-- Automação: Node.js, TSX, Express, Playwright
+- Automação: Node.js, TSX, Express
 - Integrações: Google Sheets API
 - Deploy: Vercel para APIs/serverless e Nginx + systemd no cenário Ubuntu documentado
 
@@ -61,10 +60,7 @@ O sistema foi construído para atender um fluxo interno de compras de funcionár
 
 ### Automação e backoffice
 
-- webhook interno para enfileirar processamento de pedidos;
-- runner Playwright para operar o SAIBWEB;
-- varredura de pedidos pendentes sem webhook;
-- recuperação automática de pedidos presos em `PROCESSING`;
+- webhook interno com os endpoints administrativos (sync, reset de saldo, status/histórico);
 - serviço recorrente para sincronizar funcionários da planilha;
 - APIs para consulta de status e histórico operacional.
 
@@ -73,7 +69,7 @@ O sistema foi construído para atender um fluxo interno de compras de funcionár
 ```text
 .
 ├── api/                   # Funções serverless / endpoints HTTP
-├── automation/            # Webhook, runner SAIBWEB e serviço de sync
+├── automation/            # Webhook de operações e serviço de sync
 ├── deploy/ubuntu/         # Exemplo de deploy com Nginx + systemd
 ├── public/                # Assets públicos
 ├── scripts/               # Scripts auxiliares e sync da planilha
@@ -139,19 +135,11 @@ Papéis identificados no código:
 - npm
 - projeto Supabase configurado
 - credenciais do Google Sheets para sincronização
-- credenciais do SAIBWEB para automação
-- Chromium/Playwright instalado se a automação SAIBWEB for executada localmente ou em servidor
 
 ## Instalação
 
 ```bash
 npm install
-```
-
-Para automação com Playwright:
-
-```bash
-npx playwright install chromium
 ```
 
 ## Execução local
@@ -190,8 +178,7 @@ Comandos definidos em [`package.json`](/Users/winistonalle/Desktop/copia-para-fu
 - `npm run preview`: preview local na porta `4174`
 - `npm run lint`: ESLint
 - `npm run sync:employees`: sincroniza funcionários da planilha
-- `npm run automation:webhook`: sobe o webhook/queue da automação SAIBWEB
-- `npm run automation:runner`: executa o runner Playwright diretamente
+- `npm run automation:webhook`: sobe o webhook de operações administrativas
 - `npm run automation:sheet-sync`: sobe o serviço recorrente de sincronização da planilha
 
 ## Variáveis de ambiente
@@ -212,25 +199,10 @@ SUPABASE_URL=...
 SUPABASE_SERVICE_ROLE_KEY=...
 ```
 
-### Integração SAIBWEB
+### Webhook de operações
 
 ```env
-SAIBWEB_URL=...
-SAIBWEB_USER=...
-SAIBWEB_PASS=...
-```
-
-Variáveis opcionais vistas no código:
-
-```env
-SAIBWEB_WEBHOOK_PORT=3333
-SAIBWEB_SLOWMO=250
-SAIBWEB_KEEP_OPEN=0
-SAIBWEB_PAUSE=0
-SAIBWEB_TYPE_DELAY=0
-SAIBWEB_RECOVER_PROCESSING_ON_BOOT=1
-SAIBWEB_PROCESSING_RECOVERY_MINUTES=20
-SAIBWEB_PENDING_SCAN_MS=30000
+OPERATIONS_WEBHOOK_PORT=3333
 ```
 
 ### Google Sheets
@@ -287,8 +259,9 @@ Resumo do fluxo implementado:
 4. se o saldo cobrir 100% do total, o pagamento por saldo é permitido;
 5. caso contrário, o pedido segue para pagamento na retirada;
 6. o frontend grava o pedido em `orders` e os itens em `order_items`;
-7. a automação SAIBWEB pode processar os pedidos pendentes em fila;
-8. páginas administrativas e relatórios consultam esse mesmo conjunto de dados.
+7. páginas administrativas e relatórios consultam esse mesmo conjunto de dados.
+
+A integração dos pedidos com o ERP CIGAM (via API) será adicionada futuramente.
 
 ## Sincronização de funcionários via Google Sheets
 
@@ -309,26 +282,14 @@ Credencial Google:
 - recomendado: `GOOGLE_SERVICE_ACCOUNT_JSON`;
 - fallback local: arquivo `google-service-account.json` na raiz.
 
-## Automação SAIBWEB
+## Webhook de operações
 
 Arquivos principais:
 
-- [`automation/saibweb-webhook.ts`](/Users/winistonalle/Desktop/copia-para-funcionarios/automation/saibweb-webhook.ts)
-- [`automation/saibweb-runner.ts`](/Users/winistonalle/Desktop/copia-para-funcionarios/automation/saibweb-runner.ts)
-- [`automation/sheet-sync-service.ts`](/Users/winistonalle/Desktop/copia-para-funcionarios/automation/sheet-sync-service.ts)
+- [`automation/operations-webhook.ts`](automation/operations-webhook.ts)
+- [`automation/sheet-sync-service.ts`](automation/sheet-sync-service.ts)
 
-O webhook:
-
-- expõe rotas HTTP internas;
-- mantém uma fila FIFO em memória;
-- evita processamento duplicado do mesmo pedido;
-- aciona o runner Playwright;
-- faz varredura periódica de pedidos pendentes;
-- tenta recuperar pedidos antigos presos em `PROCESSING`.
-
-Limitação atual importante:
-
-- a fila é em memória; reinícios podem interromper o processamento em andamento.
+O webhook expõe as rotas HTTP internas usadas pelas áreas de Admin/RH (sincronização de funcionários, restauração de saldo, status e histórico operacional).
 
 ## Endpoints internos e APIs
 
@@ -344,7 +305,6 @@ Limitação atual importante:
 Com base no código e no guia de deploy:
 
 - `GET /automation/health`
-- `POST /automation/webhook/new-order`
 - `POST /automation/sync-employees`
 - `POST /automation/reset-employee-balances`
 - `GET /automation/operations/status`
@@ -369,7 +329,7 @@ Resumo da arquitetura documentada:
 - `dist/` servido por Nginx;
 - webhook Node escutando em `127.0.0.1:3333`;
 - Nginx expondo a automação em `/automation/`;
-- serviços `systemd` para o webhook SAIBWEB e para o sync de planilha.
+- serviços `systemd` para o webhook de operações e para o sync de planilha.
 
 Arquivos úteis:
 
@@ -393,13 +353,13 @@ Arquivos úteis:
 - [`src/lib/adminOperations.ts`](/Users/winistonalle/Desktop/copia-para-funcionarios/src/lib/adminOperations.ts): cliente das operações admin
 - [`server/adminOperations.ts`](/Users/winistonalle/Desktop/copia-para-funcionarios/server/adminOperations.ts): autorização e regras operacionais
 - [`scripts/syncEmployeesFromSheet.mjs`](/Users/winistonalle/Desktop/copia-para-funcionarios/scripts/syncEmployeesFromSheet.mjs): sincronização de funcionários
-- [`automation/saibweb-webhook.ts`](/Users/winistonalle/Desktop/copia-para-funcionarios/automation/saibweb-webhook.ts): fila e endpoints internos
+- [`automation/operations-webhook.ts`](automation/operations-webhook.ts): endpoints internos de operações
 - [`deploy/ubuntu/DEPLOY.md`](/Users/winistonalle/Desktop/copia-para-funcionarios/deploy/ubuntu/DEPLOY.md): referência de implantação
 
 ## Próximos passos recomendados
 
 - criar um `.env.example` sem segredos;
 - documentar o schema do Supabase com migrations versionadas;
-- persistir a fila da automação em banco/queue externa;
+- integrar os pedidos com o ERP CIGAM via API;
 - adicionar testes automatizados para login, checkout e endpoints admin;
 - revisar segredos já commitados e rotacionar credenciais.
