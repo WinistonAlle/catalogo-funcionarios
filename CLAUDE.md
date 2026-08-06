@@ -64,10 +64,18 @@ O Postgres não é acessível de fora do servidor (54322/5432 filtrados).
 - **PARTE 1 — obrigatória.** Colunas `products.stock_qty`,
   `products.stock_synced_at`, `orders.erp_nota_fiscal` + índice. Aditiva e
   idempotente, não altera dado existente.
+- **PARTE 2A — ativa.** 42 produtos KG com `weight = 0` → `1`. **Não muda preço
+  nenhum** (o fallback já usava 1); só torna explícita a quantidade em kg
+  mandada ao CIGAM.
+- **PARTE 2C — ativa.** Corrige sobrepreço latente de 3× em 2 produtos. Também
+  **não aumenta preço**: restaura o valor que sempre foi cobrado. Ver
+  "Preço = preço/kg × peso" adiante.
 - **PARTE 5 — obrigatória.** Descarta os 20 pedidos antigos (ver "Pedidos
   descartados" adiante). **Confira o corte de data antes de rodar** — do jeito
   que está, inclui o pedido de 06/08 da CARLA CRISTINA.
-- **PARTES 2, 3 e 4 — comentadas de propósito.** Ler antes de descomentar.
+- **PARTES 2B, 2D, 3 e 4 — comentadas de propósito.** A 2B **aumenta o preço
+  cobrado do funcionário** (num caso, 5×) e depende de decisão do negócio. Ler
+  antes de descomentar qualquer uma.
 
 ### 4. Popular o estoque
 
@@ -291,6 +299,59 @@ falha técnica nossa.
 
 ---
 
+## ⚠️ Preço = preço/kg × peso — mexer em `weight` muda o que o funcionário paga
+
+`src/lib/pricing.ts`:
+
+```ts
+getUnitPrice = getKgPrice(product) * getProductWeight(product)
+//              ^ employee_price       ^ weight, com fallback 1 se <= 0
+```
+
+`products.employee_price` é **preço por unidade de medida** (para material KG,
+é R$/kg — **não** o preço do pacote). O valor cobrado é esse preço vezes o peso
+da embalagem.
+
+Consequências que já morderam (auditoria de 06/08/2026):
+
+- **Alterar `weight` é uma mudança de preço**, não um ajuste técnico de estoque.
+  Um produto de 5kg com `weight = 0` cai no fallback 1 e é vendido pelo preço de
+  1kg.
+- **Cadastrar `employee_price` como preço do pacote causa cobrança em dobro**,
+  porque o peso multiplica de novo. Foi o caso de `002003000032` e
+  `002004000003` (PARTE 2C do SQL): tinham 52,50 e 42,00 (preço do pacote de
+  3kg) em vez de 17,50 e 14,00 (por kg), e com `weight = 3` cobrariam R$ 157,50
+  e R$ 126,00. Ninguém chegou a pagar isso — as vendas históricas desses itens
+  (23/03 e 06/05/2026) saíram corretas porque o `× weight` só passou a existir
+  no commit `e3097c7`, posterior a elas.
+
+Nenhum produto PCT/CX/UN tem `weight > 1` (conferido em 06/08/2026), então o
+efeito está contido nos materiais KG.
+
+## Auditoria de peso e preço contra o CIGAM (06/08/2026)
+
+Os dois cadastros do CIGAM são a fonte da verdade e podem ser consultados por
+API — não precisa medir embalagem nem adivinhar:
+
+**Peso** — `suprimentos/es/Materiais/Buscar`, filtro `Material/Codigo eq '...'`
+(o filtro é `Material/Codigo`, não `Codigo`: o DTO tem o material aninhado).
+A descrição traz o peso da embalagem em **todos os 106 produtos KG**, sem
+exceção (ex.: `"PAO DE QUEIJO IMPAR 30G PCT 5KG"`). O regex é o mesmo do PDV
+(`parsePackageWeightKg`). Resultado: 44 estavam com `weight = 0`, mas **42 são
+de 1kg** — o fallback já acertava. **Só 2 estavam de fato errados** (3kg e 5kg),
+mais 2 divergentes que tinham peso 6 e o CIGAM diz 7. Esses 4 são a PARTE 2B.
+
+⚠️ O `Material` **não tem campo de peso** — nem `Complemento` (vem sempre nulo),
+nem `$expand` funciona nele. O peso só existe dentro da descrição.
+
+**Preço** — `client.buscarPrecosTabela("005")` (tabela de funcionário), sobre
+`genericos/ge/PrecosTabela/Buscar`. Dos 172 produtos, **169 batem centavo a
+centavo** e nenhum ficou sem preço. As 3 divergências viraram as PARTES 2C e 2D.
+
+Como a tabela 005 se mostrou confiável, vale considerar um `sync-precos.ts` nos
+moldes do `sync-estoque.ts` para manter `employee_price` alinhado sozinho — o
+método do client que faltava já existe.
+
 ## Regra geral: o `/api/help` mente
 
 Antes de confiar em qualquer nome de campo documentado, confirme na resposta
@@ -322,14 +383,23 @@ que foi confirmada ao vivo. Consultar antes de investigar do zero.
 
 ## Backlog / pendências conhecidas
 
-- **Pesos zerados — corrigir antes de ligar o disparo automático.** 44 dos 106
-  produtos KG estão com `weight = 0`. Em 37 o fallback `peso = 1` acerta por
-  acaso (são "Pacote 1kg"), mas em **7 não**: `002003000033` (3kg),
-  `002005000027` (5kg) e 5 sem tamanho no nome (`002005000024`, `002005000039`,
-  `002005000032`, `002005000033`, `002004000014` — pesos desconhecidos, precisam
-  ser conferidos na embalagem). Efeito: o valor cobrado do funcionário fica
-  **certo** (quantidade × preço dá o mesmo total), mas a quantidade em kg
-  mandada ao CIGAM fica errada — pacote de 5kg dá baixa de 1kg. PARTE 2 do SQL.
+- **Pesos errados — 4 produtos, PARTE 2B do SQL (decisão pendente do negócio).**
+  Auditados contra o CIGAM em 06/08/2026 (ver seção da auditoria acima). Os 42
+  produtos de 1kg que estavam zerados entram na PARTE 2A, que é neutra em preço.
+  Sobram estes 4, que **aumentam o preço cobrado**:
+
+  | código | embalagem | peso no banco | cobra hoje | passaria a cobrar |
+  |---|---|---|---|---|
+  | `002005000027` | 5 kg | 0 (usa 1) | R$ 10,90 | R$ 54,50 |
+  | `002003000033` | 3 kg | 0 (usa 1) | R$ 18,55 | R$ 55,65 |
+  | `002006000017` | 7 kg | 6 | R$ 38,40 | R$ 44,80 |
+  | `002006000016` | 7 kg | 6 | R$ 38,40 | R$ 44,80 |
+
+  Para dimensionar: o Pão de Queijo Premium de **1 kg** custa R$ 14,85, e o
+  Ímpar de **5 kg** está saindo por R$ 10,90 — mais barato que o de 1 kg.
+  Enquanto não rodar, o efeito colateral é a quantidade em kg lançada no CIGAM
+  ficar menor que a real nesses 4 itens (o estoque do ERP diverge a cada
+  pedido). **Não é decisão técnica** — é reajuste para quem compra esses itens.
 - **Pedidos descartados (06/08/2026):** os 20 pedidos `PENDING` de 10/07 a 06/08
   nunca foram ao CIGAM (integração desligada) e já haviam sido resolvidos na
   mão. Decisão do usuário: descartar, senão viraria pedido duplicado no ERP.
@@ -339,7 +409,16 @@ que foi confirmada ao vivo. Consultar antes de investigar do zero.
 - Usuário de integração dedicado no CIGAM (hoje usa a credencial pessoal do
   Winiston no `.env`; trocar a senha depois). Resolveria o conflito de sessão
   com o PDV.
-- 9 produtos sem `cigam_code` de propósito (alhos avulsos, OMG misto, PdQ
+- **Linha "Alho Em Creme" (OMG) fora do catálogo desde 06/08/2026.** Decisão do
+  usuário: passa a ser vendida só na loja. Os 8 produtos da linha estão com
+  `is_hidden = true` (as 4 bisnagas de 1,01kg já estavam; os 4 potes de 200g
+  foram ocultados nessa data, direto no banco). Não foram excluídos — reverter é
+  só voltar `is_hidden` para false, mas **resolver antes o preço divergente**
+  (temos R$ 25,00, CIGAM tabela 005 diz R$ 250,00 — ver PARTE 2D do SQL).
+  ⚠️ Não confundir com os 3 salgados que têm "alho" no nome e **continuam à
+  venda**: Kibe c/ Creme de Alho 3kg, Salgado Festa Kibe c/ Creme de Alho e
+  Salgado Festa Risole de Alho.
+- Produtos sem `cigam_code` de propósito (alhos avulsos, OMG misto, PdQ
   gourmet 1kg) — pedidos com eles falham com erro claro até ganharem código.
 - Painel/retry de erros de integração (não existe).
 - Limpeza dos restos do Saibweb: colunas `saibweb_status`/`saibweb_error` em

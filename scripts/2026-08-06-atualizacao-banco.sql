@@ -53,39 +53,128 @@ comment on column public.orders.erp_nota_fiscal is
 
 
 -- =====================================================================
--- PARTE 2 — OPCIONAL: pesos zerados dos produtos KG
+-- PARTE 2 — pesos dos produtos KG
 --
--- 44 dos 106 produtos KG estao com weight = 0. Em 37 deles nao ha problema
--- pratico: sao "Pacote 1kg" e o codigo cai num fallback de peso = 1, que por
--- acaso e o valor certo. Nos 7 abaixo o fallback erra.
+-- Os 106 produtos KG foram auditados em 06/08/2026 contra o cadastro do CIGAM
+-- (suprimentos/es/Materiais/Buscar, filtro `Material/Codigo eq '...'`). A
+-- descricao do CIGAM traz o peso da embalagem em TODOS eles, sem excecao
+-- (ex.: "PAO DE QUEIJO IMPAR 30G PCT 5KG").
 --
--- Efeito de deixar como esta: o valor cobrado do funcionario continua CERTO
--- (quantidade x preco da o mesmo total). O que sai errado e a quantidade em kg
--- mandada ao CIGAM — um pacote de 5kg da baixa de 1kg. Ou seja, o estoque do
--- ERP vai divergindo a cada pedido.
+-- ATENCAO — LEIA ANTES DE MEXER EM PESO:
+-- peso NAO e so um dado de estoque, ele DEFINE O PRECO. Ver src/lib/pricing.ts:
+--     getUnitPrice = employee_price (preco por KG) x weight
+-- Com weight = 0, o codigo cai num fallback de 1. Entao alterar o peso de um
+-- produto ALTERA o valor cobrado do funcionario proporcionalmente.
 --
--- Voce optou por deixar como esta por ora (06/08/2026), por isso esta
--- comentado. Descomente quando quiser corrigir — de preferencia ANTES de
--- ligar o disparo automatico de pedidos.
+-- Por isso esta parte esta dividida em 2A (nao mexe em preco) e 2B (mexe).
 -- =====================================================================
 
--- -- Estes dois da pra deduzir com seguranca do proprio nome do produto:
--- update public.products set weight = 3
---   where cigam_code = '002003000033';  -- Kibe com Creme de Alho 30g – Pacote 3kg
--- update public.products set weight = 5
---   where cigam_code = '002005000027';  -- Pao de Queijo Impar 30g – Pacote 5kg
+-- ---------------------------------------------------------------------
+-- 2A — SEGURA: 42 produtos de 1kg que estao com weight = 0
 --
--- -- Estes 5 nao tem o tamanho no nome. NAO chute: confira a embalagem/CIGAM e
--- -- troque o ? pelo peso real em kg antes de rodar.
--- update public.products set weight = ? where cigam_code = '002005000024';  -- PdQ Recheado com Frango
--- update public.products set weight = ? where cigam_code = '002005000039';  -- PdQ Recheado com Goiabada
--- update public.products set weight = ? where cigam_code = '002005000032';  -- PdQ Recheado com Carne
--- update public.products set weight = ? where cigam_code = '002005000033';  -- PdQ Recheado com Linguica Apimentada
--- update public.products set weight = ? where cigam_code = '002004000014';  -- Biscoito 4 Queijo Comprido
+-- O fallback ja usava 1, entao o preco cobrado NAO muda em nenhum deles.
+-- O ganho e no CIGAM: a quantidade em kg do item do pedido passa a ser
+-- explicita em vez de depender de um fallback.
+-- ---------------------------------------------------------------------
 
--- Conferencia (pode rodar a vontade, so le):
+update public.products set weight = 1
+ where cigam_code in (
+   '002005000048', '002005000011', '002005000001', '002005000024', '002005000039',
+   '002005000032', '002005000033', '002005000061', '002005000003', '002005000002',
+   '002003000027', '002005000042', '002005000059', '002005000049', '002007000021',
+   '002004000013', '002004000007', '002004000005', '002004000014', '002004000006',
+   '002004000004', '002004000008', '002004000017', '002005000015', '002004000016',
+   '002005000018', '002005000034', '002007000035', '002002000001', '002007000019',
+   '002003000002', '002007000036', '002007000004', '002006000020', '002006000002',
+   '002006000004', '002006000005', '002007000006', '002007000010', '002007000005',
+   '002007000020', '002007000022'
+ );
+
+-- ---------------------------------------------------------------------
+-- 2B — MUDA O PRECO COBRADO DO FUNCIONARIO. NAO RODAR SEM DECIDIR.
+--
+-- Estes 4 produtos estao com o peso errado, e por isso vem sendo vendidos
+-- ABAIXO do proporcional ao tamanho da embalagem:
+--
+--   codigo        embalagem  peso no banco  R$/kg   cobra hoje  passaria a cobrar
+--   002005000027  5 kg       0 (usa 1)      10,90   R$ 10,90    R$ 54,50
+--   002003000033  3 kg       0 (usa 1)      18,55   R$ 18,55    R$ 55,65
+--   002006000017  7 kg       6               6,40   R$ 38,40    R$ 44,80
+--   002006000016  7 kg       6               6,40   R$ 38,40    R$ 44,80
+--
+-- Para dimensionar: o Pao de Queijo Premium de 1 kg custa R$ 14,85. O Impar de
+-- 5 kg esta saindo por R$ 10,90 — mais barato que o de 1 kg.
+--
+-- Ou seja, isto NAO e so uma correcao tecnica: e um reajuste real para quem
+-- compra esses 4 itens (num caso, 5x). Precisa de decisao do negocio, e vale
+-- avisar os funcionarios antes. Enquanto nao rodar, o unico efeito colateral e
+-- a quantidade em kg lancada no CIGAM ficar menor que a real nesses 4 itens.
+-- ---------------------------------------------------------------------
+
+-- update public.products set weight = 5 where cigam_code = '002005000027';  -- PdQ Impar 30g PCT 5KG
+-- update public.products set weight = 3 where cigam_code = '002003000033';  -- GG Kibe c/ Creme de Alho 30g 3KG
+-- update public.products set weight = 7 where cigam_code = '002006000017';  -- Pao Frances Integral 12h 70g PCT 7KG
+-- update public.products set weight = 7 where cigam_code = '002006000016';  -- Pao Frances Integral 6h 70g PCT 7KG
+
+-- Conferencia (so le) — lista todo KG cujo peso diverge do que o nome indica:
 -- select cigam_code, name, weight from public.products
 --  where cigam_unit = 'KG' and coalesce(weight, 0) <= 0 order by name;
+
+
+-- ---------------------------------------------------------------------
+-- 2C — CORRIGE SOBREPRECO LATENTE. Recomendado rodar.
+--
+-- Em 06/08/2026 os 172 produtos foram auditados contra a TABELA DE PRECO 005
+-- do CIGAM (a de funcionario), via genericos/ge/PrecosTabela/Buscar.
+-- Resultado: 169 batem centavo a centavo. 3 divergem.
+--
+-- Nestes 2, o employee_price foi cadastrado como PRECO DO PACOTE, e nao como
+-- preco por kg:
+--     Enr Salsicha 3kg     : temos 52,50  | CIGAM 005 = 17,50  (52,50 = 3 x 17,50)
+--     Bisc Palito Prem 3kg : temos 42,00  | CIGAM 005 = 14,00  (42,00 = 3 x 14,00)
+--
+-- Como os dois tambem tem weight = 3, e o app hoje faz preco/kg x peso
+-- (src/lib/pricing.ts), o valor cobrado sairia MULTIPLICADO DE NOVO:
+--     Enr Salsicha     : cobraria R$ 157,50 em vez de R$ 52,50
+--     Bisc Palito Prem : cobraria R$ 126,00 em vez de R$  42,00
+--
+-- IMPORTANTE — isto ainda NAO aconteceu com ninguem. As unicas 2 vendas
+-- historicas desses itens (23/03 e 06/05/2026) sairam a R$ 52,50, o valor
+-- CORRETO, porque naquela epoca o preco ainda nao era multiplicado pelo peso
+-- (o commit e3097c7 "Fix price calculation using kg price and product weight"
+-- veio depois). Ou seja: nao ha nada a estornar, mas o proximo funcionario que
+-- comprar um desses paga o triplo.
+--
+-- Corrigir aqui NAO aumenta preco de ninguem: restaura exatamente o valor que
+-- sempre foi cobrado (17,50 x 3 = 52,50), agora com a semantica certa.
+-- ---------------------------------------------------------------------
+
+update public.products set employee_price = 17.50 where cigam_code = '002003000032';  -- GG Enr Salsicha 30g PCT 3KG
+update public.products set employee_price = 14.00 where cigam_code = '002004000003';  -- Bisc Palito Premium 80g PCT 3KG
+
+
+-- ---------------------------------------------------------------------
+-- 2D — A terceira divergencia. RESOLVIDA POR OUTRO CAMINHO — nao rodar.
+--
+--     Alho Em Creme c/ Pimenta Calabresa OMG Bisnaga (002001000016, unidade CX)
+--     temos R$ 25,00  |  CIGAM tabela 005 = R$ 250,00
+--
+-- Diferenca de 10x, redonda demais para ser coincidencia — poderia ser erro de
+-- digitacao de qualquer um dos dois lados (a unidade e CX/caixa: R$ 250 faz
+-- sentido se a caixa tem ~10 bisnagas; R$ 25 faz sentido se o cadastro se
+-- referir a UMA bisnaga).
+--
+-- NAO PRECISA MAIS DECIDIR ISSO AGORA: em 06/08/2026 o usuario determinou que a
+-- linha "Alho Em Creme" (OMG) sai do catalogo de funcionarios e passa a ser
+-- vendida so na loja. Os 8 produtos da linha foram marcados com
+-- is_hidden = true (as 4 bisnagas ja estavam ocultas; os 4 potes de 200g foram
+-- ocultados nessa data). Ninguem consegue comprar, entao o preco divergente
+-- ficou inofensivo.
+--
+-- Se um dia a linha voltar ao catalogo, resolver o preco ANTES de reexibir.
+-- ---------------------------------------------------------------------
+
+-- update public.products set employee_price = 250.00 where cigam_code = '002001000016';
 
 
 -- =====================================================================

@@ -552,6 +552,62 @@ export class CigamClient {
   }
 
   /**
+   * Preços de uma tabela do CIGAM (a de funcionário é a `005`). Retorna um Map
+   * código-do-material → preço unitário.
+   *
+   * O preço é sempre **por unidade de medida do material**: para material com
+   * `CodigoUnidadeMedida = KG`, é R$/kg — não o preço do pacote. É a mesma
+   * semântica de `products.employee_price` (ver src/lib/pricing.ts, que faz
+   * `preço/kg × weight`).
+   *
+   * Dois detalhes confirmados ao vivo (primeiro no PDV, depois aqui):
+   * - Os campos reais são `Elemento` (código do material), `CodigoTabela` e
+   *   `PrecoUnitario` — **não** os nomes que o /api/help documenta
+   *   (`CodigoMaterial`/`CodigoTabelaPreco`/`PrecoVenda`).
+   * - `CodigoTabela` vem preenchido com espaços à direita numa largura fixa que
+   *   não dá pra reproduzir com segurança num `eq` do OData, então o filtro por
+   *   tabela é feito aqui, no cliente, e não na query.
+   */
+  async buscarPrecosTabela(codigoTabela: string): Promise<Map<string, number>> {
+    const PAGE = 500;
+    const alvo = codigoTabela.trim();
+    const precos = new Map<string, number>();
+    let skip = 0;
+
+    await this.ensureAuth();
+
+    while (true) {
+      const data = await this.withAuthRetry(() =>
+        this.apiFetch<any[]>("GET", "/genericos/ge/PrecosTabela/Buscar", {
+          query: {
+            $top: String(PAGE),
+            $skip: String(skip),
+            // Materiais de produto acabado começam com "002" — mesmo truque de
+            // filtro por grupo usado no PDV, já que este endpoint não tem campo
+            // de grupo próprio.
+            $filter: "startswith(Elemento, '002')",
+          },
+        })
+      );
+
+      const linhas: any[] = Array.isArray(data) ? data : ((data as any)?.data ?? []);
+      if (linhas.length === 0) break;
+
+      for (const linha of linhas) {
+        if (String(linha?.CodigoTabela ?? "").trim() !== alvo) continue;
+        const codigo = String(linha?.Elemento ?? "").trim();
+        const preco = Number(linha?.PrecoUnitario);
+        if (codigo && Number.isFinite(preco)) precos.set(codigo, preco);
+      }
+
+      if (linhas.length < PAGE) break;
+      skip += PAGE;
+    }
+
+    return precos;
+  }
+
+  /**
    * Condições de pagamento cadastradas. ATENÇÃO: este endpoint só devolve as
    * que têm "Publicar na Web" marcado no CIGAM Desktop — uma condição que
    * existe mas não aparece aqui quase sempre é isso, não erro de código.
