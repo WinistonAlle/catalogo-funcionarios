@@ -215,7 +215,7 @@ export async function processPendingOrders(options: {
         liberadoParaFaturamento
       );
 
-      await supabase
+      const { error: updateError } = await supabase
         .from("orders")
         .update({
           erp_status: "DONE",
@@ -227,6 +227,36 @@ export async function processPendingOrders(options: {
           erp_synced_at: new Date().toISOString(),
         })
         .eq("id", order.id);
+
+      // Este ponto é o mais perigoso do fluxo: o pedido JÁ existe no CIGAM (e
+      // possivelmente já foi efetivado, com documento emitido), mas o nosso
+      // banco não conseguiu registrar isso. Antes esse erro era ignorado em
+      // silêncio, e o pedido ficava eternamente PENDING enquanto existia de
+      // verdade no ERP — a varredura seguinte o marcaria como ERROR de
+      // "cabeçalho já existe", sem ninguém saber que a nota tinha saído.
+      //
+      // A causa mais provável é a coluna erp_nota_fiscal não existir ainda
+      // (PARTE 1 do SQL não rodada). Por isso o erro é gritado com todos os
+      // dados necessários para reconciliar na mão.
+      if (updateError) {
+        const message =
+          `Pedido ${cigamOrderId} foi criado no CIGAM` +
+          (notaFiscal ? ` e o documento ${notaFiscal} foi emitido` : "") +
+          `, mas NÃO foi possível gravar isso no Supabase: ${updateError.message}. ` +
+          `Se a coluna erp_nota_fiscal não existe, rode a PARTE 1 de ` +
+          `scripts/2026-08-06-atualizacao-banco.sql. Reconciliar o pedido ` +
+          `${order.order_number} manualmente antes de reprocessar.`;
+        console.error(`❌ [cigam] ${message}`);
+        results.push({
+          orderId: order.id,
+          orderNumber: order.order_number,
+          status: "ERROR",
+          cigamCode: cigamOrderId,
+          notaFiscal,
+          error: message,
+        });
+        continue;
+      }
 
       results.push({
         orderId: order.id,

@@ -29,10 +29,26 @@ curl -s -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H "Prefer: count=exac
   "http://127.0.0.1:54321/rest/v1/orders?select=id&erp_external_id=not.is.null"
 ```
 
-### 1. `git pull`
+> **A ORDEM IMPORTA.** O SQL (passo 3) tem que rodar **antes** de qualquer
+> `cigam:pending` ou `cigam:estoque`. O código grava em colunas que só existem
+> depois dele (`erp_nota_fiscal`, `stock_qty`, `stock_synced_at`). Rodar fora de
+> ordem cria o pedido no CIGAM — possivelmente já efetivado, com documento
+> emitido — e falha ao registrar isso aqui, exigindo reconciliação manual.
+
+### 1. `git pull` **e rebuildar o frontend**
 
 A branch é `main`, remote `github.com/WinistonAlle/catalogo-funcionarios`.
-O último commit da sessão de desenvolvimento é `3304b7f`.
+
+```bash
+cd /var/www/catalogo/current
+git pull
+npm ci
+npm run build      # OBRIGATÓRIO: o nginx serve /var/www/catalogo/current/dist
+```
+
+O nginx serve o **estático de `dist/`** (ver `deploy/ubuntu/nginx.catalogo.conf`).
+Sem `npm run build`, nenhuma mudança de frontend aparece — inclusive a exibição
+do número do CIGAM no Admin/RH/Meus Pedidos. `git pull` sozinho não basta.
 
 ### 2. Atualizar o `.env` — **NÃO vem no `git pull`** (gitignorado)
 
@@ -86,15 +102,21 @@ STOCK_EXEC=1 npm run cigam:estoque
 Esperado (medido em 06/08/2026): **172 produtos, 171 com saldo, 1 desconhecido**,
 e **5 bloqueados** por saldo <= 0.
 
-### 5. Reiniciar o PM2
+### 5. Reiniciar o webhook
 
 ```bash
-pm2 restart webhook
+pm2 restart webhook     # confirme o nome real com `pm2 list`
 ```
 
 O `operations-webhook.ts` mudou. **Build/pull no disco não afeta processo em
 execução** — no projeto irmão (PDV) isso já enganou a equipe por várias horas.
 Confirme que o processo reiniciou de verdade antes de dizer que está no ar.
+
+⚠️ **`deploy/ubuntu/DEPLOY.md` está desatualizado nesse ponto:** ele descreve
+serviços systemd (`catalogo-automation.service`, `catalogo-sheet-sync.service`),
+mas a operação real hoje é via **PM2**. Confira o que de fato está rodando
+(`pm2 list` / `systemctl status`) em vez de seguir o DEPLOY.md cegamente. O
+resto dele (nginx servindo `dist/`, `npm ci && npm run build`) continua válido.
 
 ### 6. Validar o overlay de estoque na tela
 
