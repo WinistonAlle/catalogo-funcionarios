@@ -43,6 +43,15 @@ create index if not exists products_stock_sync_idx
   where cigam_code is not null;
 
 
+-- Numero do documento fiscal (serie REC) devolvido pelo CIGAM ao efetivar o
+-- pedido. Necessario a partir da efetivacao automatica — ver PARTE 5.
+alter table public.orders
+  add column if not exists erp_nota_fiscal text;
+
+comment on column public.orders.erp_nota_fiscal is
+  'Numero do documento (serie REC) emitido pelo CIGAM na efetivacao automatica do pedido. NULL = ainda nao efetivado, ou a efetivacao falhou (motivo fica em erp_error).';
+
+
 -- =====================================================================
 -- PARTE 2 — OPCIONAL: pesos zerados dos produtos KG
 --
@@ -119,3 +128,39 @@ create index if not exists products_stock_sync_idx
 
 -- drop function if exists public.next_cigam_order_code();
 -- drop sequence if exists public.cigam_order_code_seq;
+
+
+-- =====================================================================
+-- PARTE 5 — OBRIGATORIA (decisao do usuario 06/08/2026):
+-- descartar os pedidos antigos que nunca foram ao CIGAM
+--
+-- Existem 20 pedidos com erp_status = 'PENDING', do dia 10/07 ate 06/08, que
+-- nunca chegaram ao CIGAM porque a integracao ficou desligada esse tempo todo.
+-- Eles ja foram resolvidos na pratica (os funcionarios ja receberam), entao
+-- lanca-los agora criaria pedido duplicado no ERP.
+--
+-- Isto NAO apaga nada: so tira esses pedidos da fila do processador, que
+-- busca exclusivamente por erp_status = 'PENDING'. O pedido continua inteiro
+-- no banco, com historico, itens e valores intactos. Da pra reverter trocando
+-- 'DISCARDED' de volta por 'PENDING'.
+--
+-- erp_status nao e lido em lugar nenhum do frontend (conferido em 06/08/2026),
+-- entao um valor novo nao quebra tela nenhuma.
+--
+-- ATENCAO AO CORTE DE DATA: o filtro abaixo pega tudo que foi criado ANTES de
+-- 07/08. Isso inclui os 20 atuais — inclusive o de hoje (GM-20260806-2508, da
+-- CARLA CRISTINA). Se voce quiser que o pedido de hoje VA para o CIGAM em vez
+-- de ser descartado, troque a data por '2026-08-06'.
+--
+-- O corte por data existe justamente para nao descartar pedidos novos, caso
+-- este script so seja rodado daqui a alguns dias.
+-- =====================================================================
+
+update public.orders
+   set erp_status = 'DISCARDED',
+       erp_error  = 'Descartado em 06/08/2026: pedido anterior a ativacao da integracao CIGAM, ja resolvido manualmente. Nao lancar no ERP.'
+ where erp_status = 'PENDING'
+   and created_at < '2026-08-07 00:00:00-03';
+
+-- Conferencia (so le):
+-- select erp_status, count(*) from public.orders group by erp_status order by 2 desc;

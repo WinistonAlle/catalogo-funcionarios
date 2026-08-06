@@ -40,9 +40,66 @@ export type ProcessResult = {
   orderNumber: string;
   status: "DONE" | "ERROR" | "DRY_RUN";
   cigamCode?: string;
+  /** Documento (série REC) emitido na efetivação automática, quando houve. */
+  notaFiscal?: string;
+  /** Pedido criado OK, mas a efetivação/emissão falhou — resolver no Desktop. */
+  aviso?: string;
   error?: string;
   payload?: unknown;
 };
+
+/**
+ * Efetiva o pedido (controle 40) emitindo o documento da série REC.
+ *
+ * Decisão do usuário 06/08/2026: a efetivação é AUTOMÁTICA. Por isso o padrão
+ * aqui é LIGADO — quem quiser desligar define `CIGAM_AUTO_EFETIVAR_PEDIDO=0`.
+ * O padrão é ligado de propósito: o `.env` é gitignorado e não sobe no deploy,
+ * então um padrão desligado faria o servidor silenciosamente não efetivar nada
+ * depois de um `git pull`, que é exatamente o oposto do que foi decidido.
+ *
+ * Best-effort de propósito: se a emissão falhar, o pedido em si continua criado
+ * e correto no CIGAM, então ele NÃO vira ERROR — só ganha um aviso para alguém
+ * concluir o faturamento no Desktop. Tratar isso como falha faria a próxima
+ * varredura tentar recriar um pedido que já existe.
+ */
+async function efetivarSeConfigurado(
+  cigam: CigamClient,
+  cigamOrderId: string,
+  itens: Array<{ quantidade: number }>,
+  liberadoParaFaturamento: boolean
+): Promise<{ notaFiscal?: string; aviso?: string }> {
+  if (process.env.CIGAM_AUTO_EFETIVAR_PEDIDO === "0") return {};
+
+  if (!liberadoParaFaturamento) {
+    return {
+      aviso: `Pedido ${cigamOrderId} criado, mas não foi liberado para faturamento — efetivação não tentada. Concluir no CIGAM Desktop.`,
+    };
+  }
+
+  try {
+    const resultado = await cigam.efetivarPedido(
+      cigamOrderId,
+      // As sequências espelham a ordem em que os itens foram lançados em
+      // criarPedidoCompleto (1..N).
+      itens.map((item, index) => ({ sequencia: index + 1, quantidade: item.quantidade }))
+    );
+
+    if (resultado.success) return { notaFiscal: resultado.codigoNotaFiscal };
+
+    return {
+      notaFiscal: resultado.codigoNotaFiscal,
+      aviso: `Pedido ${cigamOrderId} criado, mas a emissão do documento falhou: ${
+        resultado.erro ?? "motivo desconhecido"
+      }. Concluir no CIGAM Desktop.`,
+    };
+  } catch (err: any) {
+    return {
+      aviso: `Pedido ${cigamOrderId} criado, mas a efetivação falhou: ${String(
+        err?.message ?? err
+      ).slice(0, 300)}. Concluir no CIGAM Desktop.`,
+    };
+  }
+}
 
 function buildObservacao(order: OrderRow): string {
   const nome = (order.employee_name ?? "FUNCIONARIO NAO IDENTIFICADO").toUpperCase();
@@ -141,7 +198,7 @@ export async function processPendingOrders(options: {
         continue;
       }
 
-      const { cigamOrderId } = await cigam.criarPedidoCompleto(
+      const { cigamOrderId, liberadoParaFaturamento } = await cigam.criarPedidoCompleto(
         pedido,
         itens,
         // Persiste o número do CIGAM ANTES de lançar os itens: se cair no meio, a
@@ -151,12 +208,22 @@ export async function processPendingOrders(options: {
         }
       );
 
+      const { notaFiscal, aviso } = await efetivarSeConfigurado(
+        cigam,
+        cigamOrderId,
+        itens,
+        liberadoParaFaturamento
+      );
+
       await supabase
         .from("orders")
         .update({
           erp_status: "DONE",
-          erp_error: null,
+          // `aviso` só existe quando o pedido foi criado certo mas a emissão do
+          // documento falhou — o pedido em si está válido, então não vira ERROR.
+          erp_error: aviso ?? null,
           erp_external_id: cigamOrderId,
+          erp_nota_fiscal: notaFiscal ?? null,
           erp_synced_at: new Date().toISOString(),
         })
         .eq("id", order.id);
@@ -166,6 +233,8 @@ export async function processPendingOrders(options: {
         orderNumber: order.order_number,
         status: "DONE",
         cigamCode: cigamOrderId,
+        notaFiscal,
+        aviso,
       });
     } catch (err: any) {
       const message = String(err?.message ?? err).slice(0, 500);
@@ -213,6 +282,8 @@ if (process.argv[1]?.endsWith("process-pending-orders.ts")) {
 
     for (const r of results) {
       console.log(`\n===== ${r.orderNumber} → ${r.status}${r.cigamCode ? ` (CIGAM ${r.cigamCode})` : ""}`);
+      if (r.notaFiscal) console.log(`   📄 documento REC emitido: ${r.notaFiscal}`);
+      if (r.aviso) console.log("   ⚠️ ", r.aviso);
       if (r.error) console.log("   erro:", r.error);
       if (r.payload) console.log(JSON.stringify(r.payload, null, 2));
     }
