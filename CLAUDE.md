@@ -8,32 +8,63 @@ Os pedidos são lançados no ERP **CIGAM**.
 > **Este arquivo foi reescrito em 06/08/2026** como handoff para o Claude que
 > roda **no servidor**. A sessão anterior (na máquina de desenvolvimento do
 > Winiston) reescreveu a integração CIGAM inteira e validou tudo o que dava para
-> validar de fora. O que falta exige estar no servidor — está na seção
-> "AÇÃO IMEDIATA" logo abaixo.
+> validar de fora. O que falta exige estar no servidor.
+>
+> **Comece pelo bloco 🛑 PARE logo abaixo — ele é obrigatório e pede uma
+> confirmação do Winiston antes de qualquer execução.**
+
+---
+
+# 🛑 PARE — LEIA ANTES DE EXECUTAR QUALQUER COISA
+
+**Esta é uma máquina de PRODUÇÃO.** Pedidos, saldos e preços aqui são reais, e o
+CIGAM emite documento fiscal de verdade.
+
+**Antes de rodar qualquer comando deste projeto, você DEVE:**
+
+1. **Verificar se o SQL de migração já foi rodado** (comando abaixo).
+2. **Perguntar ao Winiston e esperar a resposta dele.** Não deduza pelo
+   resultado do comando, não assuma que "provavelmente já rodou", não siga em
+   frente "só para checar". Ele pediu explicitamente, em 06/08/2026, para ser
+   consultado sobre isso antes de qualquer ação.
+
+```bash
+# Roda daqui mesmo (o Supabase é local). Se não tiver a chave à mão:
+#   KEY=$(grep '^SUPABASE_SERVICE_ROLE_KEY=' .env | cut -d= -f2-)
+
+# 1) As colunas do SQL existem?
+curl -s -H "apikey: $KEY" -H "Authorization: Bearer $KEY" \
+  "http://127.0.0.1:54321/rest/v1/products?select=stock_qty&limit=1"
+curl -s -H "apikey: $KEY" -H "Authorization: Bearer $KEY" \
+  "http://127.0.0.1:54321/rest/v1/orders?select=erp_nota_fiscal&limit=1"
+#    -> "column ... does not exist"  = SQL NÃO rodado
+#    -> [] ou linhas                 = SQL rodado
+
+# 2) Os pedidos antigos foram descartados? (PARTE 5)
+curl -s -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H "Prefer: count=exact" -I \
+  "http://127.0.0.1:54321/rest/v1/orders?select=id&erp_status=eq.DISCARDED"
+
+# 3) Algum pedido já foi ao CIGAM? (em 06/08/2026 era 0)
+curl -s -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H "Prefer: count=exact" -I \
+  "http://127.0.0.1:54321/rest/v1/orders?select=id&erp_external_id=not.is.null"
+```
+
+**Se o SQL NÃO foi rodado, PARE.** Avise o Winiston e não execute nada além de
+leitura. Rodar `cigam:pending` ou `cigam:estoque` antes do SQL faz o pedido ser
+criado no CIGAM — possivelmente já efetivado, com documento REC emitido — e a
+gravação aqui falhar, exigindo reconciliação manual no ERP. O código detecta e
+grita, mas o estrago no CIGAM já terá acontecido.
+
+**A ORDEM É:** `git pull` + `build` → `.env` → **SQL** → `cigam:estoque` →
+restart do webhook. Nunca inverta SQL e comandos `cigam:*`.
 
 ---
 
 ## ⚡ AÇÃO IMEDIATA — o que precisa ser feito no servidor
 
-Nada disso foi feito ainda. Em 06/08/2026 o banco de produção foi consultado e
-confirmou: **0 pedidos foram ao CIGAM** e as colunas de estoque **não existem**.
-
-**Confira o estado antes de agir** — o Winiston pode já ter feito parte:
-
-```bash
-# colunas de estoque existem?
-curl -s -H "apikey: $KEY" -H "Authorization: Bearer $KEY" \
-  "http://127.0.0.1:54321/rest/v1/products?select=stock_qty&limit=1"
-# pedidos já enviados ao CIGAM (esperado hoje: 0)
-curl -s -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H "Prefer: count=exact" -I \
-  "http://127.0.0.1:54321/rest/v1/orders?select=id&erp_external_id=not.is.null"
-```
-
-> **A ORDEM IMPORTA.** O SQL (passo 3) tem que rodar **antes** de qualquer
-> `cigam:pending` ou `cigam:estoque`. O código grava em colunas que só existem
-> depois dele (`erp_nota_fiscal`, `stock_qty`, `stock_synced_at`). Rodar fora de
-> ordem cria o pedido no CIGAM — possivelmente já efetivado, com documento
-> emitido — e falha ao registrar isso aqui, exigindo reconciliação manual.
+Estado em 06/08/2026, confirmado consultando o banco de produção: **nada disso
+foi feito**. 0 pedidos foram ao CIGAM, as colunas do SQL não existem, nenhum
+pedido foi descartado. Confirme com o Winiston (bloco acima) antes de agir.
 
 ### 1. `git pull` **e rebuildar o frontend**
 
@@ -72,10 +103,16 @@ CIGAM_AUTO_EFETIVAR_PEDIDO=1
 Os valores acima **já são o padrão no código**, então nada quebra se forem
 esquecidos — mas deixar explícito evita surpresa se um padrão mudar.
 
-### 3. Rodar o SQL no Supabase
+### 3. Rodar o SQL no Supabase — **quem roda é o Winiston**
 
-`scripts/2026-08-06-atualizacao-banco.sql`, colando no SQL Editor.
-O Postgres não é acessível de fora do servidor (54322/5432 filtrados).
+`scripts/2026-08-06-atualizacao-banco.sql`, colado no SQL Editor.
+
+⚠️ **Não rode este SQL por conta própria.** Daqui o Postgres É alcançável
+(`127.0.0.1:54322`, local — o bloqueio de 54322/5432 vale só para fora do
+servidor), então tecnicamente dá para executar via `psql`. **Não faça isso sem
+o Winiston pedir.** Ele quer rodar e conferir parte por parte: a PARTE 2C mexe
+em preço e a PARTE 5 altera 20 pedidos. Se ele pedir para você rodar, tudo bem —
+mas confirme antes qual parte, e mostre o resultado.
 
 - **PARTE 1 — obrigatória.** Colunas `products.stock_qty`,
   `products.stock_synced_at`, `orders.erp_nota_fiscal` + índice. Aditiva e
