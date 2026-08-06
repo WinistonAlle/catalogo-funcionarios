@@ -73,9 +73,9 @@ O Postgres não é acessível de fora do servidor (54322/5432 filtrados).
 - **PARTE 5 — obrigatória.** Descarta os 20 pedidos antigos (ver "Pedidos
   descartados" adiante). **Confira o corte de data antes de rodar** — do jeito
   que está, inclui o pedido de 06/08 da CARLA CRISTINA.
-- **PARTES 2B, 2D, 3 e 4 — comentadas de propósito.** A 2B **aumenta o preço
-  cobrado do funcionário** (num caso, 5×) e depende de decisão do negócio. Ler
-  antes de descomentar qualquer uma.
+- **PARTE 2B — já aplicada** direto no banco em 06/08/2026 (4 pesos errados,
+  reajuste real de até 5×). Rodar de novo é inofensivo, mas desnecessário.
+- **PARTES 2D, 3 e 4 — comentadas de propósito.** Ler antes de descomentar.
 
 ### 4. Popular o estoque
 
@@ -383,23 +383,23 @@ que foi confirmada ao vivo. Consultar antes de investigar do zero.
 
 ## Backlog / pendências conhecidas
 
-- **Pesos errados — 4 produtos, PARTE 2B do SQL (decisão pendente do negócio).**
-  Auditados contra o CIGAM em 06/08/2026 (ver seção da auditoria acima). Os 42
-  produtos de 1kg que estavam zerados entram na PARTE 2A, que é neutra em preço.
-  Sobram estes 4, que **aumentam o preço cobrado**:
+- **Pesos errados — RESOLVIDO em 06/08/2026, aplicado direto no banco.** Os 4
+  produtos com peso errado foram corrigidos por decisão do usuário, para o valor
+  cobrado bater com a tabela 005 do CIGAM. O `employee_price` deles já batia; o
+  errado era só o peso.
 
-  | código | embalagem | peso no banco | cobra hoje | passaria a cobrar |
+  | código | embalagem | peso antes | cobrava | passou a cobrar |
   |---|---|---|---|---|
-  | `002005000027` | 5 kg | 0 (usa 1) | R$ 10,90 | R$ 54,50 |
-  | `002003000033` | 3 kg | 0 (usa 1) | R$ 18,55 | R$ 55,65 |
+  | `002005000027` | 5 kg | 0 (usa 1) | R$ 10,90 | **R$ 54,50** (5×) |
+  | `002003000033` | 3 kg | 0 (usa 1) | R$ 18,55 | **R$ 55,65** (3×) |
   | `002006000017` | 7 kg | 6 | R$ 38,40 | R$ 44,80 |
   | `002006000016` | 7 kg | 6 | R$ 38,40 | R$ 44,80 |
 
-  Para dimensionar: o Pão de Queijo Premium de **1 kg** custa R$ 14,85, e o
-  Ímpar de **5 kg** está saindo por R$ 10,90 — mais barato que o de 1 kg.
-  Enquanto não rodar, o efeito colateral é a quantidade em kg lançada no CIGAM
-  ficar menor que a real nesses 4 itens (o estoque do ERP diverge a cada
-  pedido). **Não é decisão técnica** — é reajuste para quem compra esses itens.
+  Foi um **reajuste real** para quem compra esses itens — o Pão de Queijo Ímpar
+  de 5 kg saía por R$ 10,90, menos que o Premium de 1 kg (R$ 14,85). Além do
+  preço, isso conserta a baixa de estoque no ERP (o pacote de 5kg dava baixa de
+  1kg). Reverter = voltar os pesos para 0, 0, 6, 6.
+  Restam os 42 produtos de 1kg da PARTE 2A, que são neutros em preço.
 - **Pedidos descartados (06/08/2026):** os 20 pedidos `PENDING` de 10/07 a 06/08
   nunca foram ao CIGAM (integração desligada) e já haviam sido resolvidos na
   mão. Decisão do usuário: descartar, senão viraria pedido duplicado no ERP.

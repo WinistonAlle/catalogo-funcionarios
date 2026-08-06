@@ -91,30 +91,34 @@ update public.products set weight = 1
  );
 
 -- ---------------------------------------------------------------------
--- 2B — MUDA O PRECO COBRADO DO FUNCIONARIO. NAO RODAR SEM DECIDIR.
+-- 2B — JA APLICADO EM 06/08/2026, direto no banco. Rodar de novo e inofensivo
+-- (idempotente), mas nao e necessario.
 --
--- Estes 4 produtos estao com o peso errado, e por isso vem sendo vendidos
--- ABAIXO do proporcional ao tamanho da embalagem:
+-- Estes 4 produtos estavam com o peso errado e vinham sendo vendidos ABAIXO do
+-- proporcional ao tamanho da embalagem. Decisao do usuario em 06/08/2026:
+-- corrigir, para o valor cobrado bater com a tabela 005 do CIGAM.
 --
---   codigo        embalagem  peso no banco  R$/kg   cobra hoje  passaria a cobrar
---   002005000027  5 kg       0 (usa 1)      10,90   R$ 10,90    R$ 54,50
---   002003000033  3 kg       0 (usa 1)      18,55   R$ 18,55    R$ 55,65
---   002006000017  7 kg       6               6,40   R$ 38,40    R$ 44,80
---   002006000016  7 kg       6               6,40   R$ 38,40    R$ 44,80
+--   codigo        embalagem  peso antes  R$/kg   cobrava     passou a cobrar
+--   002005000027  5 kg       0 (usa 1)   10,90   R$ 10,90    R$ 54,50   (5x)
+--   002003000033  3 kg       0 (usa 1)   18,55   R$ 18,55    R$ 55,65   (3x)
+--   002006000017  7 kg       6            6,40   R$ 38,40    R$ 44,80
+--   002006000016  7 kg       6            6,40   R$ 38,40    R$ 44,80
 --
--- Para dimensionar: o Pao de Queijo Premium de 1 kg custa R$ 14,85. O Impar de
--- 5 kg esta saindo por R$ 10,90 — mais barato que o de 1 kg.
+-- Para dimensionar o quanto estava fora: o Pao de Queijo Premium de 1 kg custa
+-- R$ 14,85, e o Impar de 5 kg saia por R$ 10,90 — mais barato que o de 1 kg.
 --
--- Ou seja, isto NAO e so uma correcao tecnica: e um reajuste real para quem
--- compra esses 4 itens (num caso, 5x). Precisa de decisao do negocio, e vale
--- avisar os funcionarios antes. Enquanto nao rodar, o unico efeito colateral e
--- a quantidade em kg lancada no CIGAM ficar menor que a real nesses 4 itens.
+-- O employee_price desses 4 ja batia com a tabela 005; o errado era so o peso.
+-- Com o peso certo, preco/kg x peso passa a bater com o CIGAM E a baixa de
+-- estoque no ERP fica correta (o pacote de 5kg deixa de dar baixa de 1kg).
+--
+-- ATENCAO: foi um reajuste real para quem compra esses itens (num caso, 5x).
+-- Se precisar reverter, basta voltar os pesos antigos (0, 0, 6, 6).
 -- ---------------------------------------------------------------------
 
--- update public.products set weight = 5 where cigam_code = '002005000027';  -- PdQ Impar 30g PCT 5KG
--- update public.products set weight = 3 where cigam_code = '002003000033';  -- GG Kibe c/ Creme de Alho 30g 3KG
--- update public.products set weight = 7 where cigam_code = '002006000017';  -- Pao Frances Integral 12h 70g PCT 7KG
--- update public.products set weight = 7 where cigam_code = '002006000016';  -- Pao Frances Integral 6h 70g PCT 7KG
+update public.products set weight = 5 where cigam_code = '002005000027';  -- PdQ Impar 30g PCT 5KG
+update public.products set weight = 3 where cigam_code = '002003000033';  -- GG Kibe c/ Creme de Alho 30g 3KG
+update public.products set weight = 7 where cigam_code = '002006000017';  -- Pao Frances Integral 12h 70g PCT 7KG
+update public.products set weight = 7 where cigam_code = '002006000016';  -- Pao Frances Integral 6h 70g PCT 7KG
 
 -- Conferencia (so le) — lista todo KG cujo peso diverge do que o nome indica:
 -- select cigam_code, name, weight from public.products
