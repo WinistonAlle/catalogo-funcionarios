@@ -1,5 +1,5 @@
 /**
- * Smoke test da conexão com o CIGAM (somente leitura, não cria nada).
+ * Smoke test da conexão com o CIGAM (somente login no portal, não cria nada).
  * Uso: npm run cigam:check
  */
 import dotenv from "dotenv";
@@ -10,16 +10,12 @@ import { CigamClient } from "./client";
 async function main() {
   const client = new CigamClient();
 
-  console.log("🔐 Autenticando no CIGAM...");
+  console.log("🔐 Logando no portal do representante...");
   await client.autenticar();
-  console.log("✅ Autenticado.");
+  console.log("✅ Login OK — sessão do portal criada (CGPortal_Token).");
 
-  const sessaoOk = await client.verificarSessao();
-  console.log(sessaoOk ? "✅ Sessão válida." : "❌ Sessão inválida.");
-
-  console.log("🔎 Consultando pedido de teste (inexistente, só para validar acesso)...");
-  const pedido = await client.buscarPedido("CHECK0");
-  console.log("✅ Módulo de pedidos acessível. Retorno:", pedido);
+  const ok = await client.verificarSessao();
+  console.log(ok ? "✅ Sessão válida." : "❌ Sessão inválida.");
 
   console.log("\n🏁 Conexão com o CIGAM OK.");
 }

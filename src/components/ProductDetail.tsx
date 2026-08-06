@@ -14,6 +14,7 @@ import { Input } from "./ui/input";
 import { useCart } from "@/contexts/CartContext";
 import { toast } from "./ui/sonner";
 import { getUnitPrice } from "@/lib/pricing";
+import { isOutOfStock } from "@/lib/stock";
 
 interface ProductDetailProps {
   product: Product;
@@ -46,10 +47,7 @@ const ProductDetail: React.FC<ProductDetailProps> = ({
   const isPackage =
     (product as any).isPackage ?? (product as any).is_package ?? false;
 
-  const isInStock =
-    (product as any).inStock ??
-    (product as any).in_stock ??
-    true;
+  const isInStock = !isOutOfStock(product);
 
   const unitPrice = getUnitPrice(product);
 

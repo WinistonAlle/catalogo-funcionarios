@@ -6,6 +6,8 @@ import { supabase } from "@/lib/supabase";
 type OrderRow = {
   id: string;
   order_number: string | null;
+  /** Número gerado pelo CIGAM (ex.: "010329") — o que o pessoal do ERP enxerga. */
+  erp_external_id: string | null;
   employee_id: string | null;
   employee_cpf: string | null;
   employee_name: string | null;
@@ -564,6 +566,7 @@ export default function AdminOrders() {
         [
           "id",
           "order_number",
+          "erp_external_id",
           "employee_id",
           "employee_cpf",
           "employee_name",
@@ -585,8 +588,14 @@ export default function AdminOrders() {
       q = q.ilike("employee_name", `%${activeFilters.name.trim()}%`);
     const cpf = onlyDigits(activeFilters.cpf);
     if (cpf) q = q.ilike("employee_cpf", `%${cpf}%`);
-    if (activeFilters.order.trim())
-      q = q.ilike("order_number", `%${activeFilters.order.trim()}%`);
+    // Busca casa com o NOSSO número (GM-...) ou com o do CIGAM (ex.: 010329),
+    // pra quem chega com um papel do ERP na mão achar o pedido aqui.
+    // Vírgula/parêntese quebram a sintaxe do .or() do PostgREST — removidos.
+    const termoPedido = activeFilters.order.trim().replace(/[(),]/g, "");
+    if (termoPedido)
+      q = q.or(
+        `order_number.ilike.%${termoPedido}%,erp_external_id.ilike.%${termoPedido}%`,
+      );
     if (activeFilters.status) q = q.eq("status", activeFilters.status);
     if (startDate) q = q.gte("created_at", startDate.toISOString());
     if (endDate) q = q.lte("created_at", endDate.toISOString());
@@ -646,6 +655,7 @@ export default function AdminOrders() {
         [
           "id",
           "order_number",
+          "erp_external_id",
           "employee_id",
           "employee_cpf",
           "employee_name",
@@ -1613,6 +1623,11 @@ export default function AdminOrders() {
                           <div style={styles.mobileTitle}>
                             {o.order_number || "—"}
                           </div>
+                          {o.erp_external_id && (
+                            <div style={styles.cigamRef}>
+                              CIGAM {o.erp_external_id}
+                            </div>
+                          )}
                           <div
                             style={styles.mobileSub}
                             title={o.employee_name || ""}
@@ -1788,6 +1803,11 @@ export default function AdminOrders() {
               <div style={{ minWidth: 0 }}>
                 <div style={styles.modalTitle}>
                   Pedido {selected.order_number || "—"}
+                  {selected.erp_external_id && (
+                    <span style={styles.cigamRefInline}>
+                      CIGAM {selected.erp_external_id}
+                    </span>
+                  )}
                 </div>
                 <div style={styles.modalSub}>
                   {selected.employee_name || "Nome não encontrado"} •{" "}
@@ -3099,6 +3119,22 @@ const styles: Record<string, CSSProperties> = {
   mobileTop: { display: "flex", justifyContent: "space-between", gap: 12 },
   mobileTitle: { fontSize: 14, fontWeight: 1000 },
   mobileSub: { marginTop: 4, fontSize: 12, opacity: 0.75 },
+
+  // Número do pedido no CIGAM. Monoespaçado porque é um código do ERP que as
+  // pessoas comparam dígito a dígito com o que veem na tela do CIGAM.
+  cigamRef: {
+    marginTop: 2,
+    fontSize: 11,
+    opacity: 0.6,
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  },
+  cigamRefInline: {
+    marginLeft: 8,
+    fontSize: 11,
+    fontWeight: 700,
+    opacity: 0.6,
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  },
 
   mobileBottom: {
     marginTop: 12,

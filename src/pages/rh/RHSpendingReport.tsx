@@ -39,6 +39,8 @@ type OrderItem = {
 type OrderRow = {
   id: string;
   order_number: string | null;
+  /** Número gerado pelo CIGAM — só existe depois que o pedido sincroniza. */
+  erp_external_id: string | null;
   employee_cpf: string | null;
   employee_name: string | null;
   total_items: number | null;
@@ -596,6 +598,7 @@ export default function RHSpendingReport() {
         `
         id,
         order_number,
+        erp_external_id,
         employee_cpf,
         employee_name,
         total_items,
@@ -940,7 +943,10 @@ export default function RHSpendingReport() {
                     <OrderTop>
                       <div>
                         <OrderTitle>{order.order_number || "Pedido sem número"}</OrderTitle>
-                        <OrderMeta>{formatDateTime(order.created_at)}</OrderMeta>
+                        <OrderMeta>
+                          {formatDateTime(order.created_at)}
+                          {order.erp_external_id ? ` • CIGAM ${order.erp_external_id}` : ""}
+                        </OrderMeta>
                       </div>
 
                       <StatusBadge $status={status || "sem_status"}>{status || "sem status"}</StatusBadge>

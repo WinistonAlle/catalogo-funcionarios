@@ -1,47 +1,48 @@
 /**
- * Cria UM pedido de teste no CIGAM para validação visual e depois consulta o
- * resultado. Uso: npx tsx automation/cigam/test-pedido.ts
+ * Cria UM pedido de teste no CIGAM (via API REST) para validação visual.
+ * O CIGAM gera o número do pedido — confira na tela e exclua depois.
+ * Uso: npx tsx automation/cigam/test-pedido.ts
  */
 import dotenv from "dotenv";
 dotenv.config();
 
 import { CigamClient } from "./client";
 
-const CODIGO_PEDIDO_TESTE = "TESTE1";
-
 async function main() {
   const client = new CigamClient();
 
-  console.log(`🧪 Criando pedido de teste ${CODIGO_PEDIDO_TESTE} no CIGAM...`);
+  console.log("🔐 Logando no portal do representante...");
+  await client.autenticar();
+  console.log("✅ Sessão criada.");
 
-  const resultado = await client.criarPedidoCompleto(
+  console.log("🧪 Criando pedido de teste no CIGAM...");
+  const { cigamOrderId, itensEnviados, liberadoParaFaturamento } = await client.criarPedidoCompleto(
     {
-      codigo: CODIGO_PEDIDO_TESTE,
+      codigo: "TESTE-LOCAL",
       observacao: "*** PEDIDO DE TESTE - INTEGRACAO CATALOGO FUNCIONARIOS - PODE EXCLUIR ***",
       dataPedido: new Date().toISOString().slice(0, 10),
-      ...(process.env.CIGAM_TIPO_NOTA ? { tipoNota: process.env.CIGAM_TIPO_NOTA } : {}),
     },
     [
       {
-        codigoMaterial: "2004000007", // Chipa – Pacote 1kg
+        codigoMaterial: "002003000009", // SALG FESTA KIBE TRADICIONAL PCT 50 UNID
         quantidade: 1,
-        precoUnitario: 15.25,
+        precoUnitario: 20.15,
+        unidadeMedida: "PCT",
       },
     ]
   );
 
-  console.log("✅ Resultado:", resultado);
-
-  console.log("🔎 Conferindo no CIGAM...");
-  const pedido = await client.buscarPedido(CODIGO_PEDIDO_TESTE);
-  console.log(JSON.stringify(pedido, null, 2).slice(0, 3000));
-
-  const itens = await client.buscarItensPedido(CODIGO_PEDIDO_TESTE);
-  console.log("Itens:", JSON.stringify(itens, null, 2).slice(0, 2000));
+  console.log(`\n✅ Pedido criado no CIGAM: ${cigamOrderId} (${itensEnviados} item(ns)).`);
+  console.log(
+    liberadoParaFaturamento
+      ? "   Controle: 30 (Liberado para Faturamento)."
+      : "   ⚠️  Controle segue em 20 — não foi liberado para faturamento automaticamente."
+  );
+  console.log("   Confira na tela do portal: Tipo Operação e os totais devem estar preenchidos");
+  console.log("   (é o que o CalcularImposto faz). Depois exclua o pedido de teste.");
 }
 
 main().catch((err) => {
   console.error("❌ Falha no pedido de teste:", err?.message ?? err);
-  if (err?.cigamMessages?.length) console.error("Mensagens CIGAM:", err.cigamMessages);
   process.exit(1);
 });

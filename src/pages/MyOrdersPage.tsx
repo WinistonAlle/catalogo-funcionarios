@@ -62,6 +62,8 @@ type OrderItem = {
 type Order = {
   id: string;
   order_number: string;
+  /** Número gerado pelo CIGAM — só existe depois que o pedido sincroniza. */
+  erp_external_id?: string | null;
   employee_cpf?: string;
   total_items: number;
   total_value: number;
@@ -263,6 +265,7 @@ const MyOrdersPage: React.FC = () => {
           `
           id,
           order_number,
+          erp_external_id,
           employee_cpf,
           total_items,
           total_value,
@@ -681,6 +684,11 @@ const MyOrdersPage: React.FC = () => {
                         <span className="text-sm font-semibold text-gray-900">
                           {orderNumber}
                         </span>
+                        {order.erp_external_id && (
+                          <span className="text-[11px] font-mono text-gray-400">
+                            CIGAM {order.erp_external_id}
+                          </span>
+                        )}
                       </div>
                       <div className="text-xs text-gray-500 mt-0.5">
                         {new Date(order.created_at).toLocaleString("pt-BR")}

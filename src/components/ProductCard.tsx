@@ -10,6 +10,7 @@ import ProductDetail from "./ProductDetail";
 import { toast } from "./ui/sonner";
 import { supabase } from "@/lib/supabase";
 import { getUnitPrice } from "@/lib/pricing";
+import { isOutOfStock } from "@/lib/stock";
 
 interface ProductCardProps {
   product: Product;
@@ -39,7 +40,7 @@ const ProductCard: React.FC<ProductCardProps> = ({
   const [isDetailOpen, setIsDetailOpen] = useState(false);
 
   const unitPrice = getUnitPrice(product);
-  const isAvailable = product.inStock !== false;
+  const isAvailable = !isOutOfStock(product);
 
   const currentItem = cartItems.find((item) => item.product.id === product.id);
   const quantity = currentItem?.quantity || 0;

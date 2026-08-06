@@ -7,6 +7,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
 import { processPendingOrders } from "./cigam/process-pending-orders";
+import { syncEstoque } from "./cigam/sync-estoque";
+import { CigamClient } from "./cigam/client";
 import {
   authorizePrivilegedUser,
   getBearerToken,
@@ -344,6 +346,95 @@ app.post("/integration/cigam/pedidos/exec", async (req, res) => {
   }
 });
 
+/**
+ * Consulta de estoque ao vivo (usado pelo app no adicionar/checkout).
+ * Público e somente-leitura — saldo de estoque não é dado sensível.
+ * GET /automation/estoque?materiais=cod1,cod2  → { saldos: { cod: number } }
+ * Material sem linha de estoque simplesmente não aparece no retorno
+ * (o app trata ausência como disponível / fail-open).
+ */
+const cigamStockClient = new CigamClient();
+
+app.get("/estoque", async (req, res) => {
+  try {
+    const raw = String(req.query.materiais ?? "").trim();
+    if (!raw) return res.json({ saldos: {} });
+    const codigos = raw.split(",").map((c) => c.trim()).filter(Boolean).slice(0, 100);
+
+    // Mesmo número do sync (disponível, não físico) — senão o checkout ao vivo
+    // liberaria item que a listagem já mostrou como esgotado, e vice-versa.
+    // O carrinho tem poucos itens, então a concorrência baixa não pesa aqui.
+    const saldos = await cigamStockClient.buscarDisponibilidades(codigos, { concorrencia: 4 });
+    return res.json({ saldos: Object.fromEntries(saldos) });
+  } catch (err: any) {
+    // Fail-open: em erro, o app usa o último saldo do Supabase e não bloqueia.
+    return res.status(502).json({ saldos: {}, error: err?.message || "Falha ao consultar estoque." });
+  }
+});
+
+/**
+ * Sync periódico de estoque CIGAM → Supabase. Desligado por padrão; liga com
+ * STOCK_SYNC_INTERVAL_MS > 0 (ex.: 300000 = 5 min).
+ */
+const STOCK_SYNC_INTERVAL_MS = Number(process.env.STOCK_SYNC_INTERVAL_MS ?? 0);
+let stockSyncRunning = false;
+
+async function runStockSync() {
+  if (stockSyncRunning) return;
+  stockSyncRunning = true;
+  try {
+    const r = await syncEstoque({ supabase, dryRun: false });
+    console.log(`📦 Estoque sync: ${r.gravados} gravados (${r.comSaldo} c/ saldo, ${r.semLinha} sem linha).`);
+  } catch (err: any) {
+    console.error("📦 Estoque sync falhou:", err?.message ?? err);
+  } finally {
+    stockSyncRunning = false;
+  }
+}
+
+/**
+ * Disparo automático da integração CIGAM: varre pedidos pendentes de tempos em
+ * tempos e lança no ERP. Desligado por padrão — só liga se
+ * CIGAM_AUTO_SYNC_INTERVAL_MS > 0 (ex.: 120000 = 2 min). Mantém desligado até a
+ * condição de pagamento (desconto em folha) estar configurada.
+ */
+const CIGAM_AUTO_SYNC_INTERVAL_MS = Number(process.env.CIGAM_AUTO_SYNC_INTERVAL_MS ?? 0);
+let cigamAutoSyncRunning = false;
+
+async function runCigamAutoSync() {
+  if (cigamAutoSyncRunning) return; // evita sobreposição de execuções
+  cigamAutoSyncRunning = true;
+  try {
+    const results = await processPendingOrders({ supabase, limit: 50, dryRun: false });
+    if (results.length > 0) {
+      const done = results.filter((r) => r.status === "DONE").length;
+      const errors = results.filter((r) => r.status === "ERROR");
+      console.log(`🧾 CIGAM auto-sync: ${done} enviado(s), ${errors.length} com erro.`);
+      for (const e of errors) console.log(`   ⚠️ ${e.orderNumber}: ${e.error}`);
+    }
+  } catch (err: any) {
+    console.error("🧾 CIGAM auto-sync falhou:", err?.message ?? err);
+  } finally {
+    cigamAutoSyncRunning = false;
+  }
+}
+
 app.listen(PORT, () => {
   console.log(`🧩 Webhook de operações rodando em http://localhost:${PORT}`);
+  if (CIGAM_AUTO_SYNC_INTERVAL_MS > 0) {
+    const segundos = Math.round(CIGAM_AUTO_SYNC_INTERVAL_MS / 1000);
+    console.log(`🧾 CIGAM auto-sync LIGADO — varrendo pedidos pendentes a cada ${segundos}s.`);
+    setInterval(runCigamAutoSync, CIGAM_AUTO_SYNC_INTERVAL_MS);
+  } else {
+    console.log("🧾 CIGAM auto-sync desligado (defina CIGAM_AUTO_SYNC_INTERVAL_MS para ligar).");
+  }
+
+  if (STOCK_SYNC_INTERVAL_MS > 0) {
+    const segundos = Math.round(STOCK_SYNC_INTERVAL_MS / 1000);
+    console.log(`📦 Estoque sync LIGADO — sincronizando saldo a cada ${segundos}s.`);
+    setInterval(runStockSync, STOCK_SYNC_INTERVAL_MS);
+    void runStockSync(); // primeira carga logo ao subir
+  } else {
+    console.log("📦 Estoque sync desligado (defina STOCK_SYNC_INTERVAL_MS para ligar).");
+  }
 });

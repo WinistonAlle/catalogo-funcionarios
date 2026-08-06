@@ -58,8 +58,9 @@ function buildItens(order: OrderRow) {
       throw new Error(`Produto sem código CIGAM: ${item.product_name}`);
     }
 
+    const unidade = (produto.cigam_unit ?? "UN").trim().toUpperCase();
     const peso = Number(produto.weight) > 0 ? Number(produto.weight) : 1;
-    const porKg = (produto.cigam_unit ?? "").trim().toUpperCase() === "KG";
+    const porKg = unidade === "KG";
 
     return {
       codigoMaterial: produto.cigam_code,
@@ -67,29 +68,10 @@ function buildItens(order: OrderRow) {
       precoUnitario: porKg
         ? Math.round((item.unit_price / peso) * 100) / 100
         : item.unit_price,
+      unidadeMedida: unidade,
       codigoCentroArmazenagem: centroArmazenagem,
     };
   });
-}
-
-async function reservarCodigoCigam(supabase: SupabaseClient, order: OrderRow): Promise<string> {
-  if (order.erp_external_id) return order.erp_external_id;
-
-  const { data, error } = await supabase.rpc("next_cigam_order_code");
-  if (error || !data) {
-    throw new Error(`Falha ao gerar código CIGAM: ${error?.message ?? "sem retorno"}`);
-  }
-
-  const codigo = String(data);
-  // Persiste ANTES de chamar o CIGAM: se cairmos no meio, a reexecução reusa
-  // o mesmo código e o criarPedidoCompleto retoma de onde parou (idempotente).
-  const { error: upErr } = await supabase
-    .from("orders")
-    .update({ erp_external_id: codigo })
-    .eq("id", order.id);
-  if (upErr) throw new Error(`Falha ao reservar código CIGAM: ${upErr.message}`);
-
-  return codigo;
 }
 
 export async function processPendingOrders(options: {
@@ -122,11 +104,14 @@ export async function processPendingOrders(options: {
     try {
       const itens = buildItens(order);
       const pedido = {
-        codigo: order.erp_external_id ?? "(será gerado)",
+        codigo: order.order_number, // referência nossa; o portal gera o número real
         observacao: buildObservacao(order),
         dataPedido: new Date().toISOString().slice(0, 10),
         ...(process.env.CIGAM_CONDICAO_PAGAMENTO
           ? { codigoCondicaoPagamento: process.env.CIGAM_CONDICAO_PAGAMENTO }
+          : {}),
+        ...(process.env.CIGAM_TABELA_PRECO
+          ? { tabelaPreco: process.env.CIGAM_TABELA_PRECO }
           : {}),
         ...(process.env.CIGAM_TIPO_NOTA ? { tipoNota: process.env.CIGAM_TIPO_NOTA } : {}),
       };
@@ -141,14 +126,37 @@ export async function processPendingOrders(options: {
         continue;
       }
 
-      const codigo = await reservarCodigoCigam(supabase, order);
-      await cigam.criarPedidoCompleto({ ...pedido, codigo }, itens);
+      // Anti-duplicata: o portal gera um número novo a cada criação. Se este
+      // pedido já tem erp_external_id, um cabeçalho já foi criado no CIGAM numa
+      // tentativa anterior (que falhou antes de concluir os itens). NÃO recriar —
+      // sinaliza para revisão manual, senão duplicaria o pedido.
+      if (order.erp_external_id) {
+        const message = `Cabeçalho já existe no CIGAM (${order.erp_external_id}) de tentativa anterior; itens podem estar incompletos. Conferir/completar na tela antes de reprocessar.`;
+        await supabase
+          .from("orders")
+          .update({ erp_status: "ERROR", erp_error: message })
+          .eq("id", order.id)
+          .then(() => undefined, () => undefined);
+        results.push({ orderId: order.id, orderNumber: order.order_number, status: "ERROR", error: message });
+        continue;
+      }
+
+      const { cigamOrderId } = await cigam.criarPedidoCompleto(
+        pedido,
+        itens,
+        // Persiste o número do CIGAM ANTES de lançar os itens: se cair no meio, a
+        // próxima varredura enxerga o erp_external_id e não cria pedido duplicado.
+        async (id) => {
+          await supabase.from("orders").update({ erp_external_id: id }).eq("id", order.id);
+        }
+      );
 
       await supabase
         .from("orders")
         .update({
           erp_status: "DONE",
           erp_error: null,
+          erp_external_id: cigamOrderId,
           erp_synced_at: new Date().toISOString(),
         })
         .eq("id", order.id);
@@ -157,7 +165,7 @@ export async function processPendingOrders(options: {
         orderId: order.id,
         orderNumber: order.order_number,
         status: "DONE",
-        cigamCode: codigo,
+        cigamCode: cigamOrderId,
       });
     } catch (err: any) {
       const message = String(err?.message ?? err).slice(0, 500);

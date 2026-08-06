@@ -7,6 +7,7 @@ import { useNavigate } from "react-router-dom";
 import { createOrder } from "@/services/orders";
 import { supabase } from "@/lib/supabase";
 import { getLineSubtotal, getUnitPrice } from "@/lib/pricing";
+import { checkStockLive } from "@/lib/stock";
 import { getSaoPauloPayCycleKey } from "@/lib/payCycle";
 
 import logo from "../images/logoc.png";
@@ -64,6 +65,8 @@ const Checkout: React.FC = () => {
   const { cartItems, cartTotal, clearCart } = useCart();
   const navigate = useNavigate();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [outOfStockIds, setOutOfStockIds] = useState<Set<string>>(new Set());
+  const [checkingStock, setCheckingStock] = useState(false);
 
   // ✅ employee reativo (NÃO congele em useMemo([]))
   const [employee, setEmployee] = useState<any>(() => safeGetEmployee() ?? {});
@@ -301,6 +304,30 @@ const Checkout: React.FC = () => {
     if (!canPayWithWallet) {
       setPurchaseFlowNotice("insufficient_balance");
       return;
+    }
+
+    // Reconsulta de estoque ao vivo: bloqueia se algum item ficou sem estoque.
+    // Fail-open: se o CIGAM não responder, checkStockLive volta vazio e não bloqueia.
+    setCheckingStock(true);
+    try {
+      const saldos = await checkStockLive(cartItems.map((ci) => ci.product.cigam_code));
+      const semEstoque = cartItems.filter((ci) => {
+        const code = (ci.product.cigam_code ?? "").trim();
+        if (!code || !saldos.has(code)) return false; // desconhecido = disponível
+        return (saldos.get(code) ?? 0) <= 0;
+      });
+      if (semEstoque.length > 0) {
+        setOutOfStockIds(new Set(semEstoque.map((ci) => ci.product.id)));
+        toast.error("Item sem estoque", {
+          description: `${semEstoque
+            .map((ci) => ci.product.name)
+            .join(", ")} ficou sem estoque. Remova ou ajuste o carrinho antes de finalizar.`,
+        });
+        return;
+      }
+      setOutOfStockIds(new Set());
+    } finally {
+      setCheckingStock(false);
     }
 
     setIsSubmitting(true);
@@ -722,10 +749,24 @@ const Checkout: React.FC = () => {
         </div>
 
         <div className="space-y-4 mb-6">
-          {cartItems.map((item) => (
-            <div key={item.product.id} className="flex justify-between items-center border-b pb-3">
+          {cartItems.map((item) => {
+            const semEstoque = outOfStockIds.has(item.product.id);
+            return (
+            <div
+              key={item.product.id}
+              className={`flex justify-between items-center border-b pb-3 ${
+                semEstoque ? "bg-red-50 -mx-2 px-2 rounded-md border-red-200" : ""
+              }`}
+            >
               <div>
-                <p className="font-medium text-sm md:text-base">{item.product.name}</p>
+                <p className="font-medium text-sm md:text-base">
+                  {item.product.name}
+                  {semEstoque && (
+                    <span className="ml-2 inline-block align-middle bg-red-600 text-white font-bold px-2 py-0.5 rounded-full text-[10px]">
+                      Sem estoque
+                    </span>
+                  )}
+                </p>
                 <p className="text-xs md:text-sm text-gray-600">
                   {item.quantity} ×{" "}
                   {getUnitPrice(item.product).toLocaleString("pt-BR", {
@@ -742,7 +783,8 @@ const Checkout: React.FC = () => {
                 )}
               </p>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         <div className="flex justify-between items-center mb-6">
@@ -769,10 +811,10 @@ const Checkout: React.FC = () => {
             type="button"
             className="uiverse-aries flex-1"
             onClick={handleConfirm}
-            disabled={isSubmitting || walletLoading || Boolean(walletError)}
-            aria-busy={isSubmitting ? "true" : "false"}
+            disabled={isSubmitting || checkingStock || walletLoading || Boolean(walletError)}
+            aria-busy={isSubmitting || checkingStock ? "true" : "false"}
           >
-            {isSubmitting ? "Enviando..." : "Confirmar pedido"}
+            {checkingStock ? "Verificando estoque..." : isSubmitting ? "Enviando..." : "Confirmar pedido"}
           </button>
         </div>
 

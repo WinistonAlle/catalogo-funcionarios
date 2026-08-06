@@ -47,7 +47,10 @@ export interface Product {
   isLaunch?: boolean;
   featured?: boolean; // Se deve aparecer em destaque
   extraInfo?: ProductExtraInfo; // Info adicional para a view expandida
-  inStock?: boolean; // Se está em estoque (opcional, default true)
+  inStock?: boolean; // Flag manual de disponibilidade (opcional, default true)
+  cigam_code?: string | null; // Código do material no CIGAM (para consultar estoque)
+  stock_qty?: number | null; // Saldo sincronizado do CIGAM. null = desconhecido (disponível)
+  stock_synced_at?: string | null; // Quando o saldo foi sincronizado
   isHidden?: boolean; // Se está oculto do catálogo, mas preservado para uso futuro
 }
 

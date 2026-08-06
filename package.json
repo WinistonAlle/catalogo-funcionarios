@@ -13,7 +13,8 @@
     "automation:webhook": "tsx automation/operations-webhook.ts",
     "automation:sheet-sync": "tsx automation/sheet-sync-service.ts",
     "cigam:check": "tsx automation/cigam/check.ts",
-    "cigam:pending": "tsx automation/cigam/process-pending-orders.ts"
+    "cigam:pending": "tsx automation/cigam/process-pending-orders.ts",
+    "cigam:estoque": "tsx automation/cigam/sync-estoque.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",
