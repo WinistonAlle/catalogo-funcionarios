@@ -15,6 +15,36 @@ Os pedidos são lançados no ERP **CIGAM**.
 
 ---
 
+# 📍 Trabalhe neste projeto DIRETO NO SERVIDOR
+
+**Decisão do Winiston (10/08/2026).** O lugar certo de mexer neste projeto é a
+sessão do Claude que roda **no servidor**, não a máquina de desenvolvimento.
+Motivo: **o Supabase é local lá** (`127.0.0.1:54321` REST, `127.0.0.1:54322`
+Postgres). Só de lá se alcança o Postgres para rodar migração, e é lá que estão
+o `.env` real, o PM2 e o `dist/` que o nginx serve.
+
+**O que só funciona no servidor:**
+
+- Rodar SQL/migração (`psql` no `127.0.0.1:54322`)
+- `pm2 restart webhook` / `pm2 list`
+- `npm run build` que efetivamente publica (nginx serve
+  `/var/www/catalogo/current/dist`)
+- Os comandos `cigam:*` com o `.env` correto (`SUPABASE_URL` aponta pro local)
+
+**A pegadinha da máquina de dev:** a MESMA instância do Supabase está exposta em
+`https://apifuncionarios.gostinhomineiro.com`. Então, do Mac, **a REST API de
+produção é alcançável** — dá para ler e ESCREVER dado real com a service role
+key do `.env`. Confirmado em 10/08/2026 (auditamos o estado do banco por lá).
+Isso é útil para **diagnóstico read-only** e nada mais: o Postgres em si não é
+alcançável de fora, então migração não roda, e rodar `cigam:pending` do Mac
+mandaria pedido real pro CIGAM apontando pro banco errado se o `SUPABASE_URL`
+não fosse sobrescrito. **Não escreva em produção a partir da máquina de dev.**
+
+Fluxo correto: editar código e commitar de onde for conveniente → no servidor,
+`git pull` + `npm ci` + `npm run build` → SQL → `cigam:*` → `pm2 restart`.
+
+---
+
 # 🛑 PARE — LEIA ANTES DE EXECUTAR QUALQUER COISA
 
 **Esta é uma máquina de PRODUÇÃO.** Pedidos, saldos e preços aqui são reais, e o
@@ -65,6 +95,24 @@ restart do webhook. Nunca inverta SQL e comandos `cigam:*`.
 Estado em 06/08/2026, confirmado consultando o banco de produção: **nada disso
 foi feito**. 0 pedidos foram ao CIGAM, as colunas do SQL não existem, nenhum
 pedido foi descartado. Confirme com o Winiston (bloco acima) antes de agir.
+
+**Reauditado em 10/08/2026 (pela REST pública, do Mac): continua tudo igual.**
+`products.stock_qty` e `orders.erp_nota_fiscal` não existem, 0 pedidos com
+`erp_external_id`, 0 `DISCARDED`, e **20 pedidos `PENDING`** (de 10/07 a 06/08).
+
+⚠️ **Os 20 `PENDING` são o risco número um.** São pedidos reais de julho, já
+entregues fora do sistema. Rodar `cigam:pending` antes da PARTE 5 manda **os 20
+de uma vez pro CIGAM, todos efetivados com REC** — irreversível. PARTE 5 (ou um
+filtro equivalente) vem ANTES de qualquer `cigam:pending`.
+
+⚠️ **Decisão pendente do Winiston:** o corte de data da PARTE 5 inclui o pedido
+da **CARLA CRISTINA (06/08)**. Perguntar se ele entra no descarte ou se é pedido
+válido a enviar, antes de rodar.
+
+**Recomendação para o primeiro pedido real** (a série REC nunca foi exercitada):
+rodar o primeiro disparo com `CIGAM_AUTO_EFETIVAR_PEDIDO=0`, conferir o pedido
+no CIGAM, e só então ligar `=1` e efetivar. Assim o primeiro contato com a REC é
+controlado em vez de acontecer sozinho no próximo pedido de um funcionário.
 
 ### 1. `git pull` **e rebuildar o frontend**
 
