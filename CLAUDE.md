@@ -226,10 +226,24 @@ O que torna isso corrigível sem quebrar nada: os caminhos que mexem em dinheiro
 (`place_order_with_wallet_v2`, `gm_apply_balance_delta`, `handle_wallet_on_orders`)
 e o login (`get_employee_by_cpf`) são **SECURITY DEFINER** e ignoram RLS.
 
-`scripts/2026-08-12-seguranca-rls.sql` tem o plano em partes, da de risco zero
-(revogar TRUNCATE/DELETE) à que precisa de desenho. **Quem roda é o Winiston** —
-a PARTE 3 derruba as telas de RH se os privilegiados não estiverem vinculados ao
-Supabase Auth.
+**Já aplicado em 12/08/2026:** `TRUNCATE` e `DELETE` revogados de `anon`/
+`authenticated` em orders, order_items, employees, profiles e
+admin_operation_logs (`products.delete` ficou — a tela de admin usa).
+
+⚠️ **Descoberta que muda o plano:** os 5 admins e os 2 usuários de RH estão com
+`auth_user_id NULL` e `hr_users` está **vazia**. Ou seja, as políticas `_hr`/
+`_rh` não casam com ninguém, e hoje são as políticas `USING (true)` que fazem as
+telas de RH funcionarem. **Dropar as `_all` derruba o RH na hora** — não faça
+isso antes de vincular os privilegiados ao Supabase Auth.
+
+Por isso a proteção do saldo virou um **gatilho** em vez de uma mudança de
+política: `scripts/2026-08-12-bloqueia-alteracao-credito.sql` barra alteração de
+`credito_mensal_cents` vinda de `anon`/`authenticated`, e só quando o valor muda
+de fato. Quem escreve saldo legitimamente (RPC de pagamento, planilha, webhook)
+não é `anon` e passa. **Ainda NÃO aplicado.**
+
+`scripts/2026-08-12-seguranca-rls.sql` tem o resto do plano, incluindo a leitura
+pública dos pedidos com CPF, que precisa de redesenho.
 
 ⚠️ A correção de fundo é arquitetural, e o **PDV já é o modelo**: lá o browser
 nunca fala com o banco/ERP, só com um backend próprio (`server/`) que tem
@@ -258,6 +272,20 @@ telas de Admin/RH passarem por ele em vez de escreverem direto na tabela.
   servidor. Ou seja: **dev local mexe em dado real de produção.**
 - Frontend é PWA — mudanças de schema que quebram bundle antigo precisam de
   colunas de compatibilidade temporárias.
+
+## Testes
+
+`npm test` (vitest, roda em Node — a lógica coberta é pura, não precisa de DOM).
+Cobre `src/**/*.test.ts` e `automation/**/*.test.ts`.
+
+O que está coberto é deliberado: as três lógicas que já custaram dinheiro ou
+tempo — `pricing` (preço/kg × peso, que errou duas vezes em produção), `stock`
+(a assimetria do fail-open) e `efetivacaoConcluiu` (o `success:false` do CIGAM
+que é sucesso). São os pontos onde um "conserto" bem-intencionado quebra dinheiro
+de funcionário sem ninguém perceber.
+
+O projeto irmão (PDV) tem 24 arquivos de teste e é a referência de para onde
+isto deve crescer — lá cada armadilha do CIGAM virou teste.
 
 **`automation/` não é coberto por nenhum tsconfig.** O `tsconfig.app` cobre
 `src/`, o `tsconfig.node` só o `vite.config.ts`. Rodar `npx tsc --noEmit` na raiz
