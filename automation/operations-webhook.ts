@@ -355,16 +355,49 @@ app.post("/integration/cigam/pedidos/exec", async (req, res) => {
  */
 const cigamStockClient = new CigamClient();
 
+/**
+ * Cache curto do saldo ao vivo.
+ *
+ * Este endpoint é público e sem autenticação, e cada chamada vira uma consulta
+ * por material no CIGAM — que admite **uma sessão por usuário**, compartilhada
+ * com o PDV da loja. Sem cache, finalizar carrinho em sequência (ou qualquer um
+ * batendo no endpoint de fora) vira carga direta no ERP e briga de sessão com o
+ * caixa.
+ *
+ * 20s é curto o bastante para o checkout continuar sendo "ao vivo" — a
+ * alternativa que ele substitui é o `stock_qty` do Supabase, que pode ter até
+ * 30 min de idade.
+ */
+const ESTOQUE_CACHE_TTL_MS = 20_000;
+const estoqueCache = new Map<string, { saldo: number; ts: number }>();
+
 app.get("/estoque", async (req, res) => {
   try {
     const raw = String(req.query.materiais ?? "").trim();
     if (!raw) return res.json({ saldos: {} });
     const codigos = raw.split(",").map((c) => c.trim()).filter(Boolean).slice(0, 100);
 
-    // Mesmo número do sync (disponível, não físico) — senão o checkout ao vivo
-    // liberaria item que a listagem já mostrou como esgotado, e vice-versa.
-    // O carrinho tem poucos itens, então a concorrência baixa não pesa aqui.
-    const saldos = await cigamStockClient.buscarDisponibilidades(codigos, { concorrencia: 4 });
+    const agora = Date.now();
+    const saldos = new Map<string, number>();
+    const aConsultar: string[] = [];
+    for (const codigo of codigos) {
+      const cacheado = estoqueCache.get(codigo);
+      if (cacheado && agora - cacheado.ts < ESTOQUE_CACHE_TTL_MS) saldos.set(codigo, cacheado.saldo);
+      else aConsultar.push(codigo);
+    }
+
+    if (aConsultar.length > 0) {
+      // Serial, igual ao sync: concorrência faz o CIGAM devolver linha vazia, e
+      // aqui uma linha vazia é pior que lenta — vira fail-open e LIBERA a venda
+      // de um item esgotado, no exato momento em que deveria barrar. Ver
+      // CigamClient.buscarDisponibilidades.
+      const novos = await cigamStockClient.buscarDisponibilidades(aConsultar);
+      for (const [codigo, saldo] of novos) {
+        saldos.set(codigo, saldo);
+        estoqueCache.set(codigo, { saldo, ts: agora });
+      }
+    }
+
     return res.json({ saldos: Object.fromEntries(saldos) });
   } catch (err: any) {
     // Fail-open: em erro, o app usa o último saldo do Supabase e não bloqueia.
