@@ -49,6 +49,30 @@ export type ProcessResult = {
 };
 
 /**
+ * O CIGAM responde `success:false` mesmo quando a efetivação deu certo, se o
+ * envio do documento ao fisco falhar. A resposta real (confirmada ao vivo no
+ * pedido 011736, 12/08/2026) é:
+ *
+ *     "Efetivação concluída. Erro ao enviar a nota."
+ *
+ * Para o pedido de funcionário isso é o comportamento ESPERADO, não uma falha:
+ * a série é REC (recibo) e **não se quer transmitir nota nenhuma** — decisão do
+ * Winiston, 12/08/2026. O que importa é a primeira frase: a efetivação em si
+ * concluiu e o pedido foi a controle 40.
+ *
+ * Por isso o casamento é pelo prefixo "Efetivação concluída" e não por "erro ao
+ * enviar a nota": o que autoriza tratar como sucesso é a efetivação ter
+ * concluído, não o motivo do envio ter falhado. Uma efetivação que realmente
+ * falhar não traz essa frase e continua virando aviso.
+ *
+ * ⚠️ Não copiar esta tolerância para o PDV: lá a série é CF1/NFE e o envio ao
+ * fisco é justamente o objetivo, então o mesmo erro é uma falha de verdade.
+ */
+function efetivacaoConcluiu(erro: string | undefined): boolean {
+  return /efetiva[çc][ãa]o\s+conclu[íi]da/i.test(erro ?? "");
+}
+
+/**
  * Efetiva o pedido (controle 40) emitindo o documento da série REC.
  *
  * Decisão do usuário 06/08/2026: a efetivação é AUTOMÁTICA. Por isso o padrão
@@ -84,7 +108,9 @@ async function efetivarSeConfigurado(
       itens.map((item, index) => ({ sequencia: index + 1, quantidade: item.quantidade }))
     );
 
-    if (resultado.success) return { notaFiscal: resultado.codigoNotaFiscal };
+    if (resultado.success || efetivacaoConcluiu(resultado.erro)) {
+      return { notaFiscal: resultado.codigoNotaFiscal };
+    }
 
     return {
       notaFiscal: resultado.codigoNotaFiscal,
