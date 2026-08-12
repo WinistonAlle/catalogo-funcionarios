@@ -5,13 +5,16 @@ Funcionário loga por CPF, monta carrinho, paga com saldo mensal (desconto em
 folha) ou na retirada. Admin/RH gerenciam produtos, pedidos, relatórios e saldo.
 Os pedidos são lançados no ERP **CIGAM**.
 
-> **Este arquivo foi reescrito em 06/08/2026** como handoff para o Claude que
-> roda **no servidor**. A sessão anterior (na máquina de desenvolvimento do
-> Winiston) reescreveu a integração CIGAM inteira e validou tudo o que dava para
-> validar de fora. O que falta exige estar no servidor.
+> **Atualizado em 12/08/2026, no servidor.** Nessa sessão a integração saiu do
+> papel: o SQL já havia sido rodado, o estoque foi populado pela primeira vez, o
+> primeiro pedido real foi ao CIGAM e o disparo automático foi ligado. O sistema
+> está **no ar e rodando sozinho**.
 >
-> **Comece pelo bloco 🛑 PARE logo abaixo — ele é obrigatório e pede uma
-> confirmação do Winiston antes de qualquer execução.**
+> O que resta é pontual e está em "⚡ O que ainda falta". As seções de handoff
+> abaixo foram corrigidas — a versão de 06/08 descrevia um deploy que não existe
+> mais e dava como pendente um SQL que já rodou.
+>
+> **O bloco 🛑 PARE continua valendo:** esta é máquina de produção.
 
 ---
 
@@ -21,14 +24,14 @@ Os pedidos são lançados no ERP **CIGAM**.
 sessão do Claude que roda **no servidor**, não a máquina de desenvolvimento.
 Motivo: **o Supabase é local lá** (`127.0.0.1:54321` REST, `127.0.0.1:54322`
 Postgres). Só de lá se alcança o Postgres para rodar migração, e é lá que estão
-o `.env` real, o PM2 e o `dist/` que o nginx serve.
+o `.env` real, o PM2 e o repo que está no ar.
 
 **O que só funciona no servidor:**
 
 - Rodar SQL/migração (`psql` no `127.0.0.1:54322`)
-- `pm2 restart webhook` / `pm2 list`
-- `npm run build` que efetivamente publica (nginx serve
-  `/var/www/catalogo/current/dist`)
+- `pm2 restart webhook` / `pm2 restart frontend` / `pm2 list`
+- `npm run build`, porque **este repo é o que está publicado** — o app PM2
+  `frontend` serve o `dist/` daqui (ver "Como o deploy REALMENTE funciona")
 - Os comandos `cigam:*` com o `.env` correto (`SUPABASE_URL` aponta pro local)
 
 **A pegadinha da máquina de dev:** a MESMA instância do Supabase está exposta em
@@ -50,211 +53,150 @@ Fluxo correto: editar código e commitar de onde for conveniente → no servidor
 **Esta é uma máquina de PRODUÇÃO.** Pedidos, saldos e preços aqui são reais, e o
 CIGAM emite documento fiscal de verdade.
 
-**Antes de rodar qualquer comando deste projeto, você DEVE:**
+**O SQL de migração já rodou** (todas as partes, conferido em 12/08/2026). O
+alerta que existia aqui sobre rodar `cigam:*` antes do SQL não se aplica mais.
 
-1. **Verificar se o SQL de migração já foi rodado** (comando abaixo).
-2. **Perguntar ao Winiston e esperar a resposta dele.** Não deduza pelo
-   resultado do comando, não assuma que "provavelmente já rodou", não siga em
-   frente "só para checar". Ele pediu explicitamente, em 06/08/2026, para ser
-   consultado sobre isso antes de qualquer ação.
+**Ainda assim, antes de rodar qualquer comando que ESCREVE, você DEVE perguntar
+ao Winiston e esperar a resposta.** Vale para `CIGAM_EXEC=1 npm run cigam:pending`
+(cria e efetiva pedido real, irreversível), `STOCK_EXEC=1 npm run cigam:estoque`
+e qualquer `PATCH`/SQL no banco. Leitura e simulação são livres.
+
+Para conferir o estado atual antes de agir:
 
 ```bash
 # Roda daqui mesmo (o Supabase é local). Se não tiver a chave à mão:
 #   KEY=$(grep '^SUPABASE_SERVICE_ROLE_KEY=' .env | cut -d= -f2-)
 
-# 1) As colunas do SQL existem?
-curl -s -H "apikey: $KEY" -H "Authorization: Bearer $KEY" \
-  "http://127.0.0.1:54321/rest/v1/products?select=stock_qty&limit=1"
-curl -s -H "apikey: $KEY" -H "Authorization: Bearer $KEY" \
-  "http://127.0.0.1:54321/rest/v1/orders?select=erp_nota_fiscal&limit=1"
-#    -> "column ... does not exist"  = SQL NÃO rodado
-#    -> [] ou linhas                 = SQL rodado
-
-# 2) Os pedidos antigos foram descartados? (PARTE 5)
+# 1) Estoque está populado? (deve ser ~171 de 172)
 curl -s -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H "Prefer: count=exact" -I \
-  "http://127.0.0.1:54321/rest/v1/orders?select=id&erp_status=eq.DISCARDED"
+  "http://127.0.0.1:54321/rest/v1/products?select=id&stock_qty=not.is.null"
 
-# 3) Algum pedido já foi ao CIGAM? (em 06/08/2026 era 0)
+# 2) Tem pedido preso na fila? (o auto-sync deve zerar isso em até 2 min)
 curl -s -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H "Prefer: count=exact" -I \
-  "http://127.0.0.1:54321/rest/v1/orders?select=id&erp_external_id=not.is.null"
+  "http://127.0.0.1:54321/rest/v1/orders?select=id&erp_status=eq.PENDING"
+
+# 3) Pedidos que foram ao CIGAM
+curl -s -H "apikey: $KEY" -H "Authorization: Bearer $KEY" \
+  "http://127.0.0.1:54321/rest/v1/orders?select=order_number,erp_external_id,erp_error&erp_external_id=not.is.null&order=created_at.desc"
+
+# 4) O disparo automático está mesmo ligado?
+pm2 logs webhook --lines 30 --nostream | grep -E "auto-sync|Estoque sync"
 ```
-
-**Se o SQL NÃO foi rodado, PARE.** Avise o Winiston e não execute nada além de
-leitura. Rodar `cigam:pending` ou `cigam:estoque` antes do SQL faz o pedido ser
-criado no CIGAM — possivelmente já efetivado, com documento REC emitido — e a
-gravação aqui falhar, exigindo reconciliação manual no ERP. O código detecta e
-grita, mas o estrago no CIGAM já terá acontecido.
-
-**A ORDEM É:** `git pull` + `build` → `.env` → **SQL** → `cigam:estoque` →
-restart do webhook. Nunca inverta SQL e comandos `cigam:*`.
 
 ---
 
-## ⚡ AÇÃO IMEDIATA — o que precisa ser feito no servidor
+## ⚡ O que ainda falta
 
-Estado em 06/08/2026, confirmado consultando o banco de produção: **nada disso
-foi feito**. 0 pedidos foram ao CIGAM, as colunas do SQL não existem, nenhum
-pedido foi descartado. Confirme com o Winiston (bloco acima) antes de agir.
+1. **Validar o overlay "Sem Estoque" na tela.** É a única parte do caminho sem
+   validação visual. A cadeia foi conferida por código em 12/08/2026 e está
+   inteira (`Index.tsx` mapeia `stock_qty` → `ProductCard`/`ProductDetail`
+   chamam `isOutOfStock` → overlay em `ProductCard.tsx`), e o dado chega ao PWA
+   pela chave anon. Falta só olhar. O catálogo é rota protegida, então exige
+   login por CPF — **peça um CPF ao Winiston em vez de usar o de um funcionário
+   real** tirado do banco.
+2. **Usuário de integração dedicado no CIGAM** (ver Backlog). Hoje roda na
+   credencial pessoal do Winiston, que é a mesma do PDV da loja — cada login
+   derruba a sessão do outro.
 
-**Reauditado em 10/08/2026 (pela REST pública, do Mac): continua tudo igual.**
-`products.stock_qty` e `orders.erp_nota_fiscal` não existem, 0 pedidos com
-`erp_external_id`, 0 `DISCARDED`, e **20 pedidos `PENDING`** (de 10/07 a 06/08).
+Fora isso, o fluxo está fechado e rodando sozinho.
 
-⚠️ **Os 20 `PENDING` são o risco número um.** São pedidos reais de julho, já
-entregues fora do sistema. Rodar `cigam:pending` antes da PARTE 5 manda **os 20
-de uma vez pro CIGAM, todos efetivados com REC** — irreversível. PARTE 5 (ou um
-filtro equivalente) vem ANTES de qualquer `cigam:pending`.
+## O que foi feito em 12/08/2026
 
-⚠️ **Decisão pendente do Winiston:** o corte de data da PARTE 5 inclui o pedido
-da **CARLA CRISTINA (06/08)**. Perguntar se ele entra no descarte ou se é pedido
-válido a enviar, antes de rodar.
+- **Estoque populado** pela primeira vez: 172 produtos, 171 com saldo.
+- **Primeiro pedido real no CIGAM.** `GM-20260811-4844` (IAN SANTOS RODRIGUES,
+  R$ 69,00) → **CIGAM 011750**. Estreou a série REC.
+- **Disparo automático LIGADO** (ver abaixo).
+- Dois bugs corrigidos, ambos descobertos ao ligar as coisas de verdade — ver
+  "A série REC e o erro que não é erro" e "Por que o sync não apaga saldo".
+- Pedidos `011736` (primeira tentativa do pedido do IAN) e `010329` (teste
+  antigo) foram **excluídos no CIGAM pelo Winiston**. O `011736` foi recriado
+  como `011750`; se um pedido for excluído no ERP de novo, o conserto é voltar
+  `erp_status` para `PENDING` e limpar `erp_external_id` — o processador só
+  varre `PENDING`, então sem isso ele nunca reenvia e o pedido fica órfão.
 
-**Recomendação para o primeiro pedido real** (a série REC nunca foi exercitada):
-rodar o primeiro disparo com `CIGAM_AUTO_EFETIVAR_PEDIDO=0`, conferir o pedido
-no CIGAM, e só então ligar `=1` e efetivar. Assim o primeiro contato com a REC é
-controlado em vez de acontecer sozinho no próximo pedido de um funcionário.
+### Como o deploy REALMENTE funciona
 
-### 1. `git pull` **e rebuildar o frontend**
+⚠️ A versão anterior deste arquivo mandava rodar `git pull && npm run build` em
+`/var/www/catalogo/current` porque "o nginx serve o dist de lá". **Isso é falso
+desde ~10/06/2026.** Aquele diretório está congelado e não é servido por
+ninguém; nenhum arquivo do nginx sequer o menciona.
 
-A branch é `main`, remote `github.com/WinistonAlle/catalogo-funcionarios`.
+Quem serve o frontend é o **app PM2 `frontend`**, que roda
+`npm run preview -- --host 127.0.0.1 --port 4173` com `cwd` em
+`/home/xulio/apps/catalogo-funcionarios`. O nginx (`sites-enabled/default`,
+`server_name funcionarios.gostinhomineiro.com`) faz `proxy_pass` para
+`127.0.0.1:4173`, e `/automation/` para `127.0.0.1:3333` (o webhook).
 
-```bash
-cd /var/www/catalogo/current
-git pull
-npm ci
-npm run build      # OBRIGATÓRIO: o nginx serve /var/www/catalogo/current/dist
-```
-
-O nginx serve o **estático de `dist/`** (ver `deploy/ubuntu/nginx.catalogo.conf`).
-Sem `npm run build`, nenhuma mudança de frontend aparece — inclusive a exibição
-do número do CIGAM no Admin/RH/Meus Pedidos. `git pull` sozinho não basta.
-
-### 2. Atualizar o `.env` — **NÃO vem no `git pull`** (gitignorado)
-
-Este é o passo mais fácil de esquecer e o que causa falha silenciosa.
-Adicionar/conferir:
-
-```bash
-# Empresa do pedido de funcionário: 001 = INDUSTRIA E COMERCIO DE ALIMENTOS
-# GOSTINHO MINEIRO. (O PDV da loja fatura pela 100 = Ímpar. São diferentes.)
-CIGAM_UNIDADE_NEGOCIO=001
-
-# Série da efetivação. REC (recibo) — pedido de funcionário NÃO emite NF-e.
-CIGAM_NOTA_SERIE=REC
-
-# Efetivação automática ligada (decisão do usuário 06/08/2026).
-# O padrão do CÓDIGO já é ligado; esta linha é só para deixar explícito.
-# Para DESLIGAR: trocar para 0 e reiniciar o webhook.
-CIGAM_AUTO_EFETIVAR_PEDIDO=1
-```
-
-Os valores acima **já são o padrão no código**, então nada quebra se forem
-esquecidos — mas deixar explícito evita surpresa se um padrão mudar.
-
-### 3. Rodar o SQL no Supabase — **quem roda é o Winiston**
-
-`scripts/2026-08-06-atualizacao-banco.sql`, colado no SQL Editor.
-
-⚠️ **Não rode este SQL por conta própria.** Daqui o Postgres É alcançável
-(`127.0.0.1:54322`, local — o bloqueio de 54322/5432 vale só para fora do
-servidor), então tecnicamente dá para executar via `psql`. **Não faça isso sem
-o Winiston pedir.** Ele quer rodar e conferir parte por parte: a PARTE 2C mexe
-em preço e a PARTE 5 altera 20 pedidos. Se ele pedir para você rodar, tudo bem —
-mas confirme antes qual parte, e mostre o resultado.
-
-- **PARTE 1 — obrigatória.** Colunas `products.stock_qty`,
-  `products.stock_synced_at`, `orders.erp_nota_fiscal` + índice. Aditiva e
-  idempotente, não altera dado existente.
-- **PARTE 2A — ativa.** 42 produtos KG com `weight = 0` → `1`. **Não muda preço
-  nenhum** (o fallback já usava 1); só torna explícita a quantidade em kg
-  mandada ao CIGAM.
-- **PARTE 2C — ativa.** Corrige sobrepreço latente de 3× em 2 produtos. Também
-  **não aumenta preço**: restaura o valor que sempre foi cobrado. Ver
-  "Preço = preço/kg × peso" adiante.
-- **PARTE 5 — obrigatória.** Descarta os 20 pedidos antigos (ver "Pedidos
-  descartados" adiante). **Confira o corte de data antes de rodar** — do jeito
-  que está, inclui o pedido de 06/08 da CARLA CRISTINA.
-- **PARTE 2B — já aplicada** direto no banco em 06/08/2026 (4 pesos errados,
-  reajuste real de até 5×). Rodar de novo é inofensivo, mas desnecessário.
-- **PARTES 2D, 3 e 4 — comentadas de propósito.** Ler antes de descomentar.
-
-### 4. Popular o estoque
+Ou seja: **este repo, em `/home/xulio/apps/catalogo-funcionarios`, é o que está
+no ar.** O deploy do frontend é:
 
 ```bash
-STOCK_EXEC=1 npm run cigam:estoque
+cd /home/xulio/apps/catalogo-funcionarios
+npm run build
+pm2 restart frontend    # o preview serve o dist do disco
 ```
 
-Esperado (medido em 06/08/2026): **172 produtos, 171 com saldo, 1 desconhecido**,
-e **5 bloqueados** por saldo <= 0.
-
-### 5. Reiniciar o webhook
+Para conferir qual bundle está de fato no ar (o teste que não mente):
 
 ```bash
-pm2 restart webhook     # confirme o nome real com `pm2 list`
+curl -s https://funcionarios.gostinhomineiro.com/ | grep -oE 'assets/index-[A-Za-z0-9_-]+\.js'
+# compare com: grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' dist/index.html
 ```
 
-O `operations-webhook.ts` mudou. **Build/pull no disco não afeta processo em
-execução** — no projeto irmão (PDV) isso já enganou a equipe por várias horas.
-Confirme que o processo reiniciou de verdade antes de dizer que está no ar.
+`deploy/ubuntu/DEPLOY.md` e `deploy/ubuntu/nginx.catalogo.conf` descrevem uma
+arquitetura (systemd + nginx servindo estático) que **não é a que roda**. Trate
+os dois como histórico.
 
-⚠️ **`deploy/ubuntu/DEPLOY.md` está desatualizado nesse ponto:** ele descreve
-serviços systemd (`catalogo-automation.service`, `catalogo-sheet-sync.service`),
-mas a operação real hoje é via **PM2**. Confira o que de fato está rodando
-(`pm2 list` / `systemctl status`) em vez de seguir o DEPLOY.md cegamente. O
-resto dele (nginx servindo `dist/`, `npm ci && npm run build`) continua válido.
+### Disparo automático — LIGADO em 12/08/2026
 
-### 6. Validar o overlay de estoque na tela
+```bash
+CIGAM_AUTO_SYNC_INTERVAL_MS=120000    # 2 min  — varre pedidos PENDING
+STOCK_SYNC_INTERVAL_MS=1800000        # 30 min — sync de estoque CIGAM → Supabase
+```
 
-**Nunca foi testado.** É a única parte do caminho sem validação. Abrir o
-catálogo e conferir que os 5 produtos aparecem com "Sem Estoque".
+Os dois intervalos são deliberadamente diferentes, e a razão importa:
 
-### 7. Testar a série REC (o Winiston vai fazer na prática)
+- **Pedidos a cada 2 min é barato.** `processPendingOrders` faz `return []`
+  antes de instanciar o `CigamClient` quando não há nenhum `PENDING` — logo,
+  varredura vazia **não faz login** e não custa nada.
+- **Estoque a cada 30 min porque bate no CIGAM toda vez** (172 materiais, até 2
+  passadas). Como o CIGAM só admite uma sessão por usuário e o PDV da loja usa a
+  **mesma credencial**, sync agressivo vira guerra de sessão com o caixa da
+  loja. A janela entre um sync e outro é coberta pela reconsulta ao vivo no
+  checkout (`GET /automation/estoque`).
 
-⚠️ **A série REC nunca foi exercitada nesta instância.** O `efetivarPedido` foi
-portado do PDV, onde funciona com `CF1`/`NFE`. O Winiston confirmou que o fluxo é
-idêntico, só trocando a série — mas ninguém rodou ainda.
-
-**Efetivar é irreversível.** No PDV, uma tentativa com parâmetro errado foi
-rejeitada e **queimou um número sequencial de nota real**, que precisou de
-tratamento contábil.
-
-Dois detalhes operacionais importantes:
-
-- `automation/cigam/test-pedido.ts` **para no controle 30** — ele não efetiva.
-  Serve para testar criação, não REC.
-- Depois da PARTE 5 do SQL, **não sobra nenhum pedido `PENDING`**. Logo, o
-  primeiro exercício real da REC vai acontecer no **próximo pedido de verdade**
-  de um funcionário. Se quiser testar de forma controlada antes disso, peça —
-  dá para adaptar o `test-pedido.ts` para efetivar.
-
-### 8. Só depois de tudo acima: ligar o disparo automático
-
-`CIGAM_AUTO_SYNC_INTERVAL_MS` (hoje `0` = desligado; ex.: `120000` = 2 min).
-**Antes de ligar, corrigir os pesos zerados** (PARTE 2 do SQL) — senão o estoque
-do CIGAM diverge a cada pedido.
+O webhook roda uma carga de estoque **na subida** (`void runStockSync()`), então
+todo `pm2 restart webhook` dispara um sync completo.
 
 ---
 
-## Estado atual: construído ≠ ligado
+## Estado atual
 
 | Item | Construído | Ligado em produção |
 |---|---|---|
-| Criar pedido no CIGAM via REST | ✅ validado (pedido 010329) | ❌ |
-| CalcularImposto / controle 30 | ✅ validado | ❌ |
-| Efetivar série REC | ✅ código pronto | ❌ nunca exercitado |
-| Sync de estoque | ✅ validado em dry-run | ❌ falta SQL |
-| Overlay "Sem Estoque" na tela | ✅ código pronto | ❌ nunca testado |
-| Número do CIGAM no app | ✅ | — (aparece quando houver pedido) |
-| Disparo automático | ✅ | ❌ desligado de propósito |
+| Criar pedido no CIGAM via REST | ✅ | ✅ (pedido 011750, real) |
+| CalcularImposto / controle 30 | ✅ | ✅ |
+| Efetivar série REC | ✅ | ✅ exercitado em 12/08/2026 |
+| Sync de estoque | ✅ | ✅ 171/172 com saldo |
+| Overlay "Sem Estoque" na tela | ✅ | ⚠️ dado chega; falta olhar a tela |
+| Número do CIGAM no app | ✅ | ✅ |
+| Disparo automático | ✅ | ✅ 2 min (pedidos) / 30 min (estoque) |
 
 ---
 
 ## Infra (esta máquina É o servidor de produção)
 
-- Processos via **PM2** (não systemd): app `webhook` roda
-  `npm run automation:webhook` (porta 3333, exposto pelo nginx em
-  `/automation/`); app `sheets` + crontab (20 em 20 min) fazem o sync de
-  funcionários via Google Sheets.
+- Processos via **PM2** (não systemd), todos com `cwd` neste repo:
+  - `webhook` — `npm run automation:webhook` (porta 3333, exposto pelo nginx em
+    `/automation/`). É quem roda o auto-sync de pedidos e de estoque.
+  - `frontend` — `npm run preview -- --host 127.0.0.1 --port 4173`. **É o que
+    serve o catálogo**, com o nginx fazendo proxy. Note que o `preview` do
+    `package.json` tem `--port=4174` embutido; quem manda é o `--port 4173` que
+    o PM2 passa depois. Se mexer nisso, confira o `proxy_pass` do nginx junto.
+  - `sheets` + crontab (20 em 20 min) — sync de funcionários via Google Sheets.
+  - A máquina roda outros projetos no mesmo PM2 (`pdv-*`, `totem-loja-*`,
+    `equipgest-*`, `corofinanceiro-*`, `varejo-gm-*`). **Confira o nome antes de
+    reiniciar** — `frontend` sem prefixo é o deste projeto.
 - Supabase self-hosted local: REST em `127.0.0.1:54321`, Postgres em
   `127.0.0.1:54322`. O `.env` (gitignorado) tem as chaves reais.
   A **mesma instância** é exposta publicamente em
@@ -318,6 +260,32 @@ antigo. **Está marcado como superado — não enviar à CIGAM.**
 5. `POST comercial/fa/Pedido/Efetivar` — em `process-pending-orders.ts`
    (`efetivarSeConfigurado`), série **REC**. Controle vai a 40.
    `TipoFrete` deve ser `"F"` (Sem Frete) com os campos de transporte em branco.
+
+### A série REC e o erro que não é erro
+
+Ao efetivar, o CIGAM responde **`success: false`** com:
+
+```
+"Efetivação concluída. Erro ao enviar a nota."
+```
+
+**Isso é sucesso, não falha.** A primeira frase é a que importa: a efetivação
+concluiu e o pedido foi a controle 40. O "erro ao enviar a nota" é a transmissão
+do documento ao fisco — que para pedido de funcionário **não se quer que
+aconteça**, porque a série é REC (recibo) e não NF-e. Confirmado com o Winiston
+em 12/08/2026.
+
+Antes da correção, todo pedido ganhava um `erp_error` mandando "concluir no
+CIGAM Desktop" à toa. Hoje `efetivacaoConcluiu()` casa pelo prefixo
+**"Efetivação concluída"** — e não por "erro ao enviar a nota". A distinção é
+proposital: o que autoriza tratar como sucesso é a efetivação ter concluído, não
+o motivo de o envio ter falhado. Uma efetivação que falhe de verdade não traz
+essa frase e continua virando aviso.
+
+⚠️ **Não copiar essa tolerância para o PDV.** Lá a série é CF1/NFE e transmitir
+ao fisco é justamente o objetivo, então a mesma string é falha real. O
+`types.ts` do PDV documenta que nesse caso o CIGAM pode **gerar um número de NF
+real e queimá-lo** mesmo respondendo `success:false`.
 
 ### Regras de negócio
 
@@ -404,6 +372,30 @@ falha técnica nossa.
 - Saldo **negativo é real e proposital** (o CIGAM comprometeu mais do que tem).
   Não normalizar para 0 — deve bloquear a venda.
 
+### Por que o sync não apaga saldo conhecido
+
+"Material sem linha" é **ambíguo por construção**: pode ser "não tem estoque
+cadastrado" ou "o CIGAM não respondeu isso agora", e não há como distinguir —
+material ausente do Map é a mesma coisa nos dois casos.
+
+Isso mordeu em 12/08/2026, na primeira rodada automática: a varredura manual
+tinha resolvido **171 de 172** materiais e a automática, 25 minutos depois,
+devolveu **26 sem linha** — apagando saldo bom de material que comprovadamente
+tem linha. Com fail-open, os 26 voltaram a aparecer como disponíveis.
+
+Por isso `sync-estoque.ts` **só grava ausência quando não havia saldo conhecido
+antes**. Detalhes que valem a pena não desfazer:
+
+- **Zero real continua sendo gravado.** Zero vem COMO linha do CIGAM, não como
+  ausência — então produto que esgotou de verdade bloqueia normalmente. Só a
+  ausência é preservada.
+- **`stock_synced_at` não avança** no caso preservado, de propósito: o valor
+  mantido é o da última confirmação real e o timestamp precisa continuar
+  dizendo isso. Se um material ficar preservado para sempre, é ali que se vê.
+- O contador `preservados` aparece no log do sync e do webhook. Se ele vier
+  alto toda rodada, o problema é a instabilidade do CIGAM sob carga — mexer na
+  concorrência de `buscarDisponibilidades`, não no gravador.
+
 ---
 
 ## ⚠️ Preço = preço/kg × peso — mexer em `weight` muda o que o funcionário paga
@@ -478,7 +470,8 @@ que foi confirmada ao vivo. Consultar antes de investigar do zero.
 
 - **Pedido 010329** criado em produção por REST puro: cliente `009752`, unidade
   `001`, controle `30`, `TotalPedido`/`TotalFaturamento`/`TotalMercadoria` =
-  20,15 (prova de que o `CalcularImposto` funcionou). Marcado "PODE EXCLUIR".
+  20,15 (prova de que o `CalcularImposto` funcionou). **Excluído no CIGAM pelo
+  Winiston em 12/08/2026** — não procurar por ele.
 - **Dry-run dos pedidos pendentes:** 10/10 sem erro — `cigam_code`, unidade e
   preço válidos em todos.
 - **Dry-run do estoque:** 172 produtos, 171 com saldo, 1 desconhecido. Os 5 que
@@ -528,6 +521,11 @@ que foi confirmada ao vivo. Consultar antes de investigar do zero.
 - Produtos sem `cigam_code` de propósito (alhos avulsos, OMG misto, PdQ
   gourmet 1kg) — pedidos com eles falham com erro claro até ganharem código.
 - Painel/retry de erros de integração (não existe).
+- **Os 56 pedidos `erp_status = 'ERROR'` são lixo da era Saibweb**, não do CIGAM:
+  o `erp_error` deles é timeout de locator do Playwright, e o mais recente é de
+  09/07/2026. Nenhum tem `erp_external_id`. Como o processador só varre
+  `PENDING`, eles ficam parados e são inofensivos — mas poluem qualquer contagem
+  de "pedidos com erro". Limpar junto com o resto do Saibweb (PARTE 3 do SQL).
 - Limpeza dos restos do Saibweb: colunas `saibweb_status`/`saibweb_error` em
   `orders`, `products.saibweb_code`, tabela `saibweb_jobs`. Confirmado em
   06/08/2026 que **não há mais nenhuma referência a saibweb no código**. São
@@ -549,6 +547,24 @@ npm run cigam:pending                  # SIMULAÇÃO dos pedidos pendentes
 CIGAM_EXEC=1 npm run cigam:pending     # REAL — cria e efetiva no CIGAM
 npm run cigam:estoque                  # SIMULAÇÃO do sync de estoque
 STOCK_EXEC=1 npm run cigam:estoque     # REAL — grava stock_qty
+
+npm run build && pm2 restart frontend  # publica o frontend (este repo É o que está no ar)
+pm2 restart webhook                    # recarrega automation/ (roda um sync de estoque na subida)
+pm2 logs webhook --lines 50 --nostream # ver o auto-sync trabalhando
+```
+
+Com o disparo automático ligado, os comandos `cigam:*` são para **diagnóstico e
+casos pontuais** — no dia a dia o webhook já faz o trabalho sozinho. Rodar
+`CIGAM_EXEC=1 npm run cigam:pending` à mão não é errado (o webhook usa a mesma
+função e há guarda contra sobreposição), mas raramente é necessário.
+
+Checar o `automation/` antes de reiniciar (nenhum tsconfig cobre esse
+diretório — `npx tsc --noEmit` na raiz **não checa nada** dele):
+
+```bash
+npx tsc --noEmit --strict --target ES2022 --lib ES2023,DOM --module ESNext \
+  --moduleResolution bundler --skipLibCheck --types node \
+  automation/cigam/*.ts automation/operations-webhook.ts
 ```
 
 Rodando **fora** do servidor, sobrescrever `SUPABASE_URL` para o domínio público
