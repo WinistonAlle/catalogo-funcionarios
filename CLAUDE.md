@@ -205,6 +205,38 @@ todo `pm2 restart webhook` dispara um sync completo.
 
 ---
 
+## 🔓 SEGURANÇA — o banco está aberto para a internet (12/08/2026)
+
+**Não resolvido. É o problema mais grave do projeto hoje.**
+
+O frontend fala direto com o Supabase usando a chave anon, que está embutida no
+bundle JS e é pública por definição, e a REST API está exposta em
+`https://apifuncionarios.gostinhomineiro.com`. `orders`, `order_items`,
+`products`, `profiles` e `admin_operation_logs` estão com **RLS desligado** e
+`anon` tem SELECT/INSERT/UPDATE/DELETE/TRUNCATE em todas. `employees` tem RLS
+ligado, mas `employees_select_all` e `employees_update_all` são `USING (true)` —
+catch-alls que anulam as políticas corretas (`_hr`/`_rh`, por `auth.uid()`) que
+existem logo ao lado.
+
+Confirmado ao vivo pela URL pública, com a chave anon: **356 pedidos com nome e
+CPF de todos os funcionários** são legíveis por qualquer um. E `employees` é
+**gravável** — dá para se dar saldo à vontade.
+
+O que torna isso corrigível sem quebrar nada: os caminhos que mexem em dinheiro
+(`place_order_with_wallet_v2`, `gm_apply_balance_delta`, `handle_wallet_on_orders`)
+e o login (`get_employee_by_cpf`) são **SECURITY DEFINER** e ignoram RLS.
+
+`scripts/2026-08-12-seguranca-rls.sql` tem o plano em partes, da de risco zero
+(revogar TRUNCATE/DELETE) à que precisa de desenho. **Quem roda é o Winiston** —
+a PARTE 3 derruba as telas de RH se os privilegiados não estiverem vinculados ao
+Supabase Auth.
+
+⚠️ A correção de fundo é arquitetural, e o **PDV já é o modelo**: lá o browser
+nunca fala com o banco/ERP, só com um backend próprio (`server/`) que tem
+`requireAuth` e sessão. Aqui esse backend já existe pela metade
+(`automation/operations-webhook.ts`, com `authorizePrivilegedUser`) — falta as
+telas de Admin/RH passarem por ele em vez de escreverem direto na tabela.
+
 ## Infra (esta máquina É o servidor de produção)
 
 - Processos via **PM2** (não systemd), todos com `cwd` neste repo:
