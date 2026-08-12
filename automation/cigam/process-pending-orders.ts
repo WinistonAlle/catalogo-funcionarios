@@ -112,11 +112,23 @@ async function efetivarSeConfigurado(
       return { notaFiscal: resultado.codigoNotaFiscal };
     }
 
+    // O CIGAM às vezes responde `success:false` com o motivo EM BRANCO — visto
+    // no pedido 011850 em 12/08/2026, onde a mensagem saiu como "falhou: .".
+    //
+    // Vazio NÃO é tratado como sucesso de propósito: sem a frase "Efetivação
+    // concluída" não há como saber se o pedido chegou a controle 40, e assumir
+    // que sim engoliria uma falha de verdade. Fica como aviso, que é o
+    // comportamento seguro — o pedido em si está criado e correto no CIGAM.
+    const motivo = resultado.erro?.trim() || "o CIGAM não informou o motivo";
+    const documento = resultado.codigoNotaFiscal
+      ? ` O CIGAM retornou o documento ${resultado.codigoNotaFiscal} — conferir se foi emitido.`
+      : "";
+
     return {
       notaFiscal: resultado.codigoNotaFiscal,
-      aviso: `Pedido ${cigamOrderId} criado, mas a emissão do documento falhou: ${
-        resultado.erro ?? "motivo desconhecido"
-      }. Concluir no CIGAM Desktop.`,
+      aviso:
+        `Pedido ${cigamOrderId} criado, mas a emissão do documento falhou: ${motivo}.` +
+        `${documento} Conferir a situação do pedido no CIGAM Desktop.`,
     };
   } catch (err: any) {
     return {
