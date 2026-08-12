@@ -146,6 +146,14 @@ const TIMEOUT_PADRAO_MS = 30_000;
 /** Efetivar conversa com a SEFAZ — rotineiramente passa de 30s (visto no PDV). */
 const TIMEOUT_EFETIVAR_MS = 60_000;
 
+/**
+ * Serial de propósito. Concorrência maior não acelera o `Disponibilidade/Buscar`
+ * — só faz o CIGAM devolver linha vazia. Ver buscarDisponibilidades.
+ */
+const CONCORRENCIA_DISPONIBILIDADE = 1;
+/** Repasses seriais sobre o que ficou faltando, com parada antecipada. */
+const PASSADAS_EXTRAS_DISPONIBILIDADE = 2;
+
 export class CigamClient {
   private cookieHeader: string | null = null;
   /** Bearer token (CGPortal_Token) — usado em TODAS as chamadas REST. */
@@ -676,13 +684,32 @@ export class CigamClient {
 
   /**
    * Versão em lote do buscarDisponibilidade. O endpoint só aceita um material
-   * por chamada, então isso é um pool com concorrência limitada — mais que isso
-   * faz o próprio CIGAM começar a devolver linha vazia (ver buscarDisponibilidade).
+   * por chamada, então isso é um laço — e a concorrência dele é **1 de
+   * propósito**.
    *
-   * Duas passadas, igual ao PDV: uma concorrente e rápida, depois uma segunda
-   * serial só com o que voltou indefinido, que é onde a instabilidade sob carga
-   * aparece. Materiais que continuarem indefinidos ficam FORA do Map — o
-   * chamador trata ausência como desconhecido, nunca como zero.
+   * Concorrência alta não acelera: faz o CIGAM devolver linha vazia, e cada
+   * linha vazia vira material com estoque desconhecido. O PDV mediu isso ao
+   * vivo (`catalogCache.ts`):
+   *
+   *     concorrência  3 ->  9 OK / 1 falha
+   *     concorrência 10 ->  3 OK / 7 falha
+   *     concorrência  1 -> zero erros, ~197ms por material
+   *
+   * E serial **não é mais lento na prática**: com 3, a passada concorrente
+   * levava ~16s mas deixava ~125 irresolvidos, cujo retry serial somava ~25s
+   * de qualquer forma — mesmo tempo de parede, mais erro no log e ~10
+   * materiais terminando o ciclo desconhecidos.
+   *
+   * Confirmado aqui em 12/08/2026, quando isto ainda usava 8: uma rodada
+   * devolveu 49 de 172 materiais sem linha mesmo depois do retry. Para 172
+   * materiais, serial dá ~35s — o sync roda de 30 em 30 min, então é ~2% de
+   * ocupação.
+   *
+   * As passadas extras repetem só o que ficou faltando e param assim que uma
+   * delas não recupera mais nada: se um material não voltou nem sozinho e sem
+   * pressa, a ausência provavelmente é real (material sem estoque cadastrado),
+   * e insistir só gera carga. Materiais que continuarem indefinidos ficam FORA
+   * do Map — o chamador trata ausência como desconhecido, nunca como zero.
    */
   async buscarDisponibilidades(
     codigos: string[],
@@ -715,10 +742,15 @@ export class CigamClient {
       );
     };
 
-    await consultar(codes, opcoes.concorrencia ?? 8);
+    await consultar(codes, opcoes.concorrencia ?? CONCORRENCIA_DISPONIBILIDADE);
 
-    const faltantes = codes.filter((c) => !saldos.has(c));
-    if (faltantes.length > 0) await consultar(faltantes, 1);
+    for (let passada = 0; passada < PASSADAS_EXTRAS_DISPONIBILIDADE; passada++) {
+      const faltantes = codes.filter((c) => !saldos.has(c));
+      if (faltantes.length === 0) break;
+      const antes = saldos.size;
+      await consultar(faltantes, 1);
+      if (saldos.size === antes) break; // nada recuperado: o resto é ausência real
+    }
 
     return saldos;
   }

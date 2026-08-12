@@ -385,11 +385,23 @@ falha técnica nossa.
   `Campo6` = material, `Campo133` = físico), não com os nomes do `/api/help`.
 - `DisponibilidadeGeral` **ignora** a unidade de negócio pedida e soma todas as
   empresas do centro. Quem varia por empresa é o `EstoqueGeral`.
-- O endpoint aceita **um material por chamada**. Por isso o método é um pool
-  concorrente + **segunda passada serial**. Isso **não** é excesso de zelo: na
-  execução real de 06/08/2026 a primeira passada (concorrência 8) deixou
-  **141 de 172** materiais sem resposta e a serial resolveu 140. Sem o retry,
-  82% do catálogo ficaria "desconhecido". **Não remover o retry.**
+- O endpoint aceita **um material por chamada**, e a concorrência é **1 de
+  propósito** (`CONCORRENCIA_DISPONIBILIDADE`). Concorrência alta não acelera:
+  faz o CIGAM devolver linha vazia, e cada vazia vira material desconhecido. O
+  PDV mediu ao vivo (`catalogCache.ts`): concorrência 3 → 9 OK/1 falha,
+  concorrência 10 → 3 OK/7 falha, serial → zero erros a ~197ms cada. **E serial
+  não é mais lento**: a passada concorrente terminava rápido mas empurrava a
+  maior parte do catálogo para o retry serial, que gastava o mesmo tempo de
+  qualquer jeito — mesma parede, mais erro, mais material desconhecido no fim.
+- Isso já mordeu aqui. Enquanto a concorrência era 8: em 06/08/2026 a primeira
+  passada deixou **141 de 172** sem resposta, e em 12/08/2026 uma rodada
+  terminou com **49 sem linha mesmo depois do retry**. Com serial + repasses, o
+  resultado ficou em **1 sem linha** (que é ausência real), em ~64s para 172
+  materiais. O sync roda de 30 em 30 min, então é ~4% de ocupação.
+- **Não remover os repasses.** Eles repetem só o que faltou e param assim que
+  uma passada não recupera mais nada — material que não voltou nem sozinho e
+  sem pressa provavelmente não tem estoque cadastrado mesmo, e insistir só gera
+  carga.
 - Saldo **negativo é real e proposital** (o CIGAM comprometeu mais do que tem).
   Não normalizar para 0 — deve bloquear a venda.
 
