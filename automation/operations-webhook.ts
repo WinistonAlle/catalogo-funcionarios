@@ -384,7 +384,11 @@ async function runStockSync() {
   stockSyncRunning = true;
   try {
     const r = await syncEstoque({ supabase, dryRun: false });
-    console.log(`📦 Estoque sync: ${r.gravados} gravados (${r.comSaldo} c/ saldo, ${r.semLinha} sem linha).`);
+    console.log(
+      `📦 Estoque sync: ${r.gravados} gravados (${r.comSaldo} c/ saldo, ${r.semLinha} sem linha` +
+        (r.preservados > 0 ? `, ${r.preservados} c/ saldo antigo preservado` : "") +
+        ")."
+    );
   } catch (err: any) {
     console.error("📦 Estoque sync falhou:", err?.message ?? err);
   } finally {

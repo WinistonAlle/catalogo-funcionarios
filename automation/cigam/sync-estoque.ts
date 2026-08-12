@@ -15,7 +15,12 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { CigamClient } from "./client";
 
-type ProductRow = { id: string; cigam_code: string | null; name: string | null };
+type ProductRow = {
+  id: string;
+  cigam_code: string | null;
+  name: string | null;
+  stock_qty: number | null;
+};
 
 export type StockSyncResult = {
   total: number;
@@ -26,6 +31,11 @@ export type StockSyncResult = {
   zerados: number;
   /** Nomes dos que serão bloqueados — pra conferir antes de ligar de vez. */
   nomesZerados: string[];
+  /**
+   * Vieram sem linha AGORA mas já tinham saldo conhecido: mantivemos o valor
+   * antigo em vez de apagar. Ver o porquê no laço abaixo.
+   */
+  preservados: number;
 };
 
 export async function syncEstoque(options: {
@@ -36,14 +46,22 @@ export async function syncEstoque(options: {
 
   const { data, error } = await supabase
     .from("products")
-    .select("id, cigam_code, name")
+    .select("id, cigam_code, name, stock_qty")
     .not("cigam_code", "is", null);
   if (error) throw new Error(`Falha ao buscar produtos: ${error.message}`);
 
   const products = (data ?? []) as ProductRow[];
   const codes = products.map((p) => (p.cigam_code ?? "").trim()).filter(Boolean);
   if (codes.length === 0)
-    return { total: 0, gravados: 0, comSaldo: 0, semLinha: 0, zerados: 0, nomesZerados: [] };
+    return {
+      total: 0,
+      gravados: 0,
+      comSaldo: 0,
+      semLinha: 0,
+      zerados: 0,
+      nomesZerados: [],
+      preservados: 0,
+    };
 
   const cigam = new CigamClient();
   // Disponível (físico − demanda em carteira), não físico puro — ver
@@ -62,6 +80,7 @@ export async function syncEstoque(options: {
   let comSaldo = 0;
   let semLinha = 0;
   let zerados = 0;
+  let preservados = 0;
   const nomesZerados: string[] = [];
 
   for (const p of products) {
@@ -77,6 +96,24 @@ export async function syncEstoque(options: {
       }
     }
 
+    // Não apagar saldo conhecido por causa de uma rodada instável. "Sem linha"
+    // é ambíguo por construção (ver CigamClient.buscarDisponibilidades): pode
+    // ser "não tem estoque cadastrado" ou "o CIGAM não respondeu isso agora", e
+    // não dá para distinguir. Aconteceu de verdade em 12/08/2026: a varredura
+    // manual resolveu 171 de 172 materiais e a automática, 25 min depois,
+    // devolveu 26 sem linha — apagando saldo bom de material que comprovadamente
+    // tem linha.
+    //
+    // Um saldo que vira zero de verdade continua sendo gravado: zero VEM como
+    // linha do CIGAM, não como ausência. Só a ausência é preservada.
+    //
+    // stock_synced_at NÃO avança aqui de propósito: o valor mantido é o da
+    // última confirmação real, e o timestamp precisa continuar dizendo isso.
+    if (saldo === null && p.stock_qty !== null) {
+      preservados++;
+      continue;
+    }
+
     if (dryRun) continue;
 
     const { error: upErr } = await supabase
@@ -86,7 +123,7 @@ export async function syncEstoque(options: {
     if (!upErr) gravados++;
   }
 
-  return { total: products.length, gravados, comSaldo, semLinha, zerados, nomesZerados };
+  return { total: products.length, gravados, comSaldo, semLinha, zerados, nomesZerados, preservados };
 }
 
 // Execução direta via CLI
@@ -107,7 +144,8 @@ if (process.argv[1]?.endsWith("sync-estoque.ts")) {
     const r = await syncEstoque({ supabase, dryRun });
     console.log(
       `📦 Estoque: ${r.total} produtos | ${r.comSaldo} com saldo | ${r.semLinha} sem linha (desconhecido)` +
-        (dryRun ? "" : ` | ${r.gravados} gravados`)
+        (dryRun ? "" : ` | ${r.gravados} gravados`) +
+        (r.preservados > 0 ? ` | ${r.preservados} preservado(s) (saldo antigo mantido)` : "")
     );
     console.log(`🚫 Serão bloqueados no catálogo (saldo <= 0): ${r.zerados}`);
     for (const nome of r.nomesZerados) console.log(`   - ${nome}`);
