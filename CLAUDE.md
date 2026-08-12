@@ -87,18 +87,34 @@ pm2 logs webhook --lines 30 --nostream | grep -E "auto-sync|Estoque sync"
 
 ## ⚡ O que ainda falta
 
-1. **Validar o overlay "Sem Estoque" na tela.** É a única parte do caminho sem
-   validação visual. A cadeia foi conferida por código em 12/08/2026 e está
-   inteira (`Index.tsx` mapeia `stock_qty` → `ProductCard`/`ProductDetail`
-   chamam `isOutOfStock` → overlay em `ProductCard.tsx`), e o dado chega ao PWA
-   pela chave anon. Falta só olhar. O catálogo é rota protegida, então exige
-   login por CPF — **peça um CPF ao Winiston em vez de usar o de um funcionário
-   real** tirado do banco.
-2. **Usuário de integração dedicado no CIGAM** (ver Backlog). Hoje roda na
+1. **Usuário de integração dedicado no CIGAM** (ver Backlog). Hoje roda na
    credencial pessoal do Winiston, que é a mesma do PDV da loja — cada login
    derruba a sessão do outro.
 
 Fora isso, o fluxo está fechado e rodando sozinho.
+
+### Como testar a tela sem extensão de navegador
+
+O servidor é headless e a extensão do Chrome não conecta aqui, mas os browsers
+do Playwright estão em cache (`~/.cache/ms-playwright`). O pacote não está neste
+projeto — dá para importar do vizinho:
+
+```js
+import { chromium } from "/home/xulio/apps/totem-loja/node_modules/playwright/index.mjs";
+```
+
+Caminho até a grade de produtos (foi assim que o overlay foi validado em
+12/08/2026):
+
+1. `/` mostra a escolha "Sou Funcionário" / "Sou Cliente" — são **cards, não
+   `<button>`**, então clique por texto, não por role.
+2. Login por CPF em `/login`.
+3. ⚠️ **CPF de admin cai em `/admin`, não no catálogo.** Navegue direto para
+   `/catalogo` depois de logar.
+4. `/catalogo` abre numa capa; clicar em "Ver catálogo de produtos" revela a
+   grade. A busca no topo filtra e é o jeito rápido de achar um bloqueado.
+
+**Peça o CPF ao Winiston.** Não use o de um funcionário tirado do banco.
 
 ## O que foi feito em 12/08/2026
 
@@ -106,6 +122,11 @@ Fora isso, o fluxo está fechado e rodando sozinho.
 - **Primeiro pedido real no CIGAM.** `GM-20260811-4844` (IAN SANTOS RODRIGUES,
   R$ 69,00) → **CIGAM 011750**. Estreou a série REC.
 - **Disparo automático LIGADO** (ver abaixo).
+- **Overlay "Sem Estoque" validado na tela**, com o catálogo real em produção:
+  `Pão de Queijo Ímpar 40g – Pacote 5kg` (saldo 0 no CIGAM) apareceu com o selo
+  e o botão trocado por "Indisponível", enquanto os vizinhos da mesma linha, com
+  saldo, mantiveram o seletor de quantidade. Era o último item do caminho que
+  nunca tinha sido visto funcionando.
 - Dois bugs corrigidos, ambos descobertos ao ligar as coisas de verdade — ver
   "A série REC e o erro que não é erro" e "Por que o sync não apaga saldo".
 - Pedidos `011736` (primeira tentativa do pedido do IAN) e `010329` (teste
@@ -178,7 +199,7 @@ todo `pm2 restart webhook` dispara um sync completo.
 | CalcularImposto / controle 30 | ✅ | ✅ |
 | Efetivar série REC | ✅ | ✅ exercitado em 12/08/2026 |
 | Sync de estoque | ✅ | ✅ 171/172 com saldo |
-| Overlay "Sem Estoque" na tela | ✅ | ⚠️ dado chega; falta olhar a tela |
+| Overlay "Sem Estoque" na tela | ✅ | ✅ validado na tela em 12/08/2026 |
 | Número do CIGAM no app | ✅ | ✅ |
 | Disparo automático | ✅ | ✅ 2 min (pedidos) / 30 min (estoque) |
 
