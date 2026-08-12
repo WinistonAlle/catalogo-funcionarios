@@ -68,3 +68,71 @@ export function excluirProduto(id: string): Promise<ResultadoEscrita> {
     )
   );
 }
+
+/**
+ * Escrita de funcionário pelo RH — mesma razão dos produtos.
+ *
+ * O servidor descarta `credito_mensal_cents` do payload, então mexer em saldo
+ * por aqui não funciona nem por acidente. Quem restaura saldo é a ação própria
+ * de "Restauração de saldo" (`resetAllEmployeeBalances`).
+ */
+export async function inserirFuncionario<T = any>(payload: Record<string, any>): Promise<T> {
+  const resposta = await requestWithAuth<{ employee: T }>(
+    ["/automation/admin/employees", "/api/admin-employees"],
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payload }),
+    }
+  );
+  return resposta.employee;
+}
+
+export async function atualizarFuncionario<T = any>(
+  id: string,
+  payload: Record<string, any>
+): Promise<T> {
+  const resposta = await requestWithAuth<{ employee: T }>(
+    [
+      `/automation/admin/employees/${encodeURIComponent(id)}`,
+      `/api/admin-employees/${encodeURIComponent(id)}`,
+    ],
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payload }),
+    }
+  );
+  return resposta.employee;
+}
+
+/** Criação de aviso pelo Admin — via webhook autenticado. */
+export async function criarAviso<T = any>(payload: Record<string, any>): Promise<T> {
+  const resposta = await requestWithAuth<{ notice: T }>(
+    ["/automation/admin/notices", "/api/admin-notices"],
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payload }),
+    }
+  );
+  return resposta.notice;
+}
+
+export async function atualizarAviso<T = any>(
+  id: string,
+  payload: Record<string, any>
+): Promise<T> {
+  const resposta = await requestWithAuth<{ notice: T }>(
+    [
+      `/automation/admin/notices/${encodeURIComponent(id)}`,
+      `/api/admin-notices/${encodeURIComponent(id)}`,
+    ],
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payload }),
+    }
+  );
+  return resposta.notice;
+}

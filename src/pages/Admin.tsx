@@ -33,7 +33,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Switch } from "@/components/ui/switch";
-import { atualizarProduto, excluirProduto, inserirProduto } from "@/lib/adminProducts";
+import { atualizarProduto, excluirProduto, inserirProduto } from "@/lib/adminWrites";
 
 const FALLBACK_IMG = "/placeholder.png";
 
@@ -532,7 +532,7 @@ export default function Admin() {
       const payload = mapEditingToDbPayload(editing);
       // Via webhook autenticado, não direto na tabela: a chave anon está no
       // bundle público, então gravar `products` daqui deixava `employee_price`
-      // aberto para qualquer um. Ver src/lib/adminProducts.ts.
+      // aberto para qualquer um. Ver src/lib/adminWrites.ts.
       const persistProduct = async (dbPayload: Record<string, any>) => {
         if (existsInState) {
           return atualizarProduto(String(editing.id), dbPayload);
@@ -672,7 +672,7 @@ export default function Admin() {
         .eq("product_id", toDelete.id);
       if (weightError) throw weightError;
 
-      // Via webhook autenticado — ver src/lib/adminProducts.ts.
+      // Via webhook autenticado — ver src/lib/adminWrites.ts.
       const { error } = await excluirProduto(String(toDelete.id));
       if (error) throw error;
 

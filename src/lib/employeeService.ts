@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { atualizarFuncionario, inserirFuncionario } from "@/lib/adminWrites";
 
 export type Employee = {
   id?: string;
@@ -133,32 +134,25 @@ export async function getEmployeesBalanceSnapshots(employees: Pick<Employee, "id
   return { monthKey, byEmployeeId };
 }
 
+/**
+ * Escrita via webhook autenticado, não direto na tabela.
+ *
+ * A chave anon está embutida no bundle público, então gravar `employees` daqui
+ * deixava o cadastro (e o saldo) aberto para qualquer um. O servidor autoriza
+ * por `authorizePrivilegedUser` e descarta colunas fora da lista — inclusive
+ * `credito_mensal_cents`. Ver `src/lib/adminWrites.ts`.
+ */
 export async function upsertEmployee(input: Employee) {
   if (input.id) {
     const { id, ...updates } = input;
-    const { data, error } = await supabase
-      .from("employees")
-      .update(updates)
-      .eq("id", id)
-      .select()
-      .single();
-
-    if (error) throw error;
-    return data as Employee;
+    return (await atualizarFuncionario<Employee>(String(id), updates)) as Employee;
   }
 
   const payload = {
     status: "active",
     ...input,
   };
-  const { data, error } = await supabase
-    .from("employees")
-    .insert(payload)
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data as Employee;
+  return (await inserirFuncionario<Employee>(payload)) as Employee;
 }
 
 export async function terminateEmployee(id: string, whenISO: string, reason?: string) {
@@ -167,15 +161,7 @@ export async function terminateEmployee(id: string, whenISO: string, reason?: st
     terminated_at: whenISO,
     notes: reason ? reason : null,
   };
-  const { data, error } = await supabase
-    .from("employees")
-    .update(updates)
-    .eq("id", id)
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data as Employee;
+  return (await atualizarFuncionario<Employee>(id, updates)) as Employee;
 }
 
 export async function getEmployeeById(id: string) {

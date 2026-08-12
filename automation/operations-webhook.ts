@@ -9,7 +9,11 @@ import { createClient } from "@supabase/supabase-js";
 import { processPendingOrders } from "./cigam/process-pending-orders";
 import { syncEstoque } from "./cigam/sync-estoque";
 import { CigamClient } from "./cigam/client";
-import { filtrarPayloadProduto } from "./produtos-admin";
+import {
+  filtrarPayloadAviso,
+  filtrarPayloadFuncionario,
+  filtrarPayloadProduto,
+} from "./admin-payloads";
 import {
   authorizePrivilegedUser,
   getBearerToken,
@@ -349,6 +353,113 @@ app.delete("/admin/products/:id", async (req, res) => {
     if (error) return res.status(400).json({ ok: false, message: error.message, code: error.code });
 
     return res.status(200).json({ ok: true });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
+/**
+ * Escrita de funcionário por Admin/RH.
+ *
+ * `credito_mensal_cents` NÃO está na lista de colunas permitidas, de propósito:
+ * é o campo que decide quanto o funcionário pode gastar, nenhuma tela o edita, e
+ * deixá-lo passar aqui reabriria por outra porta o buraco que estamos fechando.
+ * Quem escreve saldo é o RPC de pagamento, a planilha e /reset-employee-balances.
+ */
+app.post("/admin/employees", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, message: auth.error });
+
+    const payload = filtrarPayloadFuncionario(req.body?.payload ?? req.body);
+    if (Object.keys(payload).length === 0) {
+      return res.status(400).json({ ok: false, message: "Payload vazio ou sem colunas válidas." });
+    }
+
+    const { data, error } = await supabase.from("employees").insert(payload).select().maybeSingle();
+    if (error) return res.status(400).json({ ok: false, message: error.message, code: error.code });
+
+    return res.status(200).json({ ok: true, employee: data });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
+app.patch("/admin/employees/:id", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, message: auth.error });
+
+    const id = String(req.params.id ?? "").trim();
+    if (!id) return res.status(400).json({ ok: false, message: "id obrigatório." });
+
+    const payload = filtrarPayloadFuncionario(req.body?.payload ?? req.body);
+    if (Object.keys(payload).length === 0) {
+      return res.status(400).json({ ok: false, message: "Payload vazio ou sem colunas válidas." });
+    }
+
+    const { data, error } = await supabase
+      .from("employees")
+      .update(payload)
+      .eq("id", id)
+      .select()
+      .maybeSingle();
+    if (error) return res.status(400).json({ ok: false, message: error.message, code: error.code });
+
+    return res.status(200).json({ ok: true, employee: data });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
+app.post("/admin/notices", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, message: auth.error });
+
+    const payload = filtrarPayloadAviso(req.body?.payload ?? req.body);
+    if (Object.keys(payload).length === 0) {
+      return res.status(400).json({ ok: false, message: "Payload vazio ou sem colunas válidas." });
+    }
+
+    // A autoria vem da SESSÃO, não do corpo da requisição: quem assina o aviso é
+    // quem está autenticado. Antes o cliente mandava esse id e podia assinar
+    // como qualquer um.
+    const { data, error } = await supabase
+      .from("notices")
+      .insert({ ...payload, created_by_employee_id: auth.actor.employeeId })
+      .select()
+      .maybeSingle();
+    if (error) return res.status(400).json({ ok: false, message: error.message, code: error.code });
+
+    return res.status(200).json({ ok: true, notice: data });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
+app.patch("/admin/notices/:id", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, message: auth.error });
+
+    const id = String(req.params.id ?? "").trim();
+    if (!id) return res.status(400).json({ ok: false, message: "id obrigatório." });
+
+    const payload = filtrarPayloadAviso(req.body?.payload ?? req.body);
+    if (Object.keys(payload).length === 0) {
+      return res.status(400).json({ ok: false, message: "Payload vazio ou sem colunas válidas." });
+    }
+
+    const { data, error } = await supabase
+      .from("notices")
+      .update(payload)
+      .eq("id", id)
+      .select()
+      .maybeSingle();
+    if (error) return res.status(400).json({ ok: false, message: error.message, code: error.code });
+
+    return res.status(200).json({ ok: true, notice: data });
   } catch (err: any) {
     return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
   }

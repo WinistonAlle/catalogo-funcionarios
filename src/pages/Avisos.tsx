@@ -35,6 +35,7 @@ import {
 
 // ✅ LOGO (mesmo do Index)
 import logoGostinho from "@/images/logoc.png";
+import { atualizarAviso, criarAviso } from "@/lib/adminWrites";
 
 // Mesmo helper do Index
 function safeGetEmployee() {
@@ -420,32 +421,30 @@ const Avisos: React.FC = () => {
       const imageUrlToSave = await uploadImageIfNeeded();
       if (selectedImageFile && !imageUrlToSave) return;
 
-      if (editingNotice) {
-        const { error } = await supabase
-          .from("notices")
-          .update({
+      // Via webhook autenticado, não direto na tabela — ver src/lib/adminWrites.ts.
+      // A autoria é gravada pelo servidor a partir da sessão, por isso
+      // `created_by_employee_id` não vai mais no payload.
+      try {
+        if (editingNotice) {
+          await atualizarAviso(String(editingNotice.id), {
             title: newTitle.trim(),
             body: newBody.trim() || "",
             image_url: imageUrlToSave,
-          })
-          .eq("id", editingNotice.id);
-
-        if (error) {
-          alert("Erro ao atualizar aviso: " + error.message);
-          return;
+          });
+        } else {
+          await criarAviso({
+            title: newTitle.trim(),
+            body: newBody.trim() || "",
+            is_published: true,
+            image_url: imageUrlToSave,
+          });
         }
-      } else {
-        const { error } = await supabase.from("notices").insert({
-          title: newTitle.trim(),
-          body: newBody.trim() || "",
-          is_published: true,
-          image_url: imageUrlToSave,
-          created_by_employee_id: employee?.id ?? null,
-        });
-        if (error) {
-          alert("Erro ao criar aviso: " + error.message);
-          return;
-        }
+      } catch (err: any) {
+        alert(
+          (editingNotice ? "Erro ao atualizar aviso: " : "Erro ao criar aviso: ") +
+            String(err?.message ?? err)
+        );
+        return;
       }
 
       resetModalState();
