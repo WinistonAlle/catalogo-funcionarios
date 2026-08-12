@@ -68,7 +68,7 @@ export type ProcessResult = {
  * ⚠️ Não copiar esta tolerância para o PDV: lá a série é CF1/NFE e o envio ao
  * fisco é justamente o objetivo, então o mesmo erro é uma falha de verdade.
  */
-function efetivacaoConcluiu(erro: string | undefined): boolean {
+export function efetivacaoConcluiu(erro: string | undefined): boolean {
   return /efetiva[çc][ãa]o\s+conclu[íi]da/i.test(erro ?? "");
 }
 

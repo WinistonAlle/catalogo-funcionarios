@@ -83,4 +83,12 @@ export default defineConfig(({ mode }) => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+
+  // Os testes cobrem lógica pura (preço, estoque, resposta do CIGAM), então
+  // rodam em Node mesmo — não precisam de DOM. `automation/` fica de fora do
+  // tsconfig do app, mas o vitest o alcança normalmente.
+  test: {
+    environment: "node",
+    include: ["src/**/*.test.ts", "automation/**/*.test.ts"],
+  },
 }));
