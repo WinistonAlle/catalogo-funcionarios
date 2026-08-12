@@ -338,6 +338,32 @@ compartilhada para chamadas concorrentes não se invalidarem em loop.
 
 Solução de raiz (backlog): usuário de integração dedicado no CIGAM.
 
+### Quais pedidos a varredura pega — e o buraco que isso tapa
+
+O filtro é `erp_status = PENDING` + não cancelado + **um de três sinais de
+pagamento**: `wallet_debited`, `pay_on_pickup_cents > 0` ou `wallet_used_cents > 0`.
+
+O terceiro não é redundância. **`wallet_debited` não é escrito pelo RPC de
+pagamento** (`place_order_with_wallet_v2`): quem escreve é um `.update()`
+separado no `Checkout.tsx`, numa segunda chamada de rede, e o erro dele é apenas
+logado — `clearCart()` roda em seguida e o funcionário vê sucesso de qualquer
+jeito. Se esse update falha, o saldo **já foi debitado** pelo RPC e o pedido fica
+com `wallet_debited = false`.
+
+Enquanto existia pagamento na retirada isso era mascarado: o pedido ainda casava
+por `pay_on_pickup_cents > 0`. **Em 12/08/2026 o pagamento na retirada saiu do
+sistema** (decisão do Winiston — agora é só saldo), então esse valor é sempre 0 e
+o pedido ficaria `PENDING` para sempre: dinheiro debitado do funcionário e nada
+no ERP, sem ninguém perceber.
+
+`wallet_used_cents` fecha o buraco porque o RPC o grava na **mesma transação** em
+que debita `employees.credito_mensal_cents`: se o saldo saiu, o campo está lá.
+
+⚠️ **A causa raiz continua de pé no frontend:** o `Checkout.tsx` deveria falhar
+alto quando esse `.update()` não grava, em vez de só logar no console. Melhor
+ainda seria o próprio RPC setar `wallet_debited`, acabando com a escrita em duas
+etapas. Nenhum dos dois foi feito — o filtro é rede de segurança, não conserto.
+
 ### Anti-duplicata
 
 `erp_external_id` é persistido **logo após criar o cabeçalho**, antes dos itens

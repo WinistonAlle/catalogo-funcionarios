@@ -171,7 +171,24 @@ export async function processPendingOrders(options: {
     )
     .eq("erp_status", "PENDING")
     .is("cancelled_at", null)
-    .or("wallet_debited.eq.true,pay_on_pickup_cents.gt.0")
+    // "Foi pago" — três sinais, de propósito.
+    //
+    // `wallet_debited` NÃO é escrito pelo RPC de pagamento: quem escreve é um
+    // `.update()` separado no Checkout (`Checkout.tsx`), numa segunda chamada de
+    // rede, cujo erro é apenas logado — o carrinho é limpo e o funcionário vê
+    // sucesso de qualquer forma. Se esse update falha, o saldo JÁ foi debitado
+    // pelo RPC e o pedido fica com `wallet_debited = false`.
+    //
+    // Isso ficou perigoso quando o pagamento na retirada saiu do sistema
+    // (12/08/2026): antes, um pedido nessas condições ainda era pego pelo
+    // `pay_on_pickup_cents > 0`; hoje esse valor é sempre 0, então o pedido
+    // ficaria PENDING para sempre — dinheiro debitado e nada no ERP.
+    //
+    // `wallet_used_cents` fecha o buraco porque o RPC o grava na MESMA
+    // transação em que debita o saldo do funcionário: se o saldo saiu, este
+    // campo está preenchido. Os outros dois ficam por compatibilidade com os
+    // pedidos antigos de pagar-na-retirada.
+    .or("wallet_debited.eq.true,pay_on_pickup_cents.gt.0,wallet_used_cents.gt.0")
     .order("created_at", { ascending: true })
     .limit(limit);
 
