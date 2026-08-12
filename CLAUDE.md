@@ -226,9 +226,31 @@ O que torna isso corrigível sem quebrar nada: os caminhos que mexem em dinheiro
 (`place_order_with_wallet_v2`, `gm_apply_balance_delta`, `handle_wallet_on_orders`)
 e o login (`get_employee_by_cpf`) são **SECURITY DEFINER** e ignoram RLS.
 
-**Já aplicado em 12/08/2026:** `TRUNCATE` e `DELETE` revogados de `anon`/
-`authenticated` em orders, order_items, employees, profiles e
-admin_operation_logs (`products.delete` ficou — a tela de admin usa).
+## ✅ Escrita fechada em 12/08/2026
+
+`anon` **não escreve mais** em `products`, `employees` e `notices` — só `SELECT`.
+Confirmado de fora, pela URL pública, com a chave do bundle:
+
+```
+PATCH .../employees  {"credito_mensal_cents":999999}  -> 42501 permission denied
+PATCH .../products   {"employee_price":0.01}          -> 42501 permission denied
+```
+
+Isso fecha os dois buracos de dinheiro: dar saldo a si mesmo e mudar preço.
+`TRUNCATE`/`DELETE` também foram revogados em orders, order_items, employees,
+notices, profiles e admin_operation_logs.
+
+**A ordem importou:** as telas de Admin/RH foram migradas para o webhook e
+publicadas ANTES do revoke. Revogar primeiro derrubaria o admin.
+
+`orders` e `order_items` mantêm `INSERT`/`UPDATE` de propósito — é o checkout do
+funcionário que grava ali, e o login é por CPF (sem `auth.uid()`), então não há
+como escopar por RLS hoje. É o que sobra do problema, junto com a leitura.
+
+Verificado depois do revoke: salvar produto pela tela devolveu `PATCH 200`, e um
+pedido de funcionário foi ao CIGAM sozinho (`011856`, sem aviso).
+
+### Ainda aberto
 
 ⚠️ **Descoberta que muda o plano:** os 5 admins e os 2 usuários de RH estão com
 `auth_user_id NULL` e `hr_users` está **vazia**. Ou seja, as políticas `_hr`/
@@ -236,11 +258,10 @@ admin_operation_logs (`products.delete` ficou — a tela de admin usa).
 telas de RH funcionarem. **Dropar as `_all` derruba o RH na hora** — não faça
 isso antes de vincular os privilegiados ao Supabase Auth.
 
-Por isso a proteção do saldo virou um **gatilho** em vez de uma mudança de
-política: `scripts/2026-08-12-bloqueia-alteracao-credito.sql` barra alteração de
-`credito_mensal_cents` vinda de `anon`/`authenticated`, e só quando o valor muda
-de fato. Quem escreve saldo legitimamente (RPC de pagamento, planilha, webhook)
-não é `anon` e passa. **Ainda NÃO aplicado.**
+O gatilho de `scripts/2026-08-12-bloqueia-alteracao-credito.sql` **não é mais
+necessário** — o revoke de `UPDATE` em `employees` resolveu o mesmo problema de
+forma mais direta. O arquivo fica como plano B, caso algum dia `anon` precise
+voltar a escrever na tabela por outro motivo.
 
 `scripts/2026-08-12-seguranca-rls.sql` tem o resto do plano, incluindo a leitura
 pública dos pedidos com CPF, que precisa de redesenho.

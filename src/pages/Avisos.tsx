@@ -35,7 +35,7 @@ import {
 
 // ✅ LOGO (mesmo do Index)
 import logoGostinho from "@/images/logoc.png";
-import { atualizarAviso, criarAviso } from "@/lib/adminWrites";
+import { atualizarAviso, criarAviso, excluirAviso } from "@/lib/adminWrites";
 
 // Mesmo helper do Index
 function safeGetEmployee() {
@@ -461,13 +461,11 @@ const Avisos: React.FC = () => {
     try {
       setDeletingId(notice.id);
 
-      const { error } = await supabase
-        .from("notices")
-        .delete()
-        .eq("id", notice.id);
-
-      if (error) {
-        alert("Erro ao excluir aviso: " + error.message);
+      // Via webhook autenticado — ver src/lib/adminWrites.ts.
+      try {
+        await excluirAviso(String(notice.id));
+      } catch (err: any) {
+        alert("Erro ao excluir aviso: " + String(err?.message ?? err));
         return;
       }
 

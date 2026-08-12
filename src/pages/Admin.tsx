@@ -611,10 +611,8 @@ export default function Admin() {
     const nextHidden = !product.isHidden;
 
     try {
-      const { error } = await supabase
-        .from("products")
-        .update({ is_hidden: nextHidden })
-        .eq("id", product.id);
+      // Via webhook autenticado — ver src/lib/adminWrites.ts.
+      const { error } = await atualizarProduto(String(product.id), { is_hidden: nextHidden });
 
       if (error) {
         if (isMissingHiddenColumnError(error)) {

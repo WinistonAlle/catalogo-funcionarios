@@ -136,3 +136,13 @@ export async function atualizarAviso<T = any>(
   );
   return resposta.notice;
 }
+
+export function excluirAviso(id: string): Promise<void> {
+  return requestWithAuth<void>(
+    [
+      `/automation/admin/notices/${encodeURIComponent(id)}`,
+      `/api/admin-notices/${encodeURIComponent(id)}`,
+    ],
+    { method: "DELETE" }
+  ).then(() => undefined);
+}

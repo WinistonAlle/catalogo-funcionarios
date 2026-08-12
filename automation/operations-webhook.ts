@@ -465,6 +465,23 @@ app.patch("/admin/notices/:id", async (req, res) => {
   }
 });
 
+app.delete("/admin/notices/:id", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, message: auth.error });
+
+    const id = String(req.params.id ?? "").trim();
+    if (!id) return res.status(400).json({ ok: false, message: "id obrigatório." });
+
+    const { error } = await supabase.from("notices").delete().eq("id", id);
+    if (error) return res.status(400).json({ ok: false, message: error.message, code: error.code });
+
+    return res.status(200).json({ ok: true });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
 app.get("/operations/status", async (req, res) => {
   try {
     const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
