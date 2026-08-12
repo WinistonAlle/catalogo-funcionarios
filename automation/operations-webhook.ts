@@ -9,6 +9,7 @@ import { createClient } from "@supabase/supabase-js";
 import { processPendingOrders } from "./cigam/process-pending-orders";
 import { syncEstoque } from "./cigam/sync-estoque";
 import { CigamClient } from "./cigam/client";
+import { filtrarPayloadProduto } from "./produtos-admin";
 import {
   authorizePrivilegedUser,
   getBearerToken,
@@ -274,6 +275,81 @@ app.post("/reset-employee-balances", async (req, res) => {
     });
   } catch (err: any) {
     balanceRestoreRunning = false;
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
+/**
+ * Escrita de produtos por Admin/RH.
+ *
+ * Existe para tirar essa escrita do navegador. Até 12/08/2026 a tela de admin
+ * gravava `products` direto com a chave anon — que está no bundle público, então
+ * QUALQUER pessoa podia alterar `employee_price` e mudar o que o funcionário
+ * paga. Aqui a escrita passa por `authorizePrivilegedUser` e usa a service role.
+ *
+ * O payload continua sendo montado no frontend (`mapEditingToDbPayload`), para
+ * não duplicar regra em dois lugares — o servidor só autoriza e filtra colunas.
+ */
+app.post("/admin/products", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, message: auth.error });
+
+    const payload = filtrarPayloadProduto(req.body?.payload ?? req.body);
+    if (Object.keys(payload).length === 0) {
+      return res.status(400).json({ ok: false, message: "Payload vazio ou sem colunas válidas." });
+    }
+
+    const { data, error } = await supabase.from("products").insert(payload).select().maybeSingle();
+    if (error) return res.status(400).json({ ok: false, message: error.message, code: error.code });
+
+    return res.status(200).json({ ok: true, product: data });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
+app.patch("/admin/products/:id", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, message: auth.error });
+
+    const id = String(req.params.id ?? "").trim();
+    if (!id) return res.status(400).json({ ok: false, message: "id obrigatório." });
+
+    // `id` nunca vai no SET: ele identifica a linha, não é campo editável.
+    const { id: _ignorado, ...payload } = filtrarPayloadProduto(req.body?.payload ?? req.body);
+    if (Object.keys(payload).length === 0) {
+      return res.status(400).json({ ok: false, message: "Payload vazio ou sem colunas válidas." });
+    }
+
+    const { data, error } = await supabase
+      .from("products")
+      .update(payload)
+      .eq("id", id)
+      .select()
+      .maybeSingle();
+    if (error) return res.status(400).json({ ok: false, message: error.message, code: error.code });
+
+    return res.status(200).json({ ok: true, product: data });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
+app.delete("/admin/products/:id", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, message: auth.error });
+
+    const id = String(req.params.id ?? "").trim();
+    if (!id) return res.status(400).json({ ok: false, message: "id obrigatório." });
+
+    const { error } = await supabase.from("products").delete().eq("id", id);
+    if (error) return res.status(400).json({ ok: false, message: error.message, code: error.code });
+
+    return res.status(200).json({ ok: true });
+  } catch (err: any) {
     return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
   }
 });

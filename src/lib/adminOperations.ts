@@ -61,7 +61,7 @@ async function getAccessToken() {
   return accessToken;
 }
 
-async function requestWithAuth<T>(paths: string[], init?: RequestInit) {
+export async function requestWithAuth<T>(paths: string[], init?: RequestInit) {
   const accessToken = await getAccessToken();
   let lastErrorMessage = "";
 

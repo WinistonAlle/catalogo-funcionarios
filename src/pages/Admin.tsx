@@ -33,6 +33,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Switch } from "@/components/ui/switch";
+import { atualizarProduto, excluirProduto, inserirProduto } from "@/lib/adminProducts";
 
 const FALLBACK_IMG = "/placeholder.png";
 
@@ -529,12 +530,15 @@ export default function Admin() {
 
       // payload apenas do products (sem in_stock)
       const payload = mapEditingToDbPayload(editing);
+      // Via webhook autenticado, não direto na tabela: a chave anon está no
+      // bundle público, então gravar `products` daqui deixava `employee_price`
+      // aberto para qualquer um. Ver src/lib/adminProducts.ts.
       const persistProduct = async (dbPayload: Record<string, any>) => {
         if (existsInState) {
-          return supabase.from("products").update(dbPayload).eq("id", editing.id);
+          return atualizarProduto(String(editing.id), dbPayload);
         }
 
-        return supabase.from("products").insert(dbPayload);
+        return inserirProduto(dbPayload);
       };
 
       let payloadPersisted = payload;
@@ -668,7 +672,8 @@ export default function Admin() {
         .eq("product_id", toDelete.id);
       if (weightError) throw weightError;
 
-      const { error } = await supabase.from("products").delete().eq("id", toDelete.id);
+      // Via webhook autenticado — ver src/lib/adminProducts.ts.
+      const { error } = await excluirProduto(String(toDelete.id));
       if (error) throw error;
 
       setItems((prev) => prev.filter((p) => p.id !== toDelete.id));
