@@ -2,8 +2,15 @@ import React, { useEffect, useState } from "react";
 import styled, { keyframes } from "styled-components";
 import { Bg, Card } from "../components/ui/app-surface";
 import logo from "../images/logop.jpg";
-import { checkCpfLogin } from "@/services/auth";
-import { supabase } from "@/lib/supabase";
+import {
+  changeOwnPassword,
+  checkCpfLogin,
+  createFirstPassword,
+  FirstAccessRequiredError,
+  MIN_PASSWORD_LENGTH,
+  PasswordRequiredError,
+  type EmployeeSession,
+} from "@/services/auth";
 
 /* ================= PAGE LOCK (sem scroll/bounce) ================= */
 
@@ -341,8 +348,29 @@ function isValidCPF(input: string) {
 
 const Login: React.FC = () => {
   const [cpf, setCpf] = useState("");
+  const [password, setPassword] = useState("");
+  const [needsPassword, setNeedsPassword] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  // Preenchido quando o login deu certo mas a conta ainda não tem senha própria.
+  const [pendingSession, setPendingSession] = useState<EmployeeSession | null>(null);
+  // Admin/RH que nunca acessou: cria a senha direto, sem senha anterior.
+  const [firstAccess, setFirstAccess] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
+
+  // A tela de criar senha é a mesma nos dois caminhos; só o texto muda.
+  const creatingPassword = firstAccess || pendingSession !== null;
+
+  function goToHome(role: string) {
+    if (role === "admin") {
+      window.location.href = "/admin";
+    } else if (role === "rh") {
+      window.location.href = "/rh";
+    } else {
+      window.location.href = "/catalogo";
+    }
+  }
 
   useEffect(() => {
     // trava scroll/bounce só nessa página + evita faixa branca do html/body
@@ -380,6 +408,37 @@ const Login: React.FC = () => {
     e.preventDefault();
     setErr("");
 
+    // Etapa final: a conta precisa definir uma senha própria antes de seguir.
+    // São dois caminhos até aqui — quem nunca acessou (firstAccess, ainda sem
+    // sessão) e quem entrou com uma sessão que exige troca (pendingSession).
+    if (pendingSession || firstAccess) {
+      if (newPassword !== confirmPassword) {
+        setErr("As senhas não conferem.");
+        return;
+      }
+
+      if (newPassword.length < MIN_PASSWORD_LENGTH) {
+        setErr(`A senha precisa ter pelo menos ${MIN_PASSWORD_LENGTH} caracteres.`);
+        return;
+      }
+
+      setLoading(true);
+      try {
+        if (pendingSession) {
+          await changeOwnPassword(newPassword, pendingSession);
+          goToHome(pendingSession.role);
+        } else {
+          const session = await createFirstPassword(cpf, newPassword);
+          goToHome(session.role);
+        }
+      } catch (error: any) {
+        setErr(error?.message || "Não foi possível salvar a senha.");
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     if (!isValidCPF(cpf)) {
       setErr("CPF inválido. Confira e tente novamente.");
       return;
@@ -387,24 +446,31 @@ const Login: React.FC = () => {
 
     setLoading(true);
     try {
-      const cleanCpf = onlyDigits(cpf);
+      // O vínculo `link_employee_to_user` acontece dentro do checkCpfLogin, e
+      // só para funcionário comum — admin/RH entram por senha e têm o user_id
+      // fixo no banco.
+      const session = await checkCpfLogin(cpf, needsPassword ? password : undefined);
 
-      const session = await checkCpfLogin(cpf);
-
-      const { error: linkErr } = await supabase.rpc("link_employee_to_user", {
-        p_cpf: cleanCpf,
-      });
-
-      if (linkErr) throw linkErr;
-
-      if (session.role === "admin") {
-        window.location.href = "/admin";
-      } else if (session.role === "rh") {
-        window.location.href = "/rh";
-      } else {
-        window.location.href = "/catalogo";
+      if (session.mustChangePassword) {
+        setPendingSession(session);
+        setErr("");
+        return;
       }
+
+      goToHome(session.role);
     } catch (error: any) {
+      if (error instanceof FirstAccessRequiredError) {
+        // Admin/RH que nunca acessou: já abre a criação de senha.
+        setFirstAccess(true);
+        setErr("");
+        return;
+      }
+      if (error instanceof PasswordRequiredError) {
+        // Conta de admin/RH: revela o campo de senha e mantém o CPF digitado.
+        setNeedsPassword(true);
+        setErr("");
+        return;
+      }
       setErr(error?.message || "Erro inesperado. Tente novamente.");
     } finally {
       setLoading(false);
@@ -456,30 +522,91 @@ const Login: React.FC = () => {
           />
         </LogoWrapper>
 
-        <Title>Entrar</Title>
-        <Subtitle>Acesse o catálogo de funcionários</Subtitle>
+        <Title>{creatingPassword ? "Crie sua senha" : "Entrar"}</Title>
+        <Subtitle>
+          {creatingPassword
+            ? firstAccess
+              ? "Este é seu primeiro acesso. Escolha uma senha para sua conta."
+              : "Escolha uma senha sua para continuar."
+            : "Acesse o catálogo de funcionários"}
+        </Subtitle>
 
         <Form onSubmit={handleSubmit} noValidate>
-          <Field>
-            <Label htmlFor="cpf">CPF</Label>
-            <NeumorphicInput
-              id="cpf"
-              name="cpf"
-              inputMode="numeric"
-              autoComplete="username"
-              placeholder="000.000.000-00"
-              value={maskCPF(cpf)}
-              onChange={(e) => setCpf(e.target.value)}
-              aria-invalid={!!err}
-              aria-describedby={err ? "cpf-error" : undefined}
-              disabled={loading}
-            />
-            <Helper>Usaremos seu CPF para verificar seu acesso.</Helper>
-            {err && <ErrorMsg id="cpf-error">{err}</ErrorMsg>}
-          </Field>
+          {creatingPassword ? (
+            <>
+              <Field>
+                <Label htmlFor="nova-senha">Nova senha</Label>
+                <NeumorphicInput
+                  id="nova-senha"
+                  name="nova-senha"
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder={`Pelo menos ${MIN_PASSWORD_LENGTH} caracteres`}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  disabled={loading}
+                  autoFocus
+                />
+              </Field>
+
+              <Field>
+                <Label htmlFor="confirma-senha">Repita a nova senha</Label>
+                <NeumorphicInput
+                  id="confirma-senha"
+                  name="confirma-senha"
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder="Digite de novo"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  disabled={loading}
+                />
+                <Helper>Guarde bem: é com ela que você vai entrar daqui em diante.</Helper>
+                {err && <ErrorMsg id="cpf-error">{err}</ErrorMsg>}
+              </Field>
+            </>
+          ) : (
+            <>
+              <Field>
+                <Label htmlFor="cpf">CPF</Label>
+                <NeumorphicInput
+                  id="cpf"
+                  name="cpf"
+                  inputMode="numeric"
+                  autoComplete="username"
+                  placeholder="000.000.000-00"
+                  value={maskCPF(cpf)}
+                  onChange={(e) => setCpf(e.target.value)}
+                  aria-invalid={!!err}
+                  aria-describedby={err ? "cpf-error" : undefined}
+                  disabled={loading || needsPassword}
+                />
+                <Helper>Usaremos seu CPF para verificar seu acesso.</Helper>
+                {err && <ErrorMsg id="cpf-error">{err}</ErrorMsg>}
+              </Field>
+
+              {needsPassword && (
+                <Field>
+                  <Label htmlFor="senha">Senha</Label>
+                  <NeumorphicInput
+                    id="senha"
+                    name="senha"
+                    type="password"
+                    autoComplete="current-password"
+                    placeholder="Digite sua senha"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    disabled={loading}
+                    autoFocus
+                  />
+                  <Helper>Esta conta é de Admin/RH e exige senha.</Helper>
+                </Field>
+              )}
+            </>
+          )}
 
           <Button type="submit" disabled={loading}>
-            Entrar
+            {creatingPassword ? "Salvar senha e entrar" : "Entrar"}
           </Button>
         </Form>
       </StyledCard>

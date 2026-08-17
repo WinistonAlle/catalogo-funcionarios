@@ -34,7 +34,8 @@ import ReportsDashboard from "./pages/ReportsDashboard";
 import OperationsHistory from "./pages/OperationsHistory";
 
 // ✅ NOVO: AdminOrders
-import AdminOrders from "./pages/AdminOrders"; 
+import AdminOrders from "./pages/AdminOrders";
+import IntegracaoCigam from "./pages/IntegracaoCigam"; 
 // Se o seu arquivo estiver em: src/pages/admin/AdminOrders.tsx, use:
 // import AdminOrders from "./pages/admin/AdminOrders";
 
@@ -211,6 +212,16 @@ function App() {
                 element={
                   <RequireRole allow={["admin"]} redirectTo="/catalogo">
                     <AdminOrders />
+                  </RequireRole>
+                }
+              />
+
+              {/* Painel de integração CIGAM: pedidos que não chegaram ao ERP */}
+              <Route
+                path="/admin/integracao"
+                element={
+                  <RequireRole allow={["admin"]} redirectTo="/catalogo">
+                    <IntegracaoCigam />
                   </RequireRole>
                 }
               />

@@ -526,6 +526,165 @@ app.get("/operations/history", async (req, res) => {
 });
 
 /**
+ * Painel de integração: pedidos que não chegaram ao CIGAM.
+ *
+ * Junta três situações que antes só se enxergava com SQL na mão:
+ *
+ *  - ERROR    — falhou em algum ponto. A maioria (56, em 13/08/2026) é lixo da
+ *               era Saibweb: `erp_error` é timeout de locator do Playwright e
+ *               nenhum tem `erp_external_id`. Vêm marcados com `legado: true`
+ *               para não se misturarem com problema de verdade.
+ *  - PENDING  — na fila. O auto-sync varre a cada 2 min, então PENDING parado
+ *               há muito tempo é sintoma, não estado normal: `preso: true`
+ *               marca os que passaram de 15 min.
+ *  - órfão    — DONE/sem status mas sem `erp_external_id`. É o caso do pedido
+ *               excluído no ERP: o processador só varre PENDING, então ele
+ *               nunca é reenviado e fica parado para sempre.
+ */
+const MINUTOS_ATE_CONSIDERAR_PRESO = 15;
+
+/**
+ * Quando a integração CIGAM entrou no ar (primeiro pedido real: GM-20260811-4844
+ * → CIGAM 011750). Pedido anterior a esta data nunca teve chance de ir ao CIGAM:
+ * os 278 `SYNCED` e os 56 `ERROR` são todos da era Saibweb. Classificar por data
+ * é mais honesto do que adivinhar pelo texto do `erp_error`.
+ */
+const CIGAM_NO_AR_DESDE = new Date("2026-08-11T00:00:00-03:00");
+
+app.get("/admin/integracao/pedidos", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) {
+      return res.status(auth.status).json({ ok: false, message: auth.error });
+    }
+
+    const limit = Math.min(Number(req.query.limit ?? 100) || 100, 500);
+
+    const { data, error } = await supabase
+      .from("orders")
+      .select(
+        "id, order_number, erp_status, erp_error, erp_external_id, created_at, total_cents, employee_name"
+      )
+      .or("erp_status.eq.ERROR,erp_status.eq.PENDING,erp_external_id.is.null")
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      return res.status(500).json({ ok: false, message: error.message });
+    }
+
+    const agora = Date.now();
+    const rows = (data ?? []).map((row: any) => {
+      const status = String(row.erp_status ?? "").toUpperCase();
+      const criadoEm = new Date(row.created_at);
+      const idadeMin = (agora - criadoEm.getTime()) / 60000;
+
+      // Nada anterior à integração é acionável: não existia caminho para o
+      // CIGAM. Marcar como legado tira 334 linhas do caminho de quem precisa
+      // ver o que está quebrado hoje.
+      const legado = criadoEm < CIGAM_NO_AR_DESDE;
+
+      // DISCARDED é decisão tomada (os 20 pedidos de 10/07–06/08, resolvidos
+      // na mão antes da integração existir). Não é problema, não é órfão.
+      const descartado = status === "DISCARDED";
+
+      return {
+        id: row.id,
+        order_number: row.order_number,
+        erp_status: row.erp_status,
+        erp_error: row.erp_error,
+        erp_external_id: row.erp_external_id,
+        created_at: row.created_at,
+        total_cents: row.total_cents,
+        funcionario: row.employee_name ?? null,
+        legado,
+        descartado,
+        preso: !legado && status === "PENDING" && idadeMin > MINUTOS_ATE_CONSIDERAR_PRESO,
+        // Sem número do CIGAM e fora da fila: o processador só varre PENDING,
+        // então ninguém vai reenviar sozinho. É o caso do pedido excluído no ERP.
+        orfao:
+          !legado &&
+          !descartado &&
+          !row.erp_external_id &&
+          status !== "PENDING",
+      };
+    });
+
+    return res.status(200).json({ ok: true, rows });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
+/**
+ * Recoloca um pedido na fila do processador.
+ *
+ * O conserto que antes era manual: voltar `erp_status` para PENDING e limpar
+ * `erp_external_id`/`erp_error`. Sem isso o pedido fica órfão, porque
+ * `processPendingOrders` só varre PENDING.
+ *
+ * ⚠️ Recusa pedido que JÁ tem `erp_external_id`, senão o próximo ciclo do
+ * auto-sync cria um segundo pedido no CIGAM — documento fiscal duplicado. Para
+ * esse caso o pedido precisa primeiro ser excluído no ERP, e aí o `force`
+ * assume que isso foi feito.
+ */
+app.post("/admin/integracao/pedidos/:id/reenfileirar", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) {
+      return res.status(auth.status).json({ ok: false, message: auth.error });
+    }
+
+    const { id } = req.params;
+    const force = req.body?.force === true;
+
+    const { data: pedido, error: readErr } = await supabase
+      .from("orders")
+      .select("id, order_number, erp_status, erp_external_id")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (readErr) {
+      return res.status(500).json({ ok: false, message: readErr.message });
+    }
+
+    if (!pedido) {
+      return res.status(404).json({ ok: false, message: "Pedido não encontrado." });
+    }
+
+    if (pedido.erp_external_id && !force) {
+      return res.status(409).json({
+        ok: false,
+        message:
+          `Este pedido já foi criado no CIGAM (${pedido.erp_external_id}). ` +
+          "Reenfileirar criaria um pedido duplicado no ERP. " +
+          "Exclua-o no CIGAM primeiro e repita confirmando.",
+        requerConfirmacao: true,
+        erp_external_id: pedido.erp_external_id,
+      });
+    }
+
+    const { error: updateErr } = await supabase
+      .from("orders")
+      .update({ erp_status: "PENDING", erp_external_id: null, erp_error: null })
+      .eq("id", id);
+
+    if (updateErr) {
+      return res.status(500).json({ ok: false, message: updateErr.message });
+    }
+
+    console.log(
+      `🔁 Pedido ${pedido.order_number} reenfileirado por ${auth.actor.fullName || auth.actor.cpf}` +
+        (force ? " (forçado, tinha CIGAM " + pedido.erp_external_id + ")" : "")
+    );
+
+    return res.status(200).json({ ok: true, order_number: pedido.order_number });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
+/**
  * Integração CIGAM: processa pedidos pendentes (erp_status = PENDING).
  * Protegido por token próprio (CIGAM_INTEGRATION_TOKEN) para permitir disparo
  * por agendador externo. Sem o token configurado, o endpoint fica desativado.
@@ -545,6 +704,191 @@ app.post("/integration/cigam/pedidos/exec", async (req, res) => {
 
     const results = await processPendingOrders({ supabase, limit, dryRun });
     return res.json({ ok: true, dryRun, processed: results.length, results });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err?.message || "Unexpected error" });
+  }
+});
+
+/* ==========================================================================
+   PRIMEIRO ACESSO DE ADMIN/RH — sem senha padrão
+
+   Decisão do Winiston (17/08/2026): não existe mais senha pré-definida. Quem
+   nunca acessou cria a própria senha na primeira entrada, informando só o CPF.
+
+   ⚠️ RISCO ACEITO E CONHECIDO: este endpoint é PÚBLICO por decisão de produto.
+   O CPF é público (crachá, folha, planilha), então quem souber o CPF de um
+   admin que ainda não acessou pode criar a senha dele e virar admin. Foi
+   apresentado ao Winiston em 17/08/2026, com as duas alternativas fechadas
+   (código único por pessoa / liberação pelo painel), e ele escolheu o acesso
+   aberto mesmo assim.
+
+   O que limita o estrago, e por que cada pedaço existe:
+   - A janela fecha sozinha: `must_change_password` vira false na primeira
+     criação, e daí em diante o CPF sozinho não abre mais nada — só a senha.
+     Ou seja, o risco dura até cada pessoa fazer o primeiro acesso, e some
+     conta a conta. Por isso vale distribuir isso rápido.
+   - Toda criação vira linha em `admin_operation_logs` com IP e user agent
+     (action `first_access`). Se uma conta for tomada, dá para ver quando e
+     de onde — é o que permite reagir em vez de descobrir pelo estrago.
+   - Só vale para admin/RH que ainda não acessaram. Funcionário comum não
+     passa por aqui, e conta já criada recebe 409.
+   ========================================================================== */
+
+const MIN_PASSWORD_LENGTH = 8;
+
+function normalizeCpf(raw: unknown): string {
+  return String(raw ?? "").replace(/\D/g, "");
+}
+
+function isPrivilegedRole(role: unknown): boolean {
+  const normalized = String(role ?? "").toLowerCase();
+  return normalized === "admin" || normalized === "rh";
+}
+
+type FirstAccessLookup =
+  | { pendente: false; motivo: string }
+  | {
+      pendente: true;
+      userId: string;
+      employee: { id: string; full_name: string; cpf: string; role: string };
+      metadata: Record<string, any>;
+    };
+
+/**
+ * Responde se o CPF é de admin/RH que ainda não criou senha.
+ *
+ * Deliberadamente não distingue "CPF não existe" de "CPF é de funcionário
+ * comum" de "já criou a senha": tudo vira `pendente: false`. O app já descobre
+ * o papel pelo `get_employee_by_cpf`, então isso não esconde nada de quem olha
+ * de fora — mas evita transformar este endpoint num segundo lugar que confirma
+ * quem é admin.
+ */
+async function lookupPrimeiroAcesso(cpf: string): Promise<FirstAccessLookup> {
+  const { data: rows, error } = await supabase
+    .from("employees")
+    .select("id, full_name, cpf, role, user_id")
+    .eq("cpf", cpf)
+    .limit(1);
+
+  if (error) throw new Error(error.message);
+
+  const employee = rows?.[0];
+  if (!employee) return { pendente: false, motivo: "CPF não encontrado." };
+  if (!isPrivilegedRole(employee.role)) {
+    return { pendente: false, motivo: "Conta não é de admin/RH." };
+  }
+  if (!employee.user_id) {
+    // Conta privilegiada sem usuário no Auth: não dá para criar senha por aqui.
+    // Cai no fluxo de senha e falha no login, que é o comportamento honesto —
+    // criar o usuário aqui deixaria qualquer um provisionar um admin.
+    return { pendente: false, motivo: "Conta sem usuário de autenticação." };
+  }
+
+  const { data: userData, error: userError } = await supabase.auth.admin.getUserById(
+    employee.user_id
+  );
+  if (userError) throw new Error(userError.message);
+
+  const metadata = (userData?.user?.user_metadata ?? {}) as Record<string, any>;
+  if (metadata.must_change_password !== true) {
+    return { pendente: false, motivo: "Primeiro acesso já foi feito." };
+  }
+
+  return {
+    pendente: true,
+    userId: employee.user_id,
+    employee: {
+      id: employee.id,
+      full_name: employee.full_name,
+      cpf: employee.cpf,
+      role: String(employee.role),
+    },
+    metadata,
+  };
+}
+
+/** GET /automation/primeiro-acesso?cpf=... → { pendente: boolean } */
+app.get("/primeiro-acesso", async (req, res) => {
+  try {
+    const cpf = normalizeCpf(req.query.cpf);
+    if (cpf.length !== 11) {
+      return res.status(400).json({ ok: false, error: "Informe um CPF válido." });
+    }
+
+    const info = await lookupPrimeiroAcesso(cpf);
+    return res.json({ ok: true, pendente: info.pendente });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err?.message || "Unexpected error" });
+  }
+});
+
+/** POST /automation/primeiro-acesso  { cpf, senha } → cria a senha da conta. */
+app.post("/primeiro-acesso", async (req, res) => {
+  try {
+    const cpf = normalizeCpf(req.body?.cpf);
+    const senha = String(req.body?.senha ?? "");
+
+    if (cpf.length !== 11) {
+      return res.status(400).json({ ok: false, error: "Informe um CPF válido." });
+    }
+    if (senha.length < MIN_PASSWORD_LENGTH) {
+      return res.status(400).json({
+        ok: false,
+        error: `A senha precisa ter pelo menos ${MIN_PASSWORD_LENGTH} caracteres.`,
+      });
+    }
+
+    const info = await lookupPrimeiroAcesso(cpf);
+    if (!info.pendente) {
+      // 409 e não 403: para a conta já criada, a mensagem certa é "entre com
+      // sua senha", que é exatamente o que a tela faz com este status.
+      return res.status(409).json({
+        ok: false,
+        error: "Este acesso já tem senha. Entre com a sua senha.",
+      });
+    }
+
+    const { error: updateError } = await supabase.auth.admin.updateUserById(info.userId, {
+      password: senha,
+      user_metadata: { ...info.metadata, must_change_password: false },
+    });
+
+    if (updateError) {
+      return res.status(500).json({
+        ok: false,
+        error: updateError.message || "Não foi possível criar a senha.",
+      });
+    }
+
+    // Rastro de quem criou cada acesso. É o que sobra de defesa no desenho
+    // aberto: não impede a conta ser tomada, mas deixa ver que foi.
+    try {
+      await insertOperationLog(supabase, {
+        action: "first_access",
+        status: "success",
+        actor: {
+          userId: info.userId,
+          employeeId: info.employee.id,
+          cpf: info.employee.cpf,
+          fullName: info.employee.full_name,
+          role: info.employee.role,
+        },
+        message: `Senha criada no primeiro acesso de ${info.employee.full_name}.`,
+        metadata: {
+          ip:
+            String(req.headers["x-forwarded-for"] ?? "")
+              .split(",")[0]
+              .trim() || req.socket.remoteAddress || null,
+          userAgent: req.headers["user-agent"] ?? null,
+        },
+      });
+    } catch (logErr: any) {
+      // Log é rastro, não pré-requisito: já criamos a senha, e devolver erro
+      // aqui deixaria a pessoa achando que não funcionou.
+      console.error("Falha ao registrar primeiro acesso:", logErr?.message ?? logErr);
+    }
+
+    return res.json({ ok: true });
   } catch (err: any) {
     return res.status(500).json({ ok: false, error: err?.message || "Unexpected error" });
   }

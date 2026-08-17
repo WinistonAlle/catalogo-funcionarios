@@ -14,7 +14,11 @@ export type ResetWindow = {
   end: string;
 };
 
-export type AdminOperationAction = "sync_employees" | "restore_employee_balances";
+export type AdminOperationAction =
+  | "sync_employees"
+  | "restore_employee_balances"
+  /** Criação de senha no primeiro acesso de admin/RH (ver rota /primeiro-acesso). */
+  | "first_access";
 export type AdminOperationStatus = "running" | "success" | "failed" | "blocked";
 
 export type AdminOperationLogRow = {
@@ -57,6 +61,20 @@ export async function authorizePrivilegedUser(
   const { data: userData, error: userErr } = await supabase.auth.getUser(token);
   if (userErr || !userData?.user) {
     return { ok: false, status: 401, error: "Invalid session" };
+  }
+
+  // Conta ainda na senha padrão não opera nada.
+  //
+  // A tela já obriga a troca antes de deixar entrar, mas isso é só o navegador:
+  // sem esta checagem, dava para pedir um token direto na API de auth com a
+  // senha padrão e chamar /admin/* sem nunca passar pela tela. Como a senha
+  // padrão é a mesma para todos e o e-mail sai do CPF, seria adivinhável.
+  if (userData.user.user_metadata?.must_change_password === true) {
+    return {
+      ok: false,
+      status: 403,
+      error: "Troque a senha padrão antes de usar o sistema.",
+    };
   }
 
   const { data: employee, error: employeeError } = await supabase

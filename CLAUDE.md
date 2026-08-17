@@ -5,14 +5,23 @@ Funcionário loga por CPF, monta carrinho, paga com saldo mensal (desconto em
 folha) ou na retirada. Admin/RH gerenciam produtos, pedidos, relatórios e saldo.
 Os pedidos são lançados no ERP **CIGAM**.
 
-> **Atualizado em 12/08/2026, no servidor.** Nessa sessão a integração saiu do
-> papel: o SQL já havia sido rodado, o estoque foi populado pela primeira vez, o
-> primeiro pedido real foi ao CIGAM e o disparo automático foi ligado. O sistema
-> está **no ar e rodando sozinho**.
+> **Atualizado em 17/08/2026, no servidor.** A senha padrão `12345678` **deixou
+> de existir**: cada admin/RH cria a própria senha no primeiro acesso, digitando
+> só o CPF. Ver "Login de admin/RH". A integração com o CIGAM segue **no ar e
+> rodando sozinha** (validada de ponta a ponta em 17/08 — pedido `012920`).
 >
-> O que resta é pontual e está em "⚡ O que ainda falta". As seções de handoff
-> abaixo foram corrigidas — a versão de 06/08 descrevia um deploy que não existe
-> mais e dava como pendente um SQL que já rodou.
+> ⚠️ **A janela de primeiro acesso está ABERTA para as 7 contas.** Enquanto uma
+> pessoa não criar a senha dela, quem souber o CPF dela pode criar no lugar e
+> assumir a conta. É risco aceito e escolhido pelo Winiston, com as alternativas
+> na mesa — mas ele **fecha conta a conta, conforme cada um acessa**, então o
+> certo é avisar os 7 hoje e conferir no log. Ver "Login de admin/RH".
+>
+> A sessão anterior (13/08) foi de segurança: fechou uma **escalada de
+> privilégio** (qualquer pessoa na internet virava admin, sem senha, só com o
+> CPF de um admin — que a própria API entregava) e a leitura pública de CPF,
+> pedidos e saldo. Ver "🔒 SEGURANÇA".
+>
+> O que resta é pontual e está em "⚡ O que ainda falta".
 >
 > **O bloco 🛑 PARE continua valendo:** esta é máquina de produção.
 
@@ -87,11 +96,59 @@ pm2 logs webhook --lines 30 --nostream | grep -E "auto-sync|Estoque sync"
 
 ## ⚡ O que ainda falta
 
-1. **Usuário de integração dedicado no CIGAM** (ver Backlog). Hoje roda na
+1. **Avisar os 7 admins/RH para fazerem o primeiro acesso**, e acompanhar até
+   todos terem criado a senha. Cada conta que ainda não acessou é uma conta que
+   qualquer um com o CPF dela pode tomar — o risco só acaba quando a última
+   fizer o acesso. Conferir quem falta:
+
+   ```sql
+   SELECT e.full_name, e.role,
+          (u.raw_user_meta_data->>'must_change_password') AS falta_criar_senha
+   FROM public.employees e JOIN auth.users u ON u.id = e.user_id
+   WHERE e.role IN ('admin','rh') ORDER BY e.role, e.full_name;
+   ```
+
+   E conferir se quem criou foi mesmo a pessoa certa (IP e horário de cada
+   criação):
+
+   ```sql
+   SELECT actor_name, metadata->>'ip' AS ip, created_at
+   FROM public.admin_operation_logs WHERE action = 'first_access'
+   ORDER BY created_at DESC;
+   ```
+
+2. **Usuário de integração dedicado no CIGAM** (ver Backlog). Hoje roda na
    credencial pessoal do Winiston, que é a mesma do PDV da loja — cada login
    derruba a sessão do outro.
 
 Fora isso, o fluxo está fechado e rodando sozinho.
+
+## Painel de integração CIGAM (13/08/2026)
+
+`/admin/integracao` (card "Integração CIGAM" no `/admin`). Substitui o conserto
+manual no banco. Rotas: `GET /automation/admin/integracao/pedidos` e
+`POST /automation/admin/integracao/pedidos/:id/reenfileirar`, ambas atrás de
+`authorizePrivilegedUser`.
+
+**A classificação é por data, não pelo texto do erro.** A primeira versão
+adivinhava "lixo do Saibweb" procurando `playwright|locator|timeout` no
+`erp_error` e marcava como órfão tudo sem `erp_external_id` — o resultado foram
+**138 falsos órfãos**, porque os 278 pedidos `SYNCED` da era Saibweb também não
+têm número do CIGAM. O corte certo é `CIGAM_NO_AR_DESDE = 11/08/2026`: pedido
+anterior a isso nunca teve caminho para o ERP.
+
+Distribuição real de `erp_status` (13/08/2026): 278 `SYNCED` (Saibweb) · 56
+`ERROR` (Saibweb) · 20 `DISCARDED` (decisão de 06/08) · 4 `DONE` (CIGAM, todos
+com número). **Órfãos de verdade: zero.**
+
+⚠️ **A trava que importa:** reenfileirar recusa com `409` qualquer pedido que já
+tenha `erp_external_id` — reenviar criaria um segundo pedido no CIGAM, ou seja,
+nota fiscal duplicada. O `force: true` só deve ser usado depois de o pedido ter
+sido excluído no ERP (é o cenário do `011736`, ver "O que foi feito em
+12/08/2026"). A tela pede confirmação explícita antes de forçar.
+
+Validado em 13/08/2026: recusa em pedido com número (`011750` intacto), e
+sucesso num pedido sintético (`ERROR` → `PENDING`, `erp_error` limpo).
 
 ### Como testar a tela sem extensão de navegador
 
@@ -109,12 +166,29 @@ Caminho até a grade de produtos (foi assim que o overlay foi validado em
 1. `/` mostra a escolha "Sou Funcionário" / "Sou Cliente" — são **cards, não
    `<button>`**, então clique por texto, não por role.
 2. Login por CPF em `/login`.
-3. ⚠️ **CPF de admin cai em `/admin`, não no catálogo.** Navegue direto para
-   `/catalogo` depois de logar.
+3. ⚠️ **CPF de admin/RH não cai no catálogo** — vai para `/admin` ou `/rh`. Se a
+   conta já tem senha, aparece o campo `#senha`; se nunca acessou, aparece
+   direto "Crie sua senha" (`#nova-senha` + `#confirma-senha`). Navegue direto
+   para `/catalogo` depois de logar.
 4. `/catalogo` abre numa capa; clicar em "Ver catálogo de produtos" revela a
    grade. A busca no topo filtra e é o jeito rápido de achar um bloqueado.
 
 **Peça o CPF ao Winiston.** Não use o de um funcionário tirado do banco.
+
+Se precisar testar o caminho do funcionário comum sem ter CPF à mão, crie um
+funcionário de teste com um CPF fictício **válido no dígito verificador** (ex.:
+`11144477735`), teste e apague depois — foi assim que a RLS de 13/08 foi
+validada sem mexer na conta de ninguém:
+
+```bash
+KEY=$(grep '^SUPABASE_SERVICE_ROLE_KEY=' .env | cut -d= -f2-)
+curl -s -X POST -H "apikey: $KEY" -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" "http://127.0.0.1:54321/rest/v1/employees" \
+  -d '{"cpf":"11144477735","full_name":"ZZ TESTE (apagar)","role":"employee","credito_mensal_cents":5000}'
+# ... testa ...
+curl -s -X DELETE -H "apikey: $KEY" -H "Authorization: Bearer $KEY" \
+  "http://127.0.0.1:54321/rest/v1/employees?cpf=eq.11144477735"
+```
 
 ## O que foi feito em 12/08/2026
 
@@ -205,26 +279,108 @@ todo `pm2 restart webhook` dispara um sync completo.
 
 ---
 
-## 🔓 SEGURANÇA — o banco está aberto para a internet (12/08/2026)
+## 🔒 SEGURANÇA — resolvido em 13/08/2026
 
-**Não resolvido. É o problema mais grave do projeto hoje.**
+Antes desta data o banco estava aberto para a internet e, pior, **qualquer
+pessoa virava admin**. As duas coisas foram fechadas e verificadas ao vivo.
 
-O frontend fala direto com o Supabase usando a chave anon, que está embutida no
-bundle JS e é pública por definição, e a REST API está exposta em
-`https://apifuncionarios.gostinhomineiro.com`. `orders`, `order_items`,
-`products`, `profiles` e `admin_operation_logs` estão com **RLS desligado** e
-`anon` tem SELECT/INSERT/UPDATE/DELETE/TRUNCATE em todas. `employees` tem RLS
-ligado, mas `employees_select_all` e `employees_update_all` são `USING (true)` —
-catch-alls que anulam as políticas corretas (`_hr`/`_rh`, por `auth.uid()`) que
-existem logo ao lado.
+### A escalada de privilégio (era o pior, e não estava documentado)
 
-Confirmado ao vivo pela URL pública, com a chave anon: **356 pedidos com nome e
-CPF de todos os funcionários** são legíveis por qualquer um. E `employees` é
-**gravável** — dá para se dar saldo à vontade.
+A cadeia, toda executável de fora sem nenhuma credencial:
 
-O que torna isso corrigível sem quebrar nada: os caminhos que mexem em dinheiro
-(`place_order_with_wallet_v2`, `gm_apply_balance_delta`, `handle_wallet_on_orders`)
-e o login (`get_employee_by_cpf`) são **SECURITY DEFINER** e ignoram RLS.
+1. A chave `sb_publishable_...` está dentro do bundle JS — pública por
+   definição. Com ela, `GET /rest/v1/employees?select=cpf,role&role=eq.admin`
+   devolvia nome e CPF dos 5 admins.
+2. O login não tinha senha: `signInAnonymously()` dava um JWT a qualquer um.
+3. `link_employee_to_user` (SECURITY DEFINER, `EXECUTE` para `anon`) fazia
+   `update employees set user_id = auth.uid() where cpf = <o que você mandar>`,
+   sem checar nada além de o CPF existir.
+4. `authorizePrivilegedUser` autoriza casando `employees.user_id` com o dono do
+   token → todas as rotas `/admin/*` do webhook abriam: preço, saldo, reset de
+   saldos, disparo de pedido no CIGAM.
+
+De quebra, o passo 3 sobrescrevia o `user_id` do admin de verdade, derrubando
+o acesso dele.
+
+**Correção** (`scripts/2026-08-13-login-privilegiado-com-senha.sql`): admin/RH
+agora têm usuário real no Supabase Auth (`<cpf>@interno.gostinhomineiro.com` +
+senha), `employees.user_id` fixo, e a RPC **recusa** vincular conta admin/RH.
+Ver "Login de admin/RH" abaixo.
+
+### A leitura pública
+
+`scripts/2026-08-13-fecha-leitura-publica.sql`. O que estava legível de fora,
+confirmado com a chave do bundle: `employees` (255 linhas com CPF e papel),
+`employee_wallet_view` (255 CPFs + crédito mensal), `orders` (358 pedidos com
+nome e CPF), `order_items` e `employee_monthly_spend`.
+
+⚠️ **A pegadinha era a view.** `employee_wallet_view` é
+`SELECT id, cpf, credito_mensal_cents FROM employees` **sem WHERE**, e como view
+sem `security_invoker` rodava como postgres — ignorando a RLS da tabela. Fechar
+`employees` sem tratar a view não teria adiantado nada. Hoje ela é
+`security_invoker = true` e herda as policies.
+
+Agora: `anon` (quem não logou) não lê nada disso; `authenticated` lê só o que é
+seu; admin/RH leem tudo via `is_privileged_user()`.
+
+**`is_privileged_user()` existe porque `is_admin()` não serve**: `is_admin()`
+consulta `employees` e **não** é SECURITY DEFINER, então dentro de uma policy de
+`employees` ela recursiona. Era o mesmo defeito de `employees_select_rh`
+(`EXISTS (SELECT 1 FROM employees ...)`), que dava
+`infinite recursion detected in policy for relation "employees"` no instante em
+que a catch-all `USING (true)` saísse da frente. As 14 policies antigas de
+`employees` (4 catch-alls, 2 recursivas, 2 apontando para a tabela vazia
+`hr_users`, 2 via `is_admin()`) foram trocadas por duas: `employees_self_select`
+e `employees_privileged_select`.
+
+O que continua funcionando por serem SECURITY DEFINER (ignoram RLS):
+`place_order_with_wallet_v2`, `gm_apply_balance_delta`, `handle_wallet_on_orders`
+e `get_employee_by_cpf`. O webhook usa service role, que também ignora RLS.
+
+### Login de admin/RH — cada um cria a própria senha (17/08/2026)
+
+**Não existe mais senha padrão.** O `12345678` foi invalidado nas 7 contas por
+`scripts/reset-primeiro-acesso.ts`, que troca a senha por uma aleatória de 48
+caracteres que ninguém anota — o objetivo não é distribuir, é fazer a antiga
+parar de funcionar. As contas ficam com `must_change_password: true`.
+
+Na tela: digita o CPF →
+- **nunca acessou** → cai direto em "Crie sua senha" (`#nova-senha` +
+  `#confirma-senha`), sem pedir senha anterior;
+- **já criou senha** → aparece o campo `#senha` normal.
+
+Quem decide qual dos dois é o webhook (`GET /automation/primeiro-acesso?cpf=`),
+porque a flag mora no metadata do Auth e o navegador não lê isso sem estar
+logado. A criação em si é `POST /automation/primeiro-acesso {cpf, senha}`, que
+usa a service role para gravar a senha e derrubar a flag.
+
+⚠️ **Esse POST é público, e isso é uma decisão de produto, não um descuido.**
+O CPF é público, então enquanto uma conta não tiver senha, quem souber o CPF
+dela pode criar a senha e virar admin. Foi apresentado ao Winiston em 17/08/2026
+com duas alternativas fechadas (código único por pessoa, entregue individual; ou
+liberação de janela pelo painel) e ele escolheu o acesso aberto assim mesmo.
+
+O que limita o estrago:
+- **A janela fecha sozinha, conta a conta.** Criada a senha, `must_change_password`
+  vira false e o CPF sozinho não abre mais nada — o `POST` passa a devolver
+  `409`. Por isso a pressa em fazer os 7 acessarem é o controle de risco real.
+- **Todo primeiro acesso vira log** em `admin_operation_logs` (action
+  `first_access`) com IP e user agent. Não impede a conta ser tomada; permite
+  ver que foi, e por quem.
+- Vale só para admin/RH que ainda não acessaram; funcionário comum nem passa
+  por aqui.
+
+Se um dia se quiser fechar isso, o menor caminho é deixar o `POST` exigir um
+código por pessoa — a rota já isola tudo num lugar só.
+
+Validado de ponta a ponta em 17/08/2026, com admin sintético e navegador real:
+CPF novo → "Crie sua senha" → `/admin`; senhas divergentes e senha curta
+recusadas; segundo acesso passa a pedir senha; senha errada recusada; senha
+certa entra; `POST` repetido devolve `409`; log gravado com IP.
+
+Funcionário comum **não mudou**: continua entrando só com CPF (decisão do
+Winiston, 13/08/2026). O risco que sobra é conhecido: quem souber o CPF de um
+colega entra como ele e gasta o saldo dele.
 
 ## ✅ Escrita fechada em 12/08/2026
 
@@ -252,25 +408,30 @@ pedido de funcionário foi ao CIGAM sozinho (`011856`, sem aviso).
 
 ### Ainda aberto
 
-⚠️ **Descoberta que muda o plano:** os 5 admins e os 2 usuários de RH estão com
-`auth_user_id NULL` e `hr_users` está **vazia**. Ou seja, as políticas `_hr`/
-`_rh` não casam com ninguém, e hoje são as políticas `USING (true)` que fazem as
-telas de RH funcionarem. **Dropar as `_all` derruba o RH na hora** — não faça
-isso antes de vincular os privilegiados ao Supabase Auth.
+- **Funcionário comum entra só com CPF.** Decisão do Winiston. Quem souber o CPF
+  de um colega entra como ele e gasta o saldo dele. O CPF não vaza mais pela API,
+  mas circula em crachá, folha e planilha.
+- **A coluna `auth_user_id` é lixo** — é NULL para todo mundo, inclusive os
+  privilegiados. O vínculo real sempre foi `user_id`. As policies que olhavam
+  `auth_user_id` foram removidas; a coluna ficou. `hr_users` também está vazia e
+  sem uso.
+- `products` e `profiles` **não** foram fechados nesta rodada. `products` é
+  catálogo (o funcionário precisa ler), mas `employee_price` fica exposto;
+  `profiles` não foi auditado.
 
 O gatilho de `scripts/2026-08-12-bloqueia-alteracao-credito.sql` **não é mais
 necessário** — o revoke de `UPDATE` em `employees` resolveu o mesmo problema de
 forma mais direta. O arquivo fica como plano B, caso algum dia `anon` precise
 voltar a escrever na tabela por outro motivo.
 
-`scripts/2026-08-12-seguranca-rls.sql` tem o resto do plano, incluindo a leitura
-pública dos pedidos com CPF, que precisa de redesenho.
+`scripts/2026-08-12-seguranca-rls.sql` foi superado por
+`scripts/2026-08-13-fecha-leitura-publica.sql`. Trate o de 12/08 como histórico.
 
-⚠️ A correção de fundo é arquitetural, e o **PDV já é o modelo**: lá o browser
-nunca fala com o banco/ERP, só com um backend próprio (`server/`) que tem
-`requireAuth` e sessão. Aqui esse backend já existe pela metade
-(`automation/operations-webhook.ts`, com `authorizePrivilegedUser`) — falta as
-telas de Admin/RH passarem por ele em vez de escreverem direto na tabela.
+ℹ️ A migração das telas de Admin/RH para o webhook **deixou de ser urgente**: com
+admin/RH autenticados de verdade, deu para escopar por RLS sem reescrever tela
+nenhuma. Continua sendo o desenho mais limpo a prazo (o **PDV é o modelo**: lá o
+browser só fala com o `server/`, com `requireAuth` e sessão), mas agora é
+arquitetura, não buraco.
 
 ## Infra (esta máquina É o servidor de produção)
 
@@ -606,6 +767,17 @@ que foi confirmada ao vivo. Consultar antes de investigar do zero.
 
 ---
 
+## Validações já feitas (17/08/2026)
+
+- **Pedido de teste `012920`** criado por REST puro (`test-pedido.ts`), depois
+  da rodada do primeiro acesso, para confirmar que a integração continuava
+  íntegra. Lido de volta do CIGAM: cliente `009752`, unidade `001`, condição
+  `260`, controle **30 (Liberado)**, `Inconsistente: false` e
+  `TotalPedido`/`TotalFaturamento`/`TotalMercadoria` = 20,15 (prova de que o
+  `CalcularImposto` rodou). Parou no controle 30 de propósito: **não foi
+  efetivado e não emitiu documento**.
+  ⚠️ **Excluir no CIGAM** — é pedido de teste, e a observação dele diz isso.
+
 ## Validações já feitas (06/08/2026)
 
 - **Pedido 010329** criado em produção por REST puro: cliente `009752`, unidade
@@ -658,23 +830,77 @@ que foi confirmada ao vivo. Consultar antes de investigar do zero.
   ⚠️ Não confundir com os 3 salgados que têm "alho" no nome e **continuam à
   venda**: Kibe c/ Creme de Alho 3kg, Salgado Festa Kibe c/ Creme de Alho e
   Salgado Festa Risole de Alho.
-- Produtos sem `cigam_code` de propósito (alhos avulsos, OMG misto, PdQ
-  gourmet 1kg) — pedidos com eles falham com erro claro até ganharem código.
-- Painel/retry de erros de integração (não existe).
-- **Os 56 pedidos `erp_status = 'ERROR'` são lixo da era Saibweb**, não do CIGAM:
-  o `erp_error` deles é timeout de locator do Playwright, e o mais recente é de
-  09/07/2026. Nenhum tem `erp_external_id`. Como o processador só varre
-  `PENDING`, eles ficam parados e são inofensivos — mas poluem qualquer contagem
-  de "pedidos com erro". Limpar junto com o resto do Saibweb (PARTE 3 do SQL).
-- Limpeza dos restos do Saibweb: colunas `saibweb_status`/`saibweb_error` em
-  `orders`, `products.saibweb_code`, tabela `saibweb_jobs`. Confirmado em
-  06/08/2026 que **não há mais nenhuma referência a saibweb no código**. São
-  compat para bundles antigos do PWA. PARTE 3 do SQL (comentada — risco baixo
-  mas não zero).
-- `cigam_order_code_seq` + `next_cigam_order_code()` viraram código morto (quem
-  gera o número agora é o CIGAM). PARTE 4 do SQL (comentada, cosmética).
-- O projeto vizinho `/home/xulio/apps/totem-loja` ainda usa Saibweb (fora deste
-  repo).
+- **Produto sem `cigam_code` derruba o pedido INTEIRO**, não só a própria linha:
+  `buildItens` (`process-pending-orders.ts:150`) lança
+  `Produto sem código CIGAM` no primeiro item sem código, e o pedido vira
+  `ERROR` — com o saldo do funcionário **já debitado** no checkout.
+
+  ⚠️ Em 13/08/2026 o `Pão de Queijo Gourmet – Pacote 1kg` (R$ 17,70) estava
+  **visível e comprável** sem código. Não era teórico: `isOutOfStock`
+  (`src/lib/stock.ts`) é **fail-open**, então `stock_qty` nulo aparece como
+  disponível. Foi ocultado (`is_hidden = true`). Hoje há **0 produtos visíveis
+  sem `cigam_code`** — vale conferir isso depois de qualquer carga de produto:
+
+  ```sql
+  SELECT name FROM public.products
+   WHERE cigam_code IS NULL AND COALESCE(is_hidden,false) = false;
+  ```
+
+  Os outros 8 sem código são a linha Alho OMG, já oculta.
+- **Dois produtos com o nome errado** (não corrigido — decisão comercial):
+  `Pão Francês Integral 12 Horas 70g – Pacote 6kg` (`002006000017`) e o de
+  6 Horas (`002006000016`) dizem "Pacote 6kg" mas têm `weight = 7`. O peso 7 é
+  o **correto** (correção de 06/08 contra a tabela 005); quem está errado é o
+  nome. O funcionário lê "6kg" e paga R$ 44,80 por 7kg.
+- `Gostinho Gostoso Risole de Carne Seca com Mandioca 30g – Pacote 3kg`
+  (`002003000030`) tem código, mas o CIGAM nunca devolveu saldo para ele — é o
+  "1 sem linha" dos logs de sync. Pode ser código que não existe no ERP.
+- **A multiplicação de KG nunca rodou em produção**, mas foi **conferida contra o
+  PDV em 13/08/2026** e está correta. Os 4 pedidos reais até aqui foram todos de
+  peso 1 ou PCT; os 64 produtos com peso 2–7 seguem sem exercitar o caminho
+  contra o CIGAM de verdade.
+
+  As duas implementações chegam no mesmo lugar por caminhos diferentes — vale
+  saber disso antes de "consertar" uma para parecer com a outra:
+
+  | | PDV (`cigamQuantity`, orderService.ts) | Catálogo (`buildItens`) |
+  |---|---|---|
+  | o item guarda | preço **por kg** | preço **do pacote** (kg × peso) |
+  | manda ao CIGAM | `unitPrice` direto | `unit_price ÷ peso` |
+  | quantidade | `qtd × peso`, `.toFixed(3)` | `qtd × peso`, `.toFixed(3)` |
+
+  O CIGAM recebe preço-por-kg × quantidade-em-kg nos dois casos.
+
+  O `.toFixed(3)` foi copiado do PDV em 13/08/2026: peso fracionário estraga o
+  float. Os pesos em uso hoje (1, 2, 3, 3.5, 5, 7) são limpos, mas a linha Alho
+  OMG é de **1,01kg** e `3 × 1.01` dá `3.0300000000000002`. Coberto por teste em
+  `automation/cigam/process-pending-orders.test.ts`.
+- ~~Painel/retry de erros de integração~~ — **feito em 13/08/2026**, ver "Painel
+  de integração CIGAM".
+- ~~Os 56 pedidos `erp_status = 'ERROR'`~~ — **apagados em 13/08/2026** a pedido
+  do Winiston (`scripts/2026-08-13-apaga-pedidos-erro.sql`), junto com seus 177
+  itens. Eram todos da era Saibweb (18/04 a 09/07), nenhum com
+  `erp_external_id`, ou seja, nenhum existia no CIGAM.
+  Backup em `~/backup-pedidos-20260813.sql` (dump dos 358 pedidos + 1019 itens
+  ANTES do delete — restaura os apagados se precisar).
+  Saldo de ninguém mudou: o trigger `handle_wallet_on_orders` só existe em
+  INSERT/UPDATE, e nenhum dos 56 caía no ciclo corrente (2026-07).
+  Fica inconsistente só o histórico: as linhas de `employee_monthly_spend` de
+  maio/junho ainda contam gasto cujos pedidos não existem mais.
+  **Sobraram 302 pedidos**: 278 SYNCED + 20 DISCARDED + 4 DONE.
+- ~~Limpeza dos restos do Saibweb~~ — **feita em 13/08/2026**
+  (`scripts/2026-08-13-limpeza-saibweb.sql`). Removidos:
+  `orders.saibweb_status` e `orders.saibweb_error` (ambas 0 de 358 preenchidas),
+  a tabela `saibweb_jobs` (0 linhas), `cigam_order_code_seq` (nunca usada,
+  `is_called = false`), `next_cigam_order_code()` e `products.saibweb_code`.
+  Esta última tinha **180 de 181 preenchidos** — backup em
+  `~/backup-saibweb-code-20260813.csv` antes do drop.
+  Conferido depois: 358 pedidos / 181 produtos / 255 funcionários intactos,
+  telas de funcionário e de admin funcionando.
+- **O totem-loja NÃO usa este banco.** O CLAUDE.md antigo dizia só que ele
+  "ainda usa Saibweb", o que dava a entender risco compartilhado. Ele aponta
+  para outro Supabase (`jsltcdtwdeemwchfyylk.supabase.co`), então a limpeza aqui
+  não o afeta.
 
 ---
 

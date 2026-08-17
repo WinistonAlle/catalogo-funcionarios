@@ -144,7 +144,7 @@ function buildObservacao(order: OrderRow): string {
   return `${nome} - PEDIDO ${order.order_number}`.slice(0, 251);
 }
 
-function buildItens(order: OrderRow) {
+export function buildItens(order: OrderRow) {
   const centroArmazenagem = process.env.CIGAM_CENTRO_ARMAZENAGEM ?? "001";
 
   return order.order_items.map((item) => {
@@ -159,7 +159,13 @@ function buildItens(order: OrderRow) {
 
     return {
       codigoMaterial: produto.cigam_code,
-      quantidade: porKg ? item.quantity * peso : item.quantity,
+      // Arredondado em 3 casas como o PDV faz (`cigamQuantity`, em
+      // pdv-gm/server/src/orders/orderService.ts): peso fracionário estraga o
+      // float e mandaria lixo para o CIGAM. Os pesos em uso hoje (1, 2, 3, 3.5,
+      // 5, 7) são limpos, mas a linha Alho OMG é de 1,01kg — `3 * 1.01` dá
+      // 3.0300000000000002. Ela está oculta e sem cigam_code agora; a guarda
+      // existe para o dia em que voltar.
+      quantidade: porKg ? Number((item.quantity * peso).toFixed(3)) : item.quantity,
       precoUnitario: porKg
         ? Math.round((item.unit_price / peso) * 100) / 100
         : item.unit_price,

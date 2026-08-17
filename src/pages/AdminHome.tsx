@@ -369,6 +369,13 @@ export default function AdminHome() {
               <Subtitle>Consultar, editar e acompanhar o histórico dos pedidos.</Subtitle>
             </Box>
 
+            <Box type="button" onClick={() => navigate("/admin/integracao")}>
+              <Title>Integração CIGAM</Title>
+              <Subtitle>
+                Pedidos que não chegaram ao ERP: presos na fila, órfãos e erros. Reenfileirar.
+              </Subtitle>
+            </Box>
+
             <HistoryBox type="button" onClick={() => navigate("/operacoes")}>
               <Title>Histórico Operacional</Title>
               <Subtitle>

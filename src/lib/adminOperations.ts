@@ -162,3 +162,49 @@ export function formatOperationStatus(status?: AdminOperationStatus | null) {
   if (status === "blocked") return "Bloqueado";
   return "Desconhecido";
 }
+
+/* ===================== Painel de integração CIGAM ===================== */
+
+export type PedidoIntegracao = {
+  id: string;
+  order_number: string;
+  erp_status: string | null;
+  erp_error: string | null;
+  erp_external_id: string | null;
+  created_at: string;
+  total_cents: number | null;
+  funcionario: string | null;
+  /** Criado antes de 11/08/2026: nunca teve caminho para o CIGAM. */
+  legado: boolean;
+  /** PENDING parado além do intervalo do auto-sync — sintoma, não estado normal. */
+  preso: boolean;
+  /** Descartado de propósito em 06/08/2026. Não é problema. */
+  descartado: boolean;
+  /** Sem número do CIGAM e fora da fila: nunca será reenviado sozinho. */
+  orfao: boolean;
+};
+
+export function listarPedidosIntegracao(limit = 100) {
+  return requestWithAuth<{ ok: boolean; rows: PedidoIntegracao[] }>(
+    [`/automation/admin/integracao/pedidos?limit=${limit}`],
+    { method: "GET" }
+  );
+}
+
+/**
+ * Devolve o pedido para a fila do processador.
+ *
+ * Se o pedido já tem número do CIGAM, o servidor recusa com 409 e
+ * `requerConfirmacao` — reenfileirar criaria nota fiscal duplicada. Só passe
+ * `force` depois que o pedido tiver sido excluído no ERP.
+ */
+export function reenfileirarPedido(id: string, force = false) {
+  return requestWithAuth<{ ok: boolean; order_number: string }>(
+    [`/automation/admin/integracao/pedidos/${encodeURIComponent(id)}/reenfileirar`],
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force }),
+    }
+  );
+}
