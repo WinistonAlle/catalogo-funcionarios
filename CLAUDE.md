@@ -778,6 +778,61 @@ antes**. Detalhes que valem a pena não desfazer:
 
 ---
 
+## Lista de separação impressa na portaria (18/08/2026)
+
+A câmara fria só separa pedido de funcionário até as 13:40. Antes disso era só
+um aviso na tela do Checkout (`isAfterSeparationCutoff`) — o pedido das 15h
+entrava no CIGAM e era efetivado igual ao das 9h, sem nenhum rastro pra quem
+separa. Agora, uma vez por dia útil às 13:40, `automation/print/portariaList.ts`
+imprime uma folha por pedido pago e ainda não impresso na impressora da
+portaria — folhas separadas, porque a câmara fria grampeia cada uma.
+
+**O CIGAM não muda.** Continua entrando em até 2 minutos, como sempre — só a
+impressão passa a ser agrupada e no horário certo. Spec completa:
+`docs/superpowers/specs/2026-08-18-lista-portaria-design.md`.
+
+### Como funciona sem precisar de "já rodou hoje"
+
+O disparo (`PORTARIA_PRINT_INTERVAL_MS`, mesmo padrão do `CIGAM_AUTO_SYNC_INTERVAL_MS`)
+roda de tempos em tempos o dia inteiro, mas só faz algo quando `isBusinessDayInSaoPaulo`
+e `isAfterCutoffInSaoPaulo` (`automation/holidays.ts`, `automation/print/cutoff.ts`)
+são verdadeiros — e mesmo aí, só imprime pedido com `created_at` **antes** do
+instante de hoje às 13:40 (`cutoffInstantForToday`). Pedido feito às 17h não é
+alcançado por essa checagem: simplesmente espera o corte de amanhã, sem
+lógica extra. E como esse instante não muda dentro do mesmo dia, reexecuções
+(porque a impressora falhou às 13:40) pegam exatamente o mesmo conjunto —
+idempotente e retry-safe sem precisar de flag de "já rodou".
+
+### Dia útil = calculado, não cadastrado
+
+Feriado nacional é fórmula (datas fixas + as que derivam da Páscoa pelo
+algoritmo de Gauss), correta para qualquer ano sem manutenção. Só os locais
+(municipal de Ituiutaba, ponto facultativo, recesso) exigem atualização manual,
+em `FERIADOS_LOCAIS` (`automation/holidays.ts`) — uma vez por ano. Esquecer um
+não é grave: a rotina não roda naquele dia e os pedidos entram na lista do
+próximo dia útil sozinhos.
+
+### Impressão: porta o módulo já validado no PDV
+
+`automation/print/printClient.ts` é o mesmo módulo de
+`pdv-gostinho-mineiro/server/src/print/printClient.ts` (conversão PDF→PostScript
+via `cupsfilter`/`pdftops`, confirmação real de que o job terminou via
+`Get-Job-Attributes` — `Print-Job` sozinho só confirma que a impressora
+RECEBEU o arquivo). Diferença: 1 via por folha aqui (lá são 2, decisão própria
+da loja), `job-name` diferente.
+
+### Env vars (produção, no servidor)
+
+```
+PORTARIA_PRINTER_HOST=192.168.100.53       # impressora da portaria
+PORTARIA_PRINT_INTERVAL_MS=300000          # 5 min — só dispara de fato às 13:40
+```
+
+**Antes de apontar para a portaria de verdade**, validar contra
+`192.168.100.142` ("Impressora da Sala", cadastrada como teste no
+`printer_settings` do PDV) — só alcançável de dentro da rede da loja, ou seja,
+só do servidor, nunca da máquina de desenvolvimento.
+
 ## ⚠️ Preço = preço/kg × peso — mexer em `weight` muda o que o funcionário paga
 
 `src/lib/pricing.ts`:
@@ -1009,7 +1064,8 @@ diretório — `npx tsc --noEmit` na raiz **não checa nada** dele):
 ```bash
 npx tsc --noEmit --strict --target ES2022 --lib ES2023,DOM --module ESNext \
   --moduleResolution bundler --skipLibCheck --types node \
-  automation/cigam/*.ts automation/operations-webhook.ts
+  automation/cigam/*.ts automation/operations-webhook.ts \
+  automation/print/*.ts automation/holidays.ts automation/types/*.d.ts
 ```
 
 Rodando **fora** do servidor, sobrescrever `SUPABASE_URL` para o domínio público
