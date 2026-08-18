@@ -455,6 +455,45 @@ arquitetura, não buraco.
 - Frontend é PWA — mudanças de schema que quebram bundle antigo precisam de
   colunas de compatibilidade temporárias.
 
+### O PWA agora se atualiza sozinho (18/08/2026)
+
+**Sintoma que revelou o problema:** um admin tentou o primeiro acesso e recebeu
+"Esta conta exige login com senha", sem jeito de criar a senha. A mensagem não
+existe no app — vem do `raise exception` dentro de `link_employee_to_user`
+(`scripts/2026-08-13-login-privilegiado-com-senha.sql`). Ou seja, o navegador
+rodava JS **anterior a 13/08**, que chamava aquela RPC para todo mundo, contra o
+banco novo, que já barra admin/RH ali. Backend e bundle publicado estavam certos
+o tempo todo.
+
+**Causa:** o `sw.js` gerado já fazia `skipWaiting()` + `clientsClaim()`, então o
+service worker novo assumia na hora — mas isso **não recarrega a página**, e a
+aba seguia executando o JS que já estava na memória. Medido com dois builds
+servidos de verdade: com uma recarga a página continuava na versão velha, e só
+a **segunda** trazia a nova. Ninguém descobre isso sozinho.
+
+**Correção:** `public/sw-auto-reload.js` (injetado no `sw.js` por
+`workbox.importScripts`) chama `client.navigate()` nas janelas abertas quando o
+worker novo ativa. Funciona **de dentro do service worker** de propósito: o
+navegador re-executa o `sw.js` a cada visita, então isso alcança até quem está
+preso num bundle que não conhece esta correção — não precisa de aba anônima nem
+de limpar cache. `src/lib/swUpdates.ts` é a rede de segurança do lado do app
+(`controllerchange` + `registration.update()` a cada 30 min e ao voltar do
+segundo plano, que é o caso do celular).
+
+Só recarrega em **atualização**, nunca na primeira instalação — a trava é
+`registration.active` no `install`, gravada num cache porque o worker pode ser
+desligado entre `install` e `activate`. Sem ela, todo visitante novo levaria um
+reload sem motivo. Recarregar é seguro porque carrinho, sessão e filtros moram
+no `localStorage`.
+
+Validado em navegador real: sem a correção a página fica na versão antiga depois
+de 1 recarga; com ela, atualiza sozinha; instalação limpa não recarrega; e não
+há loop (depois do reload não existe nova ativação de worker).
+
+⚠️ **`npm ci` não roda neste repo** — o `package-lock.json` está fora de sinc com
+o `package.json` (faltam os pacotes do esbuild `0.28.2`). O fluxo de deploy
+descrito acima diz `npm ci`; use `npm install` até o lockfile ser regerado.
+
 ## Testes
 
 `npm test` (vitest, roda em Node — a lógica coberta é pura, não precisa de DOM).

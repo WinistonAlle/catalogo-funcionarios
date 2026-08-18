@@ -62,6 +62,8 @@ export default defineConfig(({ mode }) => ({
       workbox: {
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         navigateFallback: "/index.html",
+        // Recarrega as abas presas no bundle antigo. Ver public/sw-auto-reload.js.
+        importScripts: ["/sw-auto-reload.js"],
         runtimeCaching: [
           {
             urlPattern: ({ url }) =>
