@@ -7,12 +7,19 @@ import { printOrderSheet } from "./printClient";
 type ItemRow = {
   product_name: string;
   quantity: number;
+  unit_price: number;
+  products: {
+    cigam_code: string | null;
+    cigam_unit: string | null;
+    weight: number | null;
+  } | null;
 };
 
 type OrderRow = {
   id: string;
   order_number: string;
   employee_name: string | null;
+  erp_external_id: string | null;
   order_items: ItemRow[];
 };
 
@@ -30,7 +37,9 @@ async function buscarPedidosParaImprimir(
 ): Promise<OrderRow[]> {
   const { data, error } = await supabase
     .from("orders")
-    .select("id, order_number, employee_name, order_items(product_name, quantity)")
+    .select(
+      "id, order_number, employee_name, erp_external_id, order_items(product_name, quantity, unit_price, products(cigam_code, cigam_unit, weight))"
+    )
     .is("printed_at", null)
     .is("cancelled_at", null)
     .lt("created_at", corte.toISOString())
@@ -76,10 +85,22 @@ export async function printPortariaList(params: {
     try {
       const pdf = await buildOrderSheetPdf({
         orderNumber: pedido.order_number,
+        cigamOrderId: pedido.erp_external_id,
         employeeName: pedido.employee_name ?? "Funcionário",
         items: pedido.order_items.map((item) => ({
+          cigamCode: item.products?.cigam_code ?? null,
           productName: item.product_name,
           quantity: item.quantity,
+          unitPrice: item.unit_price,
+          // Peso total só faz sentido para item vendido por KG — mesma regra
+          // de src/lib/pricing.ts (getProductWeight): peso <= 0 vira 1 (ex.:
+          // "Pacote 1kg"), pra bater com o que o funcionário de fato pagou.
+          packageWeightKg:
+            (item.products?.cigam_unit ?? "").trim().toUpperCase() === "KG"
+              ? item.products?.weight && item.products.weight > 0
+                ? item.products.weight
+                : 1
+              : undefined,
         })),
       });
 
