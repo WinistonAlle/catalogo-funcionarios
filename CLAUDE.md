@@ -684,6 +684,46 @@ falha técnica nossa.
   `Index.tsx` usa `select("*")`, então **não quebra** se as colunas não
   existirem — vira `undefined` → `null` → disponível.
 
+### A tela se recarrega sozinha (18/08/2026)
+
+Pergunta do Winiston que revelou isto: *"se eu ficar com o site aberto 3 dias,
+como vai atualizar o estoque?"* Resposta de então: **não atualizava.** O
+`useEffect` que carrega os produtos tinha lista de dependências vazia — rodava
+no mount e nunca mais. Numa aba deixada aberta, `stock_qty` e `employee_price`
+ficavam congelados no instante da abertura, por dias. O sync de 30 min
+continuava certo no servidor; o dado é que não tinha como chegar até a aba.
+
+**O estoque tinha rede, o preço não.** Item esgotado ainda era barrado pela
+reconsulta ao vivo do checkout, então nenhum pedido errado chegava ao CIGAM — o
+custo era o funcionário montar o carrinho e só levar o "não" no fim, e o
+inverso, silencioso: item que voltou ao estoque seguia como "Indisponível" e
+ninguém reclama de venda que não aconteceu. **Preço é pior**: o valor do pedido
+sai de `getUnitPrice(item.product)` (`src/services/orders.ts:76`), sobre o
+produto que está no navegador. Um reajuste do RH não alcançava a aba aberta, e o
+pedido era gravado pelo preço velho, sem nada para barrar.
+
+Hoje o catálogo se recarrega quando a aba volta a ficar visível (ou recebe
+foco), com piso de 1 min entre buscas, e a cada 10 min enquanto visível. É só
+leitura no Supabase — **não encosta no CIGAM**, então não disputa sessão com o
+PDV, que é a restrição que obriga o sync de estoque a ser espaçado.
+
+O cache do `localStorage` passou a guardar a hora (`{ ts, produtos }`) e vale 30
+min: passado isso ele não pinta mais a tela, porque abrir o app mostrando preço
+de dias atrás como se fosse de agora é o mesmo defeito de novo. O formato antigo
+(array cru, sem hora) continua sendo lido, mas sempre como vencido.
+
+Validado em navegador real (Playwright): foco dentro da trava não busca de novo,
+foco depois da trava busca, a tela sobrevive à recarga silenciosa, e os quatro
+estados de cache (recente, de 3 dias, formato antigo, corrompido) se comportam
+sem quebrar a tela.
+
+⚠️ **O carrinho continua com cópia própria dos produtos.** Item já adicionado
+mantém o preço de quando entrou, mesmo depois da recarga. O conserto de raiz é o
+preço do pedido sair do banco, não do navegador — o que de quebra fecha o fato
+de `order_items` ainda aceitar `INSERT` de `anon`, ou seja, hoje o navegador
+dita o preço. Não foi feito: muda o que a pessoa vê depois de já ter escolhido,
+e é decisão do Winiston.
+
 ### Armadilhas do `Disponibilidade/Buscar` (todas confirmadas ao vivo)
 
 - A resposta **não** usa o envelope `{success, messages, data}` — o corpo já é o

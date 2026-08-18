@@ -58,6 +58,30 @@ const CATEGORY_NAME_BY_ID: Record<number, string> = {
 
 const ITEMS_PER_PAGE = 24;
 const PRODUCTS_CACHE_KEY = "gm_catalog_products_v1";
+
+/**
+ * O catálogo era carregado uma vez só, no mount. Numa aba deixada aberta o
+ * `stock_qty` e o `employee_price` congelavam ali: depois de um dia a tela
+ * mostrava estoque de ontem, e um reajuste do RH não chegava — o preço do
+ * pedido sai do produto que está no navegador (`orders.ts` → `getUnitPrice`).
+ * O estoque ainda tinha a reconsulta ao vivo do checkout como rede; o preço,
+ * nenhuma. Por isso o catálogo se recarrega sozinho.
+ *
+ * Só leitura no Supabase — não encosta no CIGAM, então não disputa sessão com
+ * o PDV da loja (é essa disputa que obriga o sync de estoque a ser de 30 min).
+ */
+const PRODUCTS_REFRESH_MS = 10 * 60 * 1000;
+
+/** Piso entre duas buscas, para alternar de aba não virar martelo no banco. */
+const PRODUCTS_REFRESH_THROTTLE_MS = 60 * 1000;
+
+/**
+ * De quanto o cache do localStorage ainda serve para pintar a tela na abertura.
+ * Passado disso ele é ignorado e a tela espera o dado real: melhor um instante
+ * de "carregando" do que mostrar preço e estoque de dias atrás como se fossem
+ * de agora.
+ */
+const PRODUCTS_CACHE_TTL_MS = 30 * 60 * 1000;
 const SEARCH_CACHE_KEY = "gm_catalog_search";
 const CATEGORY_CACHE_KEY = "gm_catalog_category";
 const LIGHT_MODE_KEY = "gm_light_mode";
@@ -665,8 +689,16 @@ const Index: React.FC = () => {
         const cached = localStorage.getItem(PRODUCTS_CACHE_KEY);
         if (cached) {
           const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed)) {
-            setProducts(parsed);
+
+          // Formato antigo era o array cru, sem hora. Continua sendo lido para
+          // quem já tem um cache desses gravado, mas como se fosse vencido —
+          // sem hora não dá para saber se é de agora ou da semana passada.
+          const lista = Array.isArray(parsed) ? parsed : parsed?.produtos;
+          const gravadoEm = Array.isArray(parsed) ? 0 : Number(parsed?.ts ?? 0);
+          const aindaVale = Date.now() - gravadoEm < PRODUCTS_CACHE_TTL_MS;
+
+          if (Array.isArray(lista) && aindaVale) {
+            setProducts(lista);
             setLoading(false);
             hasLoadedFromCache.current = true;
           }
@@ -716,7 +748,10 @@ const Index: React.FC = () => {
           setProducts(mapped);
 
           try {
-            localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(mapped));
+            localStorage.setItem(
+              PRODUCTS_CACHE_KEY,
+              JSON.stringify({ ts: Date.now(), produtos: mapped })
+            );
           } catch (err) {
             console.error("Erro ao salvar cache de produtos:", err);
           }
@@ -728,11 +763,39 @@ const Index: React.FC = () => {
       }
     }
 
+    let buscadoEm = 0;
+
+    function recarregarSePreciso() {
+      if (!isMounted) return;
+      if (Date.now() - buscadoEm < PRODUCTS_REFRESH_THROTTLE_MS) return;
+      buscadoEm = Date.now();
+      // Já existe produto na tela: a recarga é silenciosa, sem "carregando".
+      hasLoadedFromCache.current = true;
+      void loadProducts();
+    }
+
+    buscadoEm = Date.now();
     loadProducts();
+
+    // Volta do segundo plano é o momento que importa: no celular o app quase
+    // nunca é fechado, só alterna.
+    function aoFicarVisivel() {
+      if (document.visibilityState === "visible") recarregarSePreciso();
+    }
+    document.addEventListener("visibilitychange", aoFicarVisivel);
+    window.addEventListener("focus", recarregarSePreciso);
+
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") recarregarSePreciso();
+    }, PRODUCTS_REFRESH_MS);
+
     return () => {
       isMounted = false;
+      document.removeEventListener("visibilitychange", aoFicarVisivel);
+      window.removeEventListener("focus", recarregarSePreciso);
+      window.clearInterval(timer);
     };
-     
+
   }, []);
 
   /* ---------------- Destaques: modo (auto/manual) ---------------- */
