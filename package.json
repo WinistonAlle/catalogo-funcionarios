@@ -40,6 +40,7 @@
     "express": "^5.2.1",
     "framer-motion": "^12.23.26",
     "googleapis": "^167.0.0",
+    "ipp": "^2.0.1",
     "jspdf": "^3.0.4",
     "jspdf-autotable": "^5.0.2",
     "lucide-react": "^0.462.0",
