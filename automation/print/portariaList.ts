@@ -85,11 +85,23 @@ export async function printPortariaList(params: {
 
       await printOrderSheet(pdf, printerHost);
 
-      const { error: updateError } = await supabase
-        .from("orders")
-        .update({ printed_at: new Date().toISOString() })
-        .eq("id", pedido.id);
-      if (updateError) throw new Error(updateError.message);
+      // A folha já saiu de verdade (printOrderSheet só resolve depois de a
+      // impressora confirmar). Se o UPDATE falhar daqui pra frente, isolar
+      // esse erro para dizer isso explicitamente: sem marcar printed_at, a
+      // próxima checagem vai reimprimir este pedido — uma folha extra, não
+      // uma falha de impressão de verdade. Quem olhar o log precisa
+      // distinguir os dois casos.
+      try {
+        const { error: updateError } = await supabase
+          .from("orders")
+          .update({ printed_at: new Date().toISOString() })
+          .eq("id", pedido.id);
+        if (updateError) throw new Error(updateError.message);
+      } catch (updateErr: any) {
+        throw new Error(
+          `Folha impressa com sucesso, mas falhou ao marcar printed_at — este pedido será impresso de novo na próxima checagem: ${updateErr?.message ?? updateErr}`
+        );
+      }
 
       resultados.push({ orderId: pedido.id, orderNumber: pedido.order_number, status: "IMPRESSO" });
     } catch (err: any) {
