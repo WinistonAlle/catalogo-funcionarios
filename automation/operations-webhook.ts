@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
 import { processPendingOrders } from "./cigam/process-pending-orders";
 import { syncEstoque } from "./cigam/sync-estoque";
+import { printPortariaList } from "./print/portariaList";
 import { CigamClient } from "./cigam/client";
 import {
   filtrarPayloadAviso,
@@ -1004,6 +1005,36 @@ async function runCigamAutoSync() {
   }
 }
 
+/**
+ * Lista de separação impressa na portaria: uma folha por pedido pago e ainda
+ * não impresso, uma vez por dia útil às 13:40 (o resto das checagens no
+ * mesmo dia não fazem nada além de retentar o que falhou — ver
+ * print/portariaList.ts). Desligado por padrão — só liga com
+ * PORTARIA_PRINTER_HOST e PORTARIA_PRINT_INTERVAL_MS > 0 configurados.
+ */
+const PORTARIA_PRINTER_HOST = process.env.PORTARIA_PRINTER_HOST;
+const PORTARIA_PRINT_INTERVAL_MS = Number(process.env.PORTARIA_PRINT_INTERVAL_MS ?? 0);
+let portariaPrintRunning = false;
+
+async function runPortariaPrint() {
+  if (portariaPrintRunning) return; // evita sobreposição de execuções
+  if (!PORTARIA_PRINTER_HOST) return;
+  portariaPrintRunning = true;
+  try {
+    const resultados = await printPortariaList({ supabase, printerHost: PORTARIA_PRINTER_HOST });
+    if (resultados.length > 0) {
+      const ok = resultados.filter((r) => r.status === "IMPRESSO").length;
+      const erros = resultados.filter((r) => r.status === "ERRO");
+      console.log(`🖨️ Lista da portaria: ${ok} impresso(s), ${erros.length} com erro.`);
+      for (const e of erros) console.log(`   ⚠️ ${e.orderNumber}: ${e.error}`);
+    }
+  } catch (err: any) {
+    console.error("🖨️ Lista da portaria falhou:", err?.message ?? err);
+  } finally {
+    portariaPrintRunning = false;
+  }
+}
+
 app.listen(PORT, () => {
   console.log(`🧩 Webhook de operações rodando em http://localhost:${PORT}`);
   if (CIGAM_AUTO_SYNC_INTERVAL_MS > 0) {
@@ -1021,5 +1052,17 @@ app.listen(PORT, () => {
     void runStockSync(); // primeira carga logo ao subir
   } else {
     console.log("📦 Estoque sync desligado (defina STOCK_SYNC_INTERVAL_MS para ligar).");
+  }
+
+  if (PORTARIA_PRINT_INTERVAL_MS > 0 && PORTARIA_PRINTER_HOST) {
+    const segundos = Math.round(PORTARIA_PRINT_INTERVAL_MS / 1000);
+    console.log(
+      `🖨️ Lista da portaria LIGADA — checando a cada ${segundos}s (imprime uma vez por dia útil, às 13:40).`
+    );
+    setInterval(runPortariaPrint, PORTARIA_PRINT_INTERVAL_MS);
+  } else {
+    console.log(
+      "🖨️ Lista da portaria desligada (defina PORTARIA_PRINTER_HOST e PORTARIA_PRINT_INTERVAL_MS para ligar)."
+    );
   }
 });
