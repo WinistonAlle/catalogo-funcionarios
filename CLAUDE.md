@@ -5,6 +5,16 @@ Funcionário loga por CPF, monta carrinho, paga com saldo mensal (desconto em
 folha) ou na retirada. Admin/RH gerenciam produtos, pedidos, relatórios e saldo.
 Os pedidos são lançados no ERP **CIGAM**.
 
+> **Atualizado em 18/08/2026, do Mac de desenvolvimento — feito pra você, sessão
+> do SERVIDOR, executar agora.** Tem uma feature pronta, testada e **ainda fora
+> do ar**: a lista de separação impressa na portaria. Está na branch
+> `feature/lista-portaria` (**não** está na `main`), com 8 impressões reais já
+> confirmadas numa impressora de teste — só falta aplicar o SQL, subir pro
+> servidor e ligar de verdade. Passo a passo completo, pronto pra copiar e
+> colar, em **"🖨️ Lista de separação da portaria — PARA FAZER AGORA NO
+> SERVIDOR"**, logo abaixo desta caixa. É o item mais urgente do dia — comece
+> por ele.
+
 > **Atualizado em 17/08/2026, no servidor.** A senha padrão `12345678` **deixou
 > de existir**: cada admin/RH cria a própria senha no primeiro acesso, digitando
 > só o CPF. Ver "Login de admin/RH". A integração com o CIGAM segue **no ar e
@@ -24,6 +34,115 @@ Os pedidos são lançados no ERP **CIGAM**.
 > O que resta é pontual e está em "⚡ O que ainda falta".
 >
 > **O bloco 🛑 PARE continua valendo:** esta é máquina de produção.
+
+---
+
+# 🖨️ Lista de separação da portaria — PARA FAZER AGORA NO SERVIDOR
+
+Feature completa, revisada e testada (código + 8 impressões reais, no
+`192.168.100.142`, impressora de teste da sala). Falta só o deploy. Comandos na
+ordem — pare e me chame (o Winiston) se algum passo der erro em vez de
+prosseguir por conta própria.
+
+**Contexto rápido**, se quiser mais detalhe antes de rodar: spec em
+`docs/superpowers/specs/2026-08-18-lista-portaria-design.md`, plano em
+`docs/superpowers/plans/2026-08-18-lista-portaria.md`, e a explicação técnica
+completa na seção **"Lista de separação impressa na portaria"** logo abaixo
+neste arquivo.
+
+```bash
+cd /home/xulio/apps/catalogo-funcionarios
+
+# 1) Este código está numa branch separada, ainda NÃO está na main.
+git fetch origin
+git checkout feature/lista-portaria
+git pull
+
+# 2) Coluna nova em orders — não faz parte de nenhuma PARTE numerada anterior.
+psql -h 127.0.0.1 -p 54322 -U postgres -d postgres \
+  -f scripts/2026-08-18-lista-portaria-printed-at.sql
+
+# 3) pdfkit e ipp são dependências novas — use install, não ci (o CLAUDE.md
+#    já documenta o npm ci deste repo como quebrado por um lockfile antigo).
+npm install
+```
+
+Depois, adicione ao `.env` (ainda apontando pra impressora de TESTE — a de
+verdade só entra no passo 8, depois de validar):
+
+```
+PORTARIA_PRINTER_HOST=192.168.100.142
+PORTARIA_PRINT_INTERVAL_MS=300000
+```
+
+```bash
+# 4) O disparo checa a cada 5 min, mas só age às 13:40 (dia útil) — reiniciar
+#    a qualquer hora do dia é seguro, não imprime nada fora de hora.
+pm2 restart webhook
+pm2 logs webhook --lines 30 --nostream
+```
+
+Espere ver no log: `🖨️ Lista da portaria LIGADA — checando a cada 300s...`.
+Se aparecer `desligada`, alguma das duas env vars não foi lida — confira o
+`.env` e reinicie de novo.
+
+**5) Teste com pedido de verdade, mas na impressora de teste.** Se hoje já
+passou das 13:40 e existe pedido pago feito antes do corte, o próprio disparo
+automático (passo 4) já pega ele na próxima checagem — acompanhe pelo log. Se
+quiser forçar sem esperar, rode direto:
+
+```bash
+npx tsx -e "
+import { createClient } from '@supabase/supabase-js';
+import { printPortariaList } from './automation/print/portariaList';
+const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
+printPortariaList({ supabase, printerHost: '192.168.100.142', now: new Date() })
+  .then((r) => console.log(JSON.stringify(r, null, 2)));
+"
+```
+
+Isso imprime pedidos REAIS e marca `printed_at` de verdade — não é
+descartável, é o funcionamento normal, só que saindo na impressora errada de
+propósito (validação antes de confiar na da portaria). Confira a folha:
+layout do PDV (Cód./Produto/Qtde/Peso/Pr. Unit./Total), faixa preta "PEDIDO DE
+FUNCIONÁRIO", peso e quantidade em negrito grande, assinatura no rodapé.
+
+**6) Teste o caso de falha.** Desligue a impressora de teste, rode o comando
+do passo 5 de novo com um pedido que ainda não tenha `printed_at` (ou espere
+a próxima checagem automática). Confira:
+- O resultado volta `status: "ERRO"` com mensagem legível.
+- `printed_at` continua `null` pro pedido (`select printed_at from orders
+  where id = '...'`).
+- Religue a impressora — na checagem seguinte (até 5 min) a folha sai
+  sozinha, sem você fazer nada.
+
+**7) Confira `npx tsc` e `npm test` no servidor também**, mesmo já verificados
+no Mac — ambiente diferente, vale conferir:
+
+```bash
+npm test
+npx tsc --noEmit --strict --target ES2022 --lib ES2023,DOM --module ESNext \
+  --moduleResolution bundler --skipLibCheck --types node \
+  automation/cigam/*.ts automation/operations-webhook.ts \
+  automation/print/*.ts automation/holidays.ts automation/types/*.d.ts
+```
+
+**8) Só depois de 5 e 6 confirmados**, troca pra impressora de verdade:
+
+```
+PORTARIA_PRINTER_HOST=192.168.100.53
+```
+
+```bash
+pm2 restart webhook
+```
+
+**9) Decida com o Winiston sobre mergear pra `main`.** Até aqui tudo roda
+direto na branch `feature/lista-portaria` — não precisa mergear pra `main`
+pra funcionar em produção (o PM2 aponta pro checkout local, seja lá qual
+branch estiver), mas convém abrir o PR e mergear depois de um ou dois dias
+de disparo automático sem problema, pra não deixar a branch de produção
+divergindo da `main` por muito tempo.
 
 ---
 
@@ -821,17 +940,57 @@ via `cupsfilter`/`pdftops`, confirmação real de que o job terminou via
 RECEBEU o arquivo). Diferença: 1 via por folha aqui (lá são 2, decisão própria
 da loja), `job-name` diferente.
 
-### Env vars (produção, no servidor)
+### Layout: igual ao cupom do PDV, de propósito (18/08/2026, revisado com o Winiston)
+
+O desenho original desta folha (`automation/print/pdfBuilder.ts`) era
+minimalista — nome e itens, sem preço. Depois de ver impressa, o Winiston
+pediu pra ficar igual ao cupom do PDV: é o mesmo tratamento que o PDV já dá a
+venda na tabela de preço "005" (Funcionários) — lá a única diferença é o nome
+vir prefixado "FUNCIONÁRIO - " (`formatReceiptCustomerName`, em
+`receiptPdf.ts`). Aqui replicou o resto da folha também.
+
+A folha final tem: cabeçalho com logo + caixa "Pedido" (mostra o número do
+CIGAM — `erp_external_id` — quando já sincronizado, senão o interno), faixa
+preta "PEDIDO DE FUNCIONÁRIO — SEPARAÇÃO INTERNA" (diferença proposital do
+PDV: aqui nunca passou por caixa, foi o próprio funcionário que pediu no
+catálogo, então precisa ficar óbvio de onde a folha veio), nome do
+funcionário em destaque, Data do Pedido / Forma de Pagamento ("Desconto em
+Folha", fixo — é a única forma que existe aqui), tabela zebrada
+Cód./Produto/Qtde/Peso/Pr. Unit./Total, caixa de TOTAL e linha de assinatura
+"FUNCIONÁRIO / GOSTINHO MINEIRO".
+
+⚠️ **"Pr. Unit." mostra o preço do PACOTE, não R$/kg como no PDV.** É assim
+que `order_items.unit_price` já vem calculado (`getUnitPrice` em
+`src/lib/pricing.ts` — preço/kg × peso, decidido no checkout). Mostrar R$/kg
+aqui exigiria reverter essa conta só pra tela, e quebraria a conferência
+óbvia "Pr. Unit. × Qtde = Total" que a folha existe pra dar de bandeja. Não
+"consertar" isso pra bater com o PDV — são modelos de preço diferentes de
+propósito, documentado também no topo do `pdfBuilder.ts`.
+
+Peso e quantidade saem em negrito e fonte maior (12pt vs 9,5pt do resto da
+tabela) — pedido do Winiston, são os dois números que quem separa precisa
+achar de relance. Zebra mais escura que o `#EFEFEF` original do PDV (aqui é
+`#E0E0E0`): no papel impresso a versão clara quase não se distinguia do
+branco da linha ao lado — outro ajuste feito olhando a folha física, não só o
+código.
+
+Validado com **8 impressões reais** na impressora de teste da sala
+(`192.168.100.142`), do Mac de desenvolvimento — nesse dia o Mac estava
+fisicamente na rede da loja, então alcançou a impressora direto. **Isso não é
+garantido em toda sessão de dev**: a regra de ouro continua sendo a do topo
+deste arquivo — mexer neste projeto é trabalho de servidor. O teste de hoje
+foi uma exceção de oportunidade, não o fluxo esperado.
+
+### Env vars
 
 ```
-PORTARIA_PRINTER_HOST=192.168.100.53       # impressora da portaria
+PORTARIA_PRINTER_HOST=192.168.100.142      # começar SEMPRE pela impressora de teste
 PORTARIA_PRINT_INTERVAL_MS=300000          # 5 min — só dispara de fato às 13:40
 ```
 
-**Antes de apontar para a portaria de verdade**, validar contra
-`192.168.100.142` ("Impressora da Sala", cadastrada como teste no
-`printer_settings` do PDV) — só alcançável de dentro da rede da loja, ou seja,
-só do servidor, nunca da máquina de desenvolvimento.
+Depois de validado (ver "🖨️ PARA FAZER AGORA NO SERVIDOR" no topo deste
+arquivo), troca `PORTARIA_PRINTER_HOST` para `192.168.100.53` (a impressora
+real da portaria) e reinicia o `webhook`.
 
 ## ⚠️ Preço = preço/kg × peso — mexer em `weight` muda o que o funcionário paga
 
