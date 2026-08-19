@@ -52,6 +52,14 @@ export type CigamItemPedido = {
   codigoCentroArmazenagem?: string;
 };
 
+export type CigamMaterial = {
+  codigo: string;
+  descricao: string;
+  unidadeMedida: string;
+  /** Só preenchido pra material vendido por KG — extraído do fim da descrição (ex.: "PCT 1KG"). */
+  pesoEmbalagemKg?: number;
+};
+
 export class CigamError extends Error {
   /**
    * Marca o caso específico "sessão derrubada por outro login" — que o CIGAM
@@ -613,6 +621,77 @@ export class CigamClient {
     }
 
     return precos;
+  }
+
+  /**
+   * Todos os materiais do grupo "002" (produto acabado) — a mesma
+   * classificação que o PDV já usa e comprovou em produção
+   * (server/src/cigam/client.ts, PRODUTO_ACABADO_GRUPO). O CIGAM também
+   * devolveria matéria-prima ("001") e semiacabado (ingrediente de receita,
+   * não vendável) se não filtrasse por grupo — nenhum dos dois deveria
+   * aparecer pra alguém cadastrar como produto do catálogo.
+   *
+   * Usado pela tela de Admin pra listar o que existe no CIGAM e ainda não
+   * virou produto aqui (a comparação com `products.cigam_code` é feita por
+   * quem chama, não aqui — este método só sabe falar com o CIGAM).
+   */
+  async buscarTodosMateriais(): Promise<CigamMaterial[]> {
+    const PAGE = 500;
+    const PRODUTO_ACABADO_GRUPO = "002";
+    // Casa um peso no fim da descrição, ex.: "PCT 1KG", "PCT DE 7KG",
+    // "3,5 KG", "5K" (typo faltando o G, já visto ao vivo no PDV). Mesma
+    // regex já validada lá contra os 131 materiais KG do grupo 002.
+    const PESO_RE = /(\d+(?:[.,]\d+)?)\s*K\.?G?\.?\s*$/i;
+
+    function parsePesoEmbalagemKg(descricao: string): number | undefined {
+      const match = descricao.trim().match(PESO_RE);
+      if (!match) return undefined;
+      const valor = Number(match[1].replace(",", "."));
+      return Number.isFinite(valor) && valor > 0 ? valor : undefined;
+    }
+
+    const materiais: CigamMaterial[] = [];
+    let skip = 0;
+
+    await this.ensureAuth();
+
+    while (true) {
+      const data = await this.withAuthRetry(() =>
+        this.apiFetch<any[]>("GET", "/suprimentos/es/Materiais/PesquisarMateriais", {
+          query: {
+            $top: String(PAGE),
+            $skip: String(skip),
+            $filter: `CodigoGrupo eq '${PRODUTO_ACABADO_GRUPO}'`,
+          },
+        })
+      );
+
+      const linhas: any[] = Array.isArray(data) ? data : ((data as any)?.data ?? []);
+      if (linhas.length === 0) break;
+
+      for (const linha of linhas) {
+        const codigo = String(linha?.Codigo ?? "").trim();
+        const descricao = String(linha?.Descricao ?? "").trim();
+        if (!codigo || !descricao) continue;
+
+        // Nome do campo real confirmado ao vivo no PDV: CodigoUnidadeMedida,
+        // não UnidadeMedida (que /api/help documenta, mas não existe).
+        const unidadeMedida = String(linha?.CodigoUnidadeMedida ?? "").trim();
+        const isKg = unidadeMedida.toUpperCase() === "KG";
+
+        materiais.push({
+          codigo,
+          descricao,
+          unidadeMedida,
+          pesoEmbalagemKg: isKg ? parsePesoEmbalagemKg(descricao) : undefined,
+        });
+      }
+
+      if (linhas.length < PAGE) break;
+      skip += PAGE;
+    }
+
+    return materiais;
   }
 
   /**

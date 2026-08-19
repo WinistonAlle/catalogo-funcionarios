@@ -28,6 +28,46 @@ function comoResultado(promessa: Promise<unknown>): Promise<ResultadoEscrita> {
   );
 }
 
+export type CigamMaterialNaoCadastrado = {
+  codigo: string;
+  descricao: string;
+  unidadeMedida: string;
+  pesoEmbalagemKg?: number;
+};
+
+/**
+ * Materiais do CIGAM (produto acabado) que ainda não viraram produto aqui —
+ * pra tela de cadastro escolher da lista em vez de digitar código.
+ */
+export async function listarMateriaisCigamNaoCadastrados(): Promise<CigamMaterialNaoCadastrado[]> {
+  const resp = await requestWithAuth<{ ok: boolean; materiais: CigamMaterialNaoCadastrado[] }>(
+    ["/automation/admin/cigam-materiais-nao-cadastrados"],
+    { method: "GET" }
+  );
+  return resp.materiais;
+}
+
+/**
+ * Cadastra o produto a partir de um material do CIGAM já escolhido — o
+ * servidor revalida o código contra o CIGAM antes de gravar (ver rota).
+ */
+export function criarProdutoAPartirDoCigam(
+  codigoMaterial: string,
+  payload: Record<string, any>
+): Promise<ResultadoEscrita & { product?: any; warning?: string }> {
+  return requestWithAuth<{ ok: boolean; product?: any; warning?: string }>(
+    ["/automation/admin/products-from-cigam"],
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ codigoMaterial, payload }),
+    }
+  ).then(
+    (resp) => ({ error: null, product: resp.product, warning: resp.warning }),
+    (err: any) => ({ error: { message: String(err?.message ?? err), code: err?.code } })
+  );
+}
+
 export function inserirProduto(payload: Record<string, any>): Promise<ResultadoEscrita> {
   return comoResultado(
     requestWithAuth(["/automation/admin/products", "/api/admin-products"], {

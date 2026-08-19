@@ -33,7 +33,14 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Switch } from "@/components/ui/switch";
-import { atualizarProduto, excluirProduto, inserirProduto } from "@/lib/adminWrites";
+import {
+  atualizarProduto,
+  criarProdutoAPartirDoCigam,
+  excluirProduto,
+  inserirProduto,
+  listarMateriaisCigamNaoCadastrados,
+  type CigamMaterialNaoCadastrado,
+} from "@/lib/adminWrites";
 
 const FALLBACK_IMG = "/placeholder.png";
 
@@ -255,6 +262,17 @@ export default function Admin() {
   const [openForm, setOpenForm] = useState(false);
   const [editing, setEditing] = useState<Editable | null>(null);
 
+  // Cadastro a partir do CIGAM — só existe um material do CIGAM real pra
+  // ligar quando o produto está sendo criado por esse caminho (nunca na
+  // edição de um produto já existente).
+  const [cigamPickerOpen, setCigamPickerOpen] = useState(false);
+  const [cigamLoading, setCigamLoading] = useState(false);
+  const [cigamError, setCigamError] = useState<string | null>(null);
+  const [cigamMateriais, setCigamMateriais] = useState<CigamMaterialNaoCadastrado[]>([]);
+  const [cigamSearch, setCigamSearch] = useState("");
+  const [cigamMaterialSelecionado, setCigamMaterialSelecionado] =
+    useState<CigamMaterialNaoCadastrado | null>(null);
+
   // Exclusão
   const [toDelete, setToDelete] = useState<Product | null>(null);
 
@@ -393,6 +411,50 @@ export default function Admin() {
     setOpenForm(true);
   };
 
+  const abrirPickerCigam = async () => {
+    setCigamPickerOpen(true);
+    setCigamSearch("");
+    setCigamError(null);
+    setCigamLoading(true);
+    try {
+      const materiais = await listarMateriaisCigamNaoCadastrados();
+      setCigamMateriais(materiais);
+    } catch (err: any) {
+      setCigamError(err?.message || "Erro ao consultar materiais do CIGAM.");
+    } finally {
+      setCigamLoading(false);
+    }
+  };
+
+  const escolherMaterialCigam = (material: CigamMaterialNaoCadastrado) => {
+    setCigamMaterialSelecionado(material);
+    setCigamPickerOpen(false);
+
+    const weightNum = material.pesoEmbalagemKg ?? 0;
+    setEditing({
+      id: generateId(),
+      old_id: null,
+      name: material.descricao,
+      price: 0,
+      employee_price: 0,
+      employee_price_input: "",
+      images: [],
+      image_path: null,
+      category: "8" as any,
+      description: "",
+      packageInfo: "",
+      weight: weightNum,
+      weight_input: weightNum ? String(weightNum).replace(".", ",") : "",
+      isPackage: false,
+      isLaunch: false,
+      featured: false,
+      inStock: true,
+      isHidden: false,
+      extraInfo: null,
+    });
+    setOpenForm(true);
+  };
+
   const startEdit = (p: Product) => {
     const weightNum = safeNumber((p as any).weight, 0);
     const priceNum = safeNumber((p as any).employee_price, 0);
@@ -417,6 +479,7 @@ export default function Admin() {
     setOpenForm(false);
     setEditing(null);
     setUploadError(null);
+    setCigamMaterialSelecionado(null);
   };
 
   // --------- Upload de imagem p/ Supabase ----------
@@ -536,6 +599,13 @@ export default function Admin() {
       const persistProduct = async (dbPayload: Record<string, any>) => {
         if (existsInState) {
           return atualizarProduto(String(editing.id), dbPayload);
+        }
+
+        // Cadastro vindo do picker do CIGAM: cigam_code/cigam_unit são do
+        // servidor (revalidados contra o CIGAM na hora), não do payload
+        // montado aqui — ver POST /admin/products-from-cigam.
+        if (cigamMaterialSelecionado) {
+          return criarProdutoAPartirDoCigam(cigamMaterialSelecionado.codigo, dbPayload);
         }
 
         return inserirProduto(dbPayload);
@@ -726,6 +796,9 @@ export default function Admin() {
 
           <div className="w-px h-6 bg-border mx-1" />
 
+          <Button variant="outline" onClick={abrirPickerCigam}>
+            Cadastrar a partir do CIGAM
+          </Button>
           <Button onClick={startAdd}>Novo produto</Button>
         </div>
       </header>
@@ -829,6 +902,13 @@ export default function Admin() {
         <DialogContent className="sm:max-w-[780px]">
           <DialogHeader>
             <DialogTitle>{editing ? "Editar produto" : "Novo produto"}</DialogTitle>
+            {cigamMaterialSelecionado && (
+              <div className="text-xs text-muted-foreground">
+                Vinculado ao CIGAM: <span className="font-mono">{cigamMaterialSelecionado.codigo}</span>
+                {" · "}
+                {cigamMaterialSelecionado.unidadeMedida}
+              </div>
+            )}
           </DialogHeader>
 
           {editing && (
@@ -1060,6 +1140,69 @@ export default function Admin() {
               {saving ? "Salvando..." : "Salvar"}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog do picker de materiais do CIGAM */}
+      <Dialog open={cigamPickerOpen} onOpenChange={setCigamPickerOpen}>
+        <DialogContent className="sm:max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle>Cadastrar a partir do CIGAM</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <Input
+              placeholder="Buscar por nome ou código..."
+              value={cigamSearch}
+              onChange={(e) => setCigamSearch(e.target.value)}
+              autoFocus
+            />
+
+            {cigamLoading && (
+              <div className="text-sm text-muted-foreground py-6 text-center">
+                Consultando o CIGAM...
+              </div>
+            )}
+
+            {!cigamLoading && cigamError && (
+              <div className="text-sm text-red-600 py-4">{cigamError}</div>
+            )}
+
+            {!cigamLoading && !cigamError && (
+              <div className="max-h-[420px] overflow-y-auto divide-y rounded-md border">
+                {cigamMateriais
+                  .filter((m) => {
+                    const termo = cigamSearch.trim().toLowerCase();
+                    if (!termo) return true;
+                    return (
+                      m.descricao.toLowerCase().includes(termo) ||
+                      m.codigo.toLowerCase().includes(termo)
+                    );
+                  })
+                  .map((m) => (
+                    <button
+                      key={m.codigo}
+                      type="button"
+                      onClick={() => escolherMaterialCigam(m)}
+                      className="w-full text-left px-3 py-2 hover:bg-muted transition-colors"
+                    >
+                      <div className="font-medium text-sm">{m.descricao}</div>
+                      <div className="text-xs text-muted-foreground font-mono">
+                        {m.codigo} · {m.unidadeMedida}
+                        {m.pesoEmbalagemKg ? ` · ${m.pesoEmbalagemKg}kg` : ""}
+                      </div>
+                    </button>
+                  ))}
+
+                {cigamMateriais.length === 0 && (
+                  <div className="text-sm text-muted-foreground py-6 text-center px-3">
+                    Nenhum material do CIGAM pendente de cadastro — tudo que existe lá (produto
+                    acabado) já virou produto aqui.
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
 

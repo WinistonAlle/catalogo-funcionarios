@@ -319,6 +319,127 @@ app.post("/reset-employee-balances", async (req, res) => {
 });
 
 /**
+ * Materiais do CIGAM (grupo "002", produto acabado) que ainda NÃO viraram
+ * produto aqui — pra tela de cadastro deixar de ser "digite o código na mão"
+ * e virar "escolha da lista do que já existe no ERP".
+ *
+ * Sem isto não existe NENHUM jeito de ligar um produto novo ao código CIGAM
+ * dele (confirmado 19/08/2026: nenhuma tela grava cigam_code) — produto
+ * cadastrado sem código fica comprável (fail-open) e quebra o pedido inteiro
+ * na hora de sincronizar, com o saldo do funcionário já debitado.
+ */
+app.get("/admin/cigam-materiais-nao-cadastrados", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, message: auth.error });
+
+    const [materiais, existentes] = await Promise.all([
+      cigamStockClient.buscarTodosMateriais(),
+      supabase
+        .from("products")
+        .select("cigam_code")
+        .not("cigam_code", "is", null)
+        .then(({ data, error }) => {
+          if (error) throw new Error(error.message);
+          return new Set((data ?? []).map((p: any) => String(p.cigam_code ?? "").trim()).filter(Boolean));
+        }),
+    ]);
+
+    const naoCadastrados = materiais.filter((m) => !existentes.has(m.codigo));
+
+    return res.status(200).json({ ok: true, materiais: naoCadastrados });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err?.message || "Falha ao consultar materiais do CIGAM." });
+  }
+});
+
+/**
+ * Cadastra um produto novo A PARTIR de um material do CIGAM já escolhido na
+ * lista acima — não aceita `codigoMaterial` de qualquer jeito: revalida
+ * contra o CIGAM na hora (busca de novo, com o mesmo filtro do grupo "002")
+ * antes de gravar, então um código adulterado ou já usado por outro produto
+ * nunca entra. `cigam_code`/`cigam_unit`/peso vêm do CIGAM, não do que o
+ * cliente mandou — só nome/preço/categoria/foto/descrição são do formulário.
+ *
+ * Por isso esta rota é separada de POST /admin/products (que continua
+ * recusando cigam_code — ver filtrarPayloadProduto): ali seria texto livre
+ * digitado por alguém; aqui é sempre um código que acabou de ser confirmado
+ * como existente e ainda não usado, escolhido de uma lista, nunca digitado.
+ */
+app.post("/admin/products-from-cigam", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) return res.status(auth.status).json({ ok: false, message: auth.error });
+
+    const codigoMaterial = String(req.body?.codigoMaterial ?? "").trim();
+    if (!codigoMaterial) {
+      return res.status(400).json({ ok: false, message: "codigoMaterial é obrigatório." });
+    }
+
+    const payload = filtrarPayloadProduto(req.body?.payload ?? {});
+    if (!payload.name) {
+      return res.status(400).json({ ok: false, message: "Nome do produto é obrigatório." });
+    }
+
+    const [materiais, jaUsado] = await Promise.all([
+      cigamStockClient.buscarTodosMateriais(),
+      supabase
+        .from("products")
+        .select("id")
+        .eq("cigam_code", codigoMaterial)
+        .maybeSingle()
+        .then(({ data, error }) => {
+          if (error) throw new Error(error.message);
+          return !!data;
+        }),
+    ]);
+
+    const material = materiais.find((m) => m.codigo === codigoMaterial);
+    if (!material) {
+      return res.status(400).json({
+        ok: false,
+        message: "Esse código não existe mais no CIGAM como produto acabado (grupo 002) — atualize a lista e tente de novo.",
+      });
+    }
+    if (jaUsado) {
+      return res.status(409).json({
+        ok: false,
+        message: `Esse material já foi cadastrado como produto (${material.descricao}) — alguém deve ter cadastrado ao mesmo tempo.`,
+      });
+    }
+
+    const { data: produto, error: insertError } = await supabase
+      .from("products")
+      .insert({ ...payload, cigam_code: material.codigo, cigam_unit: material.unidadeMedida })
+      .select()
+      .maybeSingle();
+
+    if (insertError) {
+      return res.status(400).json({ ok: false, message: insertError.message, code: insertError.code });
+    }
+
+    if (material.pesoEmbalagemKg && produto?.id) {
+      const { error: weightError } = await supabase
+        .from("weight")
+        .upsert({ product_id: produto.id, weight: material.pesoEmbalagemKg }, { onConflict: "product_id" });
+      if (weightError) {
+        // Produto já foi criado — não desfaz, só avisa. Peso dá pra corrigir
+        // depois na tela normal de edição.
+        return res.status(200).json({
+          ok: true,
+          product: produto,
+          warning: `Produto criado, mas falhou ao gravar o peso (${material.pesoEmbalagemKg}kg): ${weightError.message}`,
+        });
+      }
+    }
+
+    return res.status(200).json({ ok: true, product: produto });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err?.message || "Falha ao cadastrar produto a partir do CIGAM." });
+  }
+});
+
+/**
  * Escrita de produtos por Admin/RH.
  *
  * Existe para tirar essa escrita do navegador. Até 12/08/2026 a tela de admin
