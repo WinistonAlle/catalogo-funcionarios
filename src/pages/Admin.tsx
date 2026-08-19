@@ -937,18 +937,6 @@ export default function Admin() {
                 </div>
               </div>
 
-              <Field label="ID (old_id)">
-                <Input
-                  value={editing.old_id !== null ? String(editing.old_id) : ""}
-                  onChange={(e) => {
-                    const raw = e.target.value;
-                    const n = raw === "" ? null : safeNumberOrNull(raw);
-                    setEditing({ ...editing, old_id: n });
-                  }}
-                  placeholder="ID numérico do produto"
-                />
-              </Field>
-
               <Field label="Nome">
                 <Input
                   value={editing.name}
