@@ -364,7 +364,7 @@ export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
     // medidas usadas para desenhá-lo logo abaixo — não estimada (mesma
     // lição do PDV: "por segurança" chutado grande demais custa uma folha
     // extra em todo pedido; chutado pequeno demais corta o fechamento).
-    const FECHAMENTO_H = 44 + 50 + 20;
+    const FECHAMENTO_H = 32 + 50 + 20;
     if (y + FECHAMENTO_H > pageBottom) {
       doc.addPage();
       y = PAGE_MARGIN;
@@ -385,16 +385,16 @@ export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
         y + 14
       );
 
-    const totalBoxW = 200;
-    const totalBoxH = 44;
+    const totalBoxW = 150;
+    const totalBoxH = 32;
     const totalBoxX = contentRight - totalBoxW;
     doc.lineWidth(1.5).strokeColor(INK).rect(totalBoxX, y, totalBoxW, totalBoxH).stroke();
-    doc.font("Helvetica-Bold").fontSize(FONT.totalLabel).fillColor(MUTED).text("TOTAL", totalBoxX + 14, y + 9, { characterSpacing: 0.5 });
+    doc.font("Helvetica-Bold").fontSize(FONT.totalLabel).fillColor(MUTED).text("TOTAL", totalBoxX + 10, y + 6, { characterSpacing: 0.5 });
     doc
       .font("Helvetica-Bold")
       .fontSize(FONT.totalValue)
       .fillColor(INK)
-      .text(formatBRL(total), totalBoxX, y + 8, { width: totalBoxW - 14, align: "right" });
+      .text(formatBRL(total), totalBoxX, y + 13, { width: totalBoxW - 10, align: "right" });
 
     y += totalBoxH + 50;
 
