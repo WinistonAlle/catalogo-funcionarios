@@ -69,6 +69,34 @@ const BOX_BORDER = "#C9C9C9";
 
 const PAGE_MARGIN = 40;
 
+// Tamanhos de fonte da via impressa, todos num lugar só — mesmo ajuste feito
+// no PDV em 19/08 ("diminui um pouco a letra da impressão"), copiado daqui
+// (`pdv-gostinho-mineiro/server/src/print/receiptPdf.ts`) pra manter as duas
+// folhas com a mesma densidade visual.
+const FONT = {
+  /** Rótulo das caixas PEDIDO e dos pares rótulo-valor. */
+  boxLabel: 6.5,
+  /** Número dentro da caixa "Pedido". */
+  boxValue: 13,
+  /** Rótulo "FUNCIONÁRIO". */
+  sectionLabel: 8,
+  employeeName: 16,
+  /** Valor dos pares rótulo-valor: data do pedido, forma de pagamento. */
+  fieldValue: 9.5,
+  tableHeader: 8,
+  tableCell: 8.5,
+  /** Peso e quantidade na tabela — maiores que o resto da linha de propósito
+   *  (ver comentário perto de onde são desenhados), só que também encolheram
+   *  na mesma proporção do resto. */
+  tableCellEmphasis: 11,
+  /** "Pedido X — continuação", no topo da folha 2 em diante. */
+  continuation: 8,
+  itemsSummary: 9,
+  totalLabel: 9,
+  totalValue: 15.5,
+  signature: 9,
+} as const;
+
 const brlFormatter = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 const qtyFormatter = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 0 });
 // Peso admite fração (ex.: a linha Alho OMG é 1,01kg — 3 pacotes dão 3,03 kg).
@@ -163,30 +191,30 @@ export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
     // do cupom do PDV, sem a caixa de Nota Fiscal (não existe aqui).
     // ------------------------------------------------------------------
     const HEADER_TOP = PAGE_MARGIN;
-    const HEADER_HEIGHT = 70;
-    const INFO_BOX_W = 130;
+    const HEADER_HEIGHT = 47;
+    const INFO_BOX_W = 100;
 
     if (existsSync(LOGO_PATH)) {
-      doc.image(LOGO_PATH, contentLeft, HEADER_TOP, { fit: [140, HEADER_HEIGHT] });
+      doc.image(LOGO_PATH, contentLeft, HEADER_TOP, { fit: [96, HEADER_HEIGHT] });
     }
 
     const infoBoxX = contentRight - INFO_BOX_W;
     doc.roundedRect(infoBoxX, HEADER_TOP, INFO_BOX_W, HEADER_HEIGHT, 4).lineWidth(1).strokeColor(BOX_BORDER).stroke();
     doc
       .font("Helvetica-Bold")
-      .fontSize(8)
+      .fontSize(FONT.boxLabel)
       .fillColor(MUTED)
-      .text("PEDIDO", infoBoxX, HEADER_TOP + 14, { width: INFO_BOX_W, align: "center", characterSpacing: 0.5 });
+      .text("PEDIDO", infoBoxX, HEADER_TOP + 10, { width: INFO_BOX_W, align: "center", characterSpacing: 0.5 });
     doc
       .font("Helvetica-Bold")
-      .fontSize(16)
+      .fontSize(FONT.boxValue)
       .fillColor(INK)
-      .text(pedido.cigamOrderId ?? pedido.orderNumber, infoBoxX + 6, HEADER_TOP + 32, {
+      .text(pedido.cigamOrderId ?? pedido.orderNumber, infoBoxX + 6, HEADER_TOP + 22, {
         width: INFO_BOX_W - 12,
         align: "center",
       });
 
-    let y = HEADER_TOP + HEADER_HEIGHT + 16;
+    let y = HEADER_TOP + HEADER_HEIGHT + 12;
 
     // ------------------------------------------------------------------
     // Selo "PEDIDO DE FUNCIONÁRIO" — faixa escura de ponta a ponta. É o
@@ -212,9 +240,9 @@ export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
     // cliente no cupom do PDV (rótulo pequeno em cima, nome grande embaixo,
     // régua grossa fechando o bloco).
     // ------------------------------------------------------------------
-    doc.font("Helvetica-Bold").fontSize(9).fillColor(MUTED).text("FUNCIONÁRIO", contentLeft, y, { characterSpacing: 0.5 });
+    doc.font("Helvetica-Bold").fontSize(FONT.sectionLabel).fillColor(MUTED).text("FUNCIONÁRIO", contentLeft, y, { characterSpacing: 0.5 });
     y += 13;
-    doc.font("Helvetica-Bold").fontSize(19).fillColor(INK).text(pedido.employeeName, contentLeft, y, { width: contentWidth });
+    doc.font("Helvetica-Bold").fontSize(FONT.employeeName).fillColor(INK).text(pedido.employeeName, contentLeft, y, { width: contentWidth });
     y += doc.heightOfString(pedido.employeeName, { width: contentWidth }) + 6;
 
     doc.moveTo(contentLeft, y).lineTo(contentRight, y).lineWidth(2).strokeColor(INK).stroke();
@@ -230,8 +258,8 @@ export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
     const dataHoje = new Date().toLocaleDateString("pt-BR");
 
     function labeledValue(x: number, width: number, label: string, value: string): number {
-      doc.font("Helvetica-Bold").fontSize(8).fillColor(MUTED).text(label.toUpperCase(), x, y, { width, characterSpacing: 0.5 });
-      doc.font("Helvetica").fontSize(11).fillColor(INK).text(value, x, y + 13, { width });
+      doc.font("Helvetica-Bold").fontSize(FONT.boxLabel).fillColor(MUTED).text(label.toUpperCase(), x, y, { width, characterSpacing: 0.5 });
+      doc.font("Helvetica").fontSize(FONT.fieldValue).fillColor(INK).text(value, x, y + 13, { width });
       return y + 13 + doc.heightOfString(value, { width });
     }
 
@@ -245,14 +273,14 @@ export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
     // ------------------------------------------------------------------
     const cols = buildColumns(contentLeft, contentRight);
     const HEADER_ROW_H = 24;
-    const MIN_ROW_H = 22;
+    const MIN_ROW_H = 20;
     const CELL_PADDING = 6;
 
     const pageBottom = doc.page.height - PAGE_MARGIN;
 
     function drawTableHeader(topY: number): number {
       doc.rect(contentLeft, topY, contentWidth, HEADER_ROW_H).fill(TABLE_HEADER_BG);
-      doc.font("Helvetica-Bold").fontSize(9).fillColor("#FFFFFF");
+      doc.font("Helvetica-Bold").fontSize(FONT.tableHeader).fillColor("#FFFFFF");
       cellText(doc, "Cód.", cols.codigo, topY, HEADER_ROW_H);
       cellText(doc, "Produto", cols.produto, topY, HEADER_ROW_H);
       cellText(doc, "Qtde", cols.qtde, topY, HEADER_ROW_H, { align: "right" });
@@ -278,14 +306,14 @@ export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
 
     if (pedido.items.length === 0) {
       const rowHeight = MIN_ROW_H;
-      cellText(doc.font("Helvetica").fontSize(9.5).fillColor(MUTED), "(pedido sem itens)", cols.produto, y, rowHeight);
+      cellText(doc.font("Helvetica").fontSize(FONT.tableCell).fillColor(MUTED), "(pedido sem itens)", cols.produto, y, rowHeight);
       y += rowHeight;
     }
 
     pedido.items.forEach((item, index) => {
       const produtoHeight = doc
         .font("Helvetica")
-        .fontSize(9.5)
+        .fontSize(FONT.tableCell)
         .heightOfString(item.productName, { width: cols.produto.width - CELL_PADDING * 2 });
       const rowHeight = Math.max(MIN_ROW_H, produtoHeight + CELL_PADDING * 2);
 
@@ -298,7 +326,7 @@ export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
         y = PAGE_MARGIN;
         doc
           .font("Helvetica")
-          .fontSize(9)
+          .fontSize(FONT.continuation)
           .fillColor(MUTED)
           .text(`Pedido ${pedido.cigamOrderId ?? pedido.orderNumber} — continuação`, contentLeft, y);
         y += 18;
@@ -310,17 +338,17 @@ export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
         doc.rect(contentLeft, y, contentWidth, rowHeight).fill(ZEBRA_BG);
       }
 
-      doc.font("Helvetica").fontSize(9.5).fillColor(INK);
+      doc.font("Helvetica").fontSize(FONT.tableCell).fillColor(INK);
       cellText(doc, formatCigamCode(item.cigamCode), cols.codigo, y, rowHeight);
       cellText(doc, item.productName, cols.produto, y, rowHeight);
 
       // Peso e quantidade em negrito e maior: são os dois números que quem
       // separa a mercadoria precisa achar de relance, olhando de longe.
-      doc.font("Helvetica-Bold").fontSize(12);
+      doc.font("Helvetica-Bold").fontSize(FONT.tableCellEmphasis);
       cellText(doc, qtyFormatter.format(item.quantity), cols.qtde, y, rowHeight, { align: "right" });
       cellText(doc, formatPesoCell(item), cols.peso, y, rowHeight, { align: "right" });
 
-      doc.font("Helvetica").fontSize(9.5).fillColor(INK);
+      doc.font("Helvetica").fontSize(FONT.tableCell).fillColor(INK);
       cellText(doc, formatBRL(item.unitPrice), cols.precoUnit, y, rowHeight, { align: "right" });
       cellText(doc, formatBRL(item.unitPrice * item.quantity), cols.total, y, rowHeight, { align: "right" });
 
@@ -349,7 +377,7 @@ export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
     const total = pedido.items.reduce((sum, i) => sum + i.unitPrice * i.quantity, 0);
     doc
       .font("Helvetica")
-      .fontSize(10)
+      .fontSize(FONT.itemsSummary)
       .fillColor(MUTED)
       .text(
         `${pedido.items.length} ite${pedido.items.length === 1 ? "m" : "ns"} · Quantidade total: ${qtyFormatter.format(quantTotal)}`,
@@ -361,10 +389,10 @@ export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
     const totalBoxH = 44;
     const totalBoxX = contentRight - totalBoxW;
     doc.lineWidth(1.5).strokeColor(INK).rect(totalBoxX, y, totalBoxW, totalBoxH).stroke();
-    doc.font("Helvetica-Bold").fontSize(10).fillColor(MUTED).text("TOTAL", totalBoxX + 14, y + 9, { characterSpacing: 0.5 });
+    doc.font("Helvetica-Bold").fontSize(FONT.totalLabel).fillColor(MUTED).text("TOTAL", totalBoxX + 14, y + 9, { characterSpacing: 0.5 });
     doc
       .font("Helvetica-Bold")
-      .fontSize(18)
+      .fontSize(FONT.totalValue)
       .fillColor(INK)
       .text(formatBRL(total), totalBoxX, y + 8, { width: totalBoxW - 14, align: "right" });
 
@@ -382,7 +410,7 @@ export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
     doc.moveTo(sigLeftX, y).lineTo(sigLeftX + sigWidth, y).stroke();
     doc.moveTo(sigRightX, y).lineTo(sigRightX + sigWidth, y).stroke();
 
-    doc.font("Helvetica-Bold").fontSize(10).fillColor(INK).text("FUNCIONÁRIO", sigLeftX, y + 8, { width: sigWidth, align: "center" });
+    doc.font("Helvetica-Bold").fontSize(FONT.signature).fillColor(INK).text("FUNCIONÁRIO", sigLeftX, y + 8, { width: sigWidth, align: "center" });
     doc.text("GOSTINHO MINEIRO", sigRightX, y + 8, { width: sigWidth, align: "center" });
 
     doc.end();
