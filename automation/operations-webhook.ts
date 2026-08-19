@@ -60,12 +60,16 @@ function appendLimited(current: string, chunk: Buffer, maxLength: number) {
   return next.length > maxLength ? next.slice(next.length - maxLength) : next;
 }
 
-function runEmployeeSyncScript(): Promise<ChildOutput> {
+function runEmployeeSyncScript(opts: { forceCreditSync?: boolean } = {}): Promise<ChildOutput> {
   return new Promise((resolve, reject) => {
     const scriptPath = path.resolve(PROJECT_ROOT, "scripts", "syncEmployeesFromSheet.mjs");
     const child = spawn(process.execPath, [scriptPath], {
       cwd: PROJECT_ROOT,
-      env: process.env,
+      // SYNC_CREDITO_MENSAL=1 força a rodada MENSAL (a que reabastece
+      // credito_mensal_cents de todo mundo a partir da planilha) mesmo fora
+      // do dia 27 — é o que dá ao botão "Restaurar saldo" um efeito de
+      // verdade, e serve de catch-up se o cron do dia 27 tiver falhado.
+      env: opts.forceCreditSync ? { ...process.env, SYNC_CREDITO_MENSAL: "1" } : process.env,
       windowsHide: true,
     });
 
@@ -241,6 +245,34 @@ app.post("/reset-employee-balances", async (req, res) => {
       message: `Restauração iniciada para o ciclo ${monthKey}.`,
     }).catch(() => null);
 
+    // O reabastecimento de verdade é isto: reler a planilha e sobrescrever
+    // credito_mensal_cents de todo mundo — a MESMA rotina que roda sozinha
+    // no dia 27 (ver scripts/syncEmployeesFromSheet.mjs), só que forçada por
+    // SYNC_CREDITO_MENSAL=1 pra valer em qualquer dia dentro da janela. Até
+    // 19/08/2026 este endpoint só zerava employee_monthly_spend.spent_cents
+    // — uma tabela que nunca é incrementada em lugar nenhum do fluxo normal
+    // de pedido, então "restaurar saldo" não restaurava saldo nenhum.
+    let syncOutput: ChildOutput;
+    try {
+      syncOutput = await runEmployeeSyncScript({ forceCreditSync: true });
+    } catch (syncError: any) {
+      balanceRestoreRunning = false;
+      await updateOperationLog(supabase, runningLog?.id, {
+        status: "failed",
+        message: `Falha ao reabastecer credito_mensal_cents do ciclo ${monthKey} pela planilha.`,
+        metadata: {
+          code: syncError?.code ?? null,
+          stdout: String(syncError?.stdout || "").slice(0, 2000),
+          stderr: String(syncError?.stderr || "").slice(0, 2000),
+        },
+      }).catch(() => null);
+
+      return res.status(500).json({
+        ok: false,
+        message: "Não foi possível reabastecer o saldo a partir da planilha.",
+      });
+    }
+
     const { data: updatedRows, error: updateError } = await supabase
       .from("employee_monthly_spend")
       .update({
@@ -255,7 +287,7 @@ app.post("/reset-employee-balances", async (req, res) => {
       balanceRestoreRunning = false;
       await updateOperationLog(supabase, runningLog?.id, {
         status: "failed",
-        message: `Falha ao restaurar saldo do ciclo ${monthKey}.`,
+        message: `credito_mensal_cents foi reabastecido, mas falhou ao zerar employee_monthly_spend do ciclo ${monthKey}.`,
         metadata: { error: updateError.message },
       }).catch(() => null);
 
@@ -268,6 +300,8 @@ app.post("/reset-employee-balances", async (req, res) => {
       message: "Saldo de todos os funcionários restaurado para o valor inicial da planilha.",
       metadata: {
         updatedCount: updatedRows?.length ?? 0,
+        syncStdout: syncOutput.stdout.slice(0, 2000),
+        syncStderr: syncOutput.stderr.slice(0, 2000),
       },
     }).catch(() => null);
 
