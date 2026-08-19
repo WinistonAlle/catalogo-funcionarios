@@ -942,10 +942,12 @@ export default function RHSpendingReport() {
                   <OrderCard key={order.id}>
                     <OrderTop>
                       <div>
-                        <OrderTitle>{order.order_number || "Pedido sem número"}</OrderTitle>
+                        <OrderTitle>
+                          {order.erp_external_id || order.order_number || "Pedido sem número"}
+                        </OrderTitle>
                         <OrderMeta>
                           {formatDateTime(order.created_at)}
-                          {order.erp_external_id ? ` • CIGAM ${order.erp_external_id}` : ""}
+                          {order.erp_external_id ? ` • Ref. ${order.order_number}` : ""}
                         </OrderMeta>
                       </div>
 

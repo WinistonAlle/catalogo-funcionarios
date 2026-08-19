@@ -40,6 +40,7 @@ type AdminActionRow = {
 type CancellationLogRow = {
   order_id: string;
   order_number: string | null;
+  erp_external_id: string | null;
 
   employee_cpf: string | null;
   employee_name: string | null;
@@ -951,7 +952,7 @@ export default function AdminOrders() {
       const { data: ords, error: oErr } = await supabase
         .from("orders")
         .select(
-          "id, order_number, employee_cpf, employee_name, total_value, total_cents, wallet_used_cents, spent_from_balance_cents, pay_on_pickup_cents, cancelled_at",
+          "id, order_number, erp_external_id, employee_cpf, employee_name, total_value, total_cents, wallet_used_cents, spent_from_balance_cents, pay_on_pickup_cents, cancelled_at",
         )
         .in("id", orderIds);
 
@@ -969,6 +970,7 @@ export default function AdminOrders() {
         return {
           order_id: a.order_id,
           order_number: ord?.order_number ?? null,
+          erp_external_id: ord?.erp_external_id ?? null,
           employee_cpf: ord?.employee_cpf ?? null,
           employee_name: ord?.employee_name ?? cpfMap.get(empCpfKey) ?? null,
           actor_cpf: a?.actor_cpf ?? null,
@@ -1650,11 +1652,11 @@ export default function AdminOrders() {
                       <div style={styles.mobileTop}>
                         <div style={{ minWidth: 0 }}>
                           <div style={styles.mobileTitle}>
-                            {o.order_number || "—"}
+                            {o.erp_external_id || o.order_number || "—"}
                           </div>
                           {o.erp_external_id && (
                             <div style={styles.cigamRef}>
-                              CIGAM {o.erp_external_id}
+                              Ref. {o.order_number}
                             </div>
                           )}
                           <div
@@ -1831,10 +1833,10 @@ export default function AdminOrders() {
             <div style={styles.modalTop}>
               <div style={{ minWidth: 0 }}>
                 <div style={styles.modalTitle}>
-                  Pedido {selected.order_number || "—"}
+                  Pedido {selected.erp_external_id || selected.order_number || "—"}
                   {selected.erp_external_id && (
                     <span style={styles.cigamRefInline}>
-                      CIGAM {selected.erp_external_id}
+                      Ref. {selected.order_number}
                     </span>
                   )}
                 </div>
@@ -2478,9 +2480,9 @@ export default function AdminOrders() {
                                     style={styles.tr}
                                   >
                                     <td style={styles.tdStrong}>
-                                      {r.order_number || "—"}
+                                      {r.erp_external_id || r.order_number || "—"}
                                       <div style={styles.tdMuted}>
-                                        {r.order_id}
+                                        {r.erp_external_id ? r.order_number : r.order_id}
                                       </div>
                                     </td>
 
@@ -2564,7 +2566,7 @@ export default function AdminOrders() {
                               <div style={styles.mobileTop}>
                                 <div style={{ minWidth: 0 }}>
                                   <div style={styles.mobileTitle}>
-                                    {r.order_number || "—"}
+                                    {r.erp_external_id || r.order_number || "—"}
                                   </div>
                                   <div
                                     style={styles.mobileSub}

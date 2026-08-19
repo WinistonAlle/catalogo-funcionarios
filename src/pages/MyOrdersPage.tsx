@@ -682,11 +682,11 @@ const MyOrdersPage: React.FC = () => {
                           Pedido
                         </span>
                         <span className="text-sm font-semibold text-gray-900">
-                          {orderNumber}
+                          {order.erp_external_id || orderNumber}
                         </span>
                         {order.erp_external_id && (
                           <span className="text-[11px] font-mono text-gray-400">
-                            CIGAM {order.erp_external_id}
+                            Ref. {orderNumber}
                           </span>
                         )}
                       </div>
