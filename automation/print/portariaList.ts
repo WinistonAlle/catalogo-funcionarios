@@ -1,7 +1,7 @@
 import { SupabaseClient } from "@supabase/supabase-js";
 import { isBusinessDayInSaoPaulo } from "../holidays";
 import { cutoffInstantForToday, isAfterCutoffInSaoPaulo } from "./cutoff";
-import { buildOrderSheetPdf } from "./pdfBuilder";
+import { buildOrderSheetPdf, buildOrderSheetsPdf, type OrderSheetData } from "./pdfBuilder";
 import { printOrderSheet } from "./printClient";
 
 type ItemRow = {
@@ -54,6 +54,83 @@ async function buscarPedidosParaImprimir(
   return (data ?? []) as unknown as OrderRow[];
 }
 
+function paraOrderSheetData(pedido: OrderRow): OrderSheetData {
+  return {
+    orderNumber: pedido.order_number,
+    cigamOrderId: pedido.erp_external_id,
+    employeeName: pedido.employee_name ?? "Funcionário",
+    items: pedido.order_items.map((item) => ({
+      cigamCode: item.products?.cigam_code ?? null,
+      productName: item.product_name,
+      quantity: item.quantity,
+      unitPrice: item.unit_price,
+      // Peso total só faz sentido para item vendido por KG — mesma regra
+      // de src/lib/pricing.ts (getProductWeight): peso <= 0 vira 1 (ex.:
+      // "Pacote 1kg"), pra bater com o que o funcionário de fato pagou.
+      packageWeightKg:
+        (item.products?.cigam_unit ?? "").trim().toUpperCase() === "KG"
+          ? item.products?.weight && item.products.weight > 0
+            ? item.products.weight
+            : 1
+          : undefined,
+    })),
+  };
+}
+
+export type PortariaPdfResultado = {
+  pdf: Buffer;
+  pedidos: { orderId: string; orderNumber: string }[];
+};
+
+/**
+ * Gera UM PDF com todos os pedidos pendentes (uma folha por pedido) e marca
+ * printed_at em todos — pro botão manual "Imprimir pedidos da portaria"
+ * (AdminOrders/RhHome). Diferente do disparo automático (que só marca
+ * printed_at depois da impressora confirmar o job), aqui não tem como
+ * confirmar impressão física: o arquivo é baixado e impresso como
+ * qualquer documento, sem IP de impressora nenhum envolvido. printed_at
+ * marca o MOMENTO EM QUE O ARQUIVO FOI GERADO — mesmo princípio de quando
+ * a portaria recebia o papel em mãos antes de existir disparo automático.
+ *
+ * `pedidos: []` quando não tem nada pendente — devolve PDF `null` nesse
+ * caso (nada pra gerar).
+ */
+export async function gerarPdfPortaria(params: {
+  supabase: SupabaseClient;
+  now?: Date;
+  limit?: number;
+  ignoreCutoffGuard?: boolean;
+}): Promise<PortariaPdfResultado> {
+  const { supabase, now = new Date(), limit = 200, ignoreCutoffGuard = false } = params;
+
+  if (!isBusinessDayInSaoPaulo(now)) return { pdf: Buffer.alloc(0), pedidos: [] };
+  if (!ignoreCutoffGuard && !isAfterCutoffInSaoPaulo(now)) return { pdf: Buffer.alloc(0), pedidos: [] };
+
+  const corte = cutoffInstantForToday(now);
+  const pedidos = await buscarPedidosParaImprimir(supabase, corte, limit);
+
+  if (pedidos.length === 0) return { pdf: Buffer.alloc(0), pedidos: [] };
+
+  const pdf = await buildOrderSheetsPdf(pedidos.map(paraOrderSheetData));
+
+  const ids = pedidos.map((p) => p.id);
+  const { error: updateError } = await supabase
+    .from("orders")
+    .update({ printed_at: new Date().toISOString() })
+    .in("id", ids);
+
+  if (updateError) {
+    throw new Error(
+      `PDF gerado, mas falhou ao marcar printed_at em ${ids.length} pedido(s) — rodar de novo reimprimiria os mesmos: ${updateError.message}`
+    );
+  }
+
+  return {
+    pdf,
+    pedidos: pedidos.map((p) => ({ orderId: p.id, orderNumber: p.order_number })),
+  };
+}
+
 /**
  * Imprime a lista de separação do dia: uma folha por pedido pago e ainda não
  * impresso, criado antes do corte de hoje (13:40). Roda só em dia útil e só
@@ -92,26 +169,7 @@ export async function printPortariaList(params: {
 
   for (const pedido of pedidos) {
     try {
-      const pdf = await buildOrderSheetPdf({
-        orderNumber: pedido.order_number,
-        cigamOrderId: pedido.erp_external_id,
-        employeeName: pedido.employee_name ?? "Funcionário",
-        items: pedido.order_items.map((item) => ({
-          cigamCode: item.products?.cigam_code ?? null,
-          productName: item.product_name,
-          quantity: item.quantity,
-          unitPrice: item.unit_price,
-          // Peso total só faz sentido para item vendido por KG — mesma regra
-          // de src/lib/pricing.ts (getProductWeight): peso <= 0 vira 1 (ex.:
-          // "Pacote 1kg"), pra bater com o que o funcionário de fato pagou.
-          packageWeightKg:
-            (item.products?.cigam_unit ?? "").trim().toUpperCase() === "KG"
-              ? item.products?.weight && item.products.weight > 0
-                ? item.products.weight
-                : 1
-              : undefined,
-        })),
-      });
+      const pdf = await buildOrderSheetPdf(paraOrderSheetData(pedido));
 
       await printOrderSheet(pdf, printerHost);
 

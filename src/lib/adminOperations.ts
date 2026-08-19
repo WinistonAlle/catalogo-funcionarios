@@ -48,7 +48,7 @@ export type AdminOperationsStatusResponse = {
   recent: AdminOperationLog[];
 };
 
-async function getAccessToken() {
+export async function getAccessToken() {
   const {
     data: { session },
   } = await supabase.auth.getSession();
@@ -124,17 +124,49 @@ export async function resetAllEmployeeBalances() {
 }
 
 export type PrintPortariaResult = {
-  ok: boolean;
   message: string;
-  printed: number;
-  errors: number;
-  results: { orderId: string; orderNumber: string; status: "IMPRESSO" | "ERRO"; error?: string }[];
+  /** true quando saiu um PDF de verdade (teve pedido pendente) e o download já disparou. */
+  baixou: boolean;
 };
 
-export async function printPortariaNow() {
-  return requestWithAuth<PrintPortariaResult>(["/automation/print-portaria-now"], {
+/**
+ * Gera o PDF da lista da portaria e dispara o download no navegador — o
+ * faturamento abre o arquivo e imprime como imprime qualquer documento, sem
+ * IP de impressora nenhum. A rota devolve o PDF direto (não JSON) quando tem
+ * pedido pendente; só volta JSON pro caso "nada pendente" ou erro — por isso
+ * não dá pra usar requestWithAuth aqui (ele só entende JSON).
+ */
+export async function printPortariaNow(): Promise<PrintPortariaResult> {
+  const accessToken = await getAccessToken();
+  const response = await fetch("/automation/print-portaria-now", {
     method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}` },
   });
+
+  const contentType = response.headers.get("content-type") || "";
+
+  if (contentType.includes("application/pdf")) {
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `lista-portaria-${new Date().toISOString().slice(0, 10)}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Só libera depois de um instante — revogar cedo demais derruba o
+    // download em alguns navegadores que ainda estão lendo o blob.
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+
+    return { message: "PDF gerado e baixado — imprima o arquivo normalmente.", baixou: true };
+  }
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.ok === false) {
+    throw new Error(payload?.message || "Não foi possível gerar o PDF da lista da portaria.");
+  }
+
+  return { message: payload?.message || "Nenhum pedido pendente pra imprimir.", baixou: false };
 }
 
 export async function getAdminOperationsStatus() {

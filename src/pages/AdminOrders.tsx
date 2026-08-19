@@ -1174,9 +1174,9 @@ export default function AdminOrders() {
               }}
               onClick={handlePrintPortaria}
               disabled={printingPortaria}
-              title="Imprime na impressora do faturamento os pedidos ainda não impressos — o mesmo fluxo de antes, pra descer o papel na mão"
+              title="Baixa um PDF com os pedidos da portaria ainda não impressos — imprima o arquivo e desça o papel na mão, como sempre foi feito"
             >
-              {printingPortaria ? "Imprimindo…" : "Imprimir pedidos da portaria"}
+              {printingPortaria ? "Gerando PDF…" : "Imprimir pedidos da portaria"}
             </button>
 
             <button

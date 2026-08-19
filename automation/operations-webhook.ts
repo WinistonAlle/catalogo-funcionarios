@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
 import { processPendingOrders } from "./cigam/process-pending-orders";
 import { syncEstoque } from "./cigam/sync-estoque";
-import { printPortariaList } from "./print/portariaList";
+import { gerarPdfPortaria, printPortariaList } from "./print/portariaList";
 import { CigamClient } from "./cigam/client";
 import {
   filtrarPayloadAviso,
@@ -1191,20 +1191,19 @@ async function runPortariaPrint() {
 }
 
 /**
- * Impressão manual da lista de separação, pro faturamento resgatar o fluxo
- * de antes: eles clicam, imprime na impressora DELES (não na da portaria —
- * ver FATURAMENTO_PRINTER_HOST), e descem o papel andando como sempre
- * fizeram. Convive sem conflito com o disparo automático das 13:40: os dois
- * chamam a mesma printPortariaList, que só pega pedido com printed_at nulo
- * — o que for impresso aqui não é impresso de novo lá, e vice-versa.
+ * Geração manual do PDF da lista de separação, pro faturamento resgatar o
+ * fluxo de antes: eles clicam, baixam UM arquivo com todos os pedidos
+ * pendentes (uma folha por pedido) e imprimem como imprimem qualquer
+ * documento — sem IP de impressora nenhum envolvido. Convive sem conflito
+ * com o disparo automático das 13:40 (que continua mandando direto pra
+ * impressora da portaria): os dois só pegam pedido com printed_at nulo — o
+ * que sair aqui não é pego de novo lá, e vice-versa.
  *
  * ignoreCutoffGuard: true porque isto é intenção explícita de alguém, pode
  * rodar a qualquer hora do dia útil (não só depois das 13:40) — mas o
  * critério de QUAIS pedidos entram (criados antes do corte de hoje)
  * continua o mesmo.
  */
-const FATURAMENTO_PRINTER_HOST = process.env.FATURAMENTO_PRINTER_HOST;
-
 app.post("/print-portaria-now", async (req, res) => {
   try {
     const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
@@ -1212,17 +1211,10 @@ app.post("/print-portaria-now", async (req, res) => {
       return res.status(auth.status).json({ ok: false, message: auth.error });
     }
 
-    if (!FATURAMENTO_PRINTER_HOST) {
-      return res.status(400).json({
-        ok: false,
-        message: "FATURAMENTO_PRINTER_HOST não configurado no .env do servidor.",
-      });
-    }
-
     if (portariaPrintRunning) {
       return res.status(409).json({
         ok: false,
-        message: "Já existe uma impressão da lista da portaria em andamento.",
+        message: "Já existe uma geração da lista da portaria em andamento.",
       });
     }
 
@@ -1231,43 +1223,36 @@ app.post("/print-portaria-now", async (req, res) => {
       action: "print_portaria",
       status: "running",
       actor: auth.actor,
-      message: "Impressão manual da lista da portaria iniciada.",
+      message: "Geração manual do PDF da lista da portaria iniciada.",
     }).catch(() => null);
 
     try {
-      const results = await printPortariaList({
-        supabase,
-        printerHost: FATURAMENTO_PRINTER_HOST,
-        ignoreCutoffGuard: true,
-      });
-
-      const printed = results.filter((r) => r.status === "IMPRESSO").length;
-      const errors = results.filter((r) => r.status === "ERRO");
+      const { pdf, pedidos } = await gerarPdfPortaria({ supabase, ignoreCutoffGuard: true });
 
       await updateOperationLog(supabase, runningLog?.id, {
-        status: errors.length > 0 && printed === 0 ? "failed" : "success",
-        message: `${printed} folha(s) impressa(s), ${errors.length} com erro.`,
-        metadata: { printed, errors: errors.length, results },
+        status: "success",
+        message: `PDF gerado com ${pedidos.length} pedido(s).`,
+        metadata: { total: pedidos.length, pedidos },
       }).catch(() => null);
 
-      return res.json({
-        ok: true,
-        message:
-          results.length === 0
-            ? "Nenhum pedido pendente pra imprimir."
-            : `${printed} folha(s) impressa(s), ${errors.length} com erro.`,
-        printed,
-        errors: errors.length,
-        results,
-      });
+      if (pedidos.length === 0) {
+        return res.status(200).json({ ok: true, message: "Nenhum pedido pendente pra imprimir." });
+      }
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="lista-portaria-${new Date().toISOString().slice(0, 10)}.pdf"`
+      );
+      return res.status(200).send(pdf);
     } catch (err: any) {
       await updateOperationLog(supabase, runningLog?.id, {
         status: "failed",
-        message: "Falha ao imprimir a lista da portaria.",
+        message: "Falha ao gerar o PDF da lista da portaria.",
         metadata: { error: err?.message ?? String(err) },
       }).catch(() => null);
 
-      return res.status(500).json({ ok: false, message: err?.message || "Falha ao imprimir." });
+      return res.status(500).json({ ok: false, message: err?.message || "Falha ao gerar o PDF." });
     } finally {
       portariaPrintRunning = false;
     }

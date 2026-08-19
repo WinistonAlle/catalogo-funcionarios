@@ -171,17 +171,13 @@ function cellText(
 }
 
 /**
- * Uma folha A4 por pedido — separada de propósito, porque a câmara fria
- * grampeia cada uma antes de separar.
+ * Desenha uma folha de pedido a partir da página ATUAL de um doc já aberto —
+ * quem chama decide se essa página é nova (doc recém-criado, ou um
+ * doc.addPage() antes de chamar de novo para o próximo pedido). Extraído de
+ * buildOrderSheetPdf pra dar pra colocar vários pedidos no MESMO PDF
+ * (buildOrderSheetsPdf), sem duplicar a lógica de desenho.
  */
-export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: "A4", margin: PAGE_MARGIN });
-    const chunks: Buffer[] = [];
-    doc.on("data", (chunk) => chunks.push(chunk));
-    doc.on("end", () => resolve(Buffer.concat(chunks)));
-    doc.on("error", reject);
-
+function drawOrderSheet(doc: PDFKit.PDFDocument, pedido: OrderSheetData): void {
     const contentLeft = PAGE_MARGIN;
     const contentRight = doc.page.width - PAGE_MARGIN;
     const contentWidth = contentRight - contentLeft;
@@ -412,6 +408,44 @@ export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
 
     doc.font("Helvetica-Bold").fontSize(FONT.signature).fillColor(INK).text("FUNCIONÁRIO", sigLeftX, y + 8, { width: sigWidth, align: "center" });
     doc.text("GOSTINHO MINEIRO", sigRightX, y + 8, { width: sigWidth, align: "center" });
+}
+
+/**
+ * Uma folha A4 por pedido — separada de propósito, porque a câmara fria
+ * grampeia cada uma antes de separar.
+ */
+export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: "A4", margin: PAGE_MARGIN });
+    const chunks: Buffer[] = [];
+    doc.on("data", (chunk) => chunks.push(chunk));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+
+    drawOrderSheet(doc, pedido);
+    doc.end();
+  });
+}
+
+/**
+ * Vários pedidos, um PDF só — uma folha (ou mais, se o pedido for grande)
+ * por pedido, cada um começando página nova. Pro botão manual "Imprimir
+ * pedidos da portaria": o faturamento baixa um arquivo só com tudo que
+ * está pendente, em vez de um PDF por pedido, e imprime como imprime
+ * qualquer documento — sem precisar de IP de impressora nenhum.
+ */
+export function buildOrderSheetsPdf(pedidos: OrderSheetData[]): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: "A4", margin: PAGE_MARGIN });
+    const chunks: Buffer[] = [];
+    doc.on("data", (chunk) => chunks.push(chunk));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+
+    pedidos.forEach((pedido, index) => {
+      if (index > 0) doc.addPage();
+      drawOrderSheet(doc, pedido);
+    });
 
     doc.end();
   });

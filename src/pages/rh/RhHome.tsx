@@ -407,9 +407,9 @@ const RhHome: React.FC = () => {
             </ResetBox>
 
             <PortariaBox onClick={handlePrintPortaria} disabled={printingPortaria}>
-              <Title>{printingPortaria ? "Imprimindo..." : "Imprimir Pedidos da Portaria"}</Title>
+              <Title>{printingPortaria ? "Gerando PDF..." : "Imprimir Pedidos da Portaria"}</Title>
               <Subtitle>
-                Imprime na impressora do faturamento os pedidos ainda não impressos — desça o papel na mão
+                Baixa um PDF com os pedidos ainda não impressos — imprima o arquivo e desça o papel na mão,
                 como sempre foi feito. Não conflita com o disparo automático das 13:40.
               </Subtitle>
             </PortariaBox>
