@@ -93,6 +93,27 @@ function unique(values) {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
+// employees.role é enum estrito no Postgres (employee/admin/rh/separacao,
+// tudo minúsculo). Sem isto, um "Admin" ou "RH " digitado na planilha (erro
+// fácil) derruba o upsert INTEIRO — os 255 funcionários de uma vez, não só a
+// linha errada — porque o upsert manda todo mundo num lote só. Normaliza
+// caixa/espaço e, se ainda assim não bater com nenhum valor válido, cai pro
+// papel menos privilegiado (nunca eleva por engano a partir de um valor
+// estranho) e avisa no log pra alguém arrumar a planilha.
+const VALID_ROLES = new Set(["employee", "admin", "rh", "separacao"]);
+
+function normalizeRole(roleRaw, context) {
+  const normalized = (roleRaw || "").toLowerCase();
+  if (!normalized) return "employee";
+  if (VALID_ROLES.has(normalized)) return normalized;
+
+  console.warn(
+    `⚠️ Role inválida "${roleRaw}" para CPF ${context.cpf} (${context.full_name}) — usando "employee". ` +
+      `Valores aceitos: ${Array.from(VALID_ROLES).join(", ")}.`
+  );
+  return "employee";
+}
+
 function failSync(message, error) {
   if (error) {
     console.error(message, error);
@@ -188,7 +209,7 @@ async function readEmployeesFromSheet() {
       const cpf = normalizeCpf(row[iCpf]);
 
       const roleRaw = iRole !== -1 ? (row[iRole] || "").toString().trim() : "";
-      const role = roleRaw || "employee";
+      const role = normalizeRole(roleRaw, { cpf, full_name });
 
       const creditoRaw = iCredit !== -1 ? row[iCredit] : "";
       const credito_mensal_cents = parseMoneyToCentsBR(creditoRaw);
@@ -253,13 +274,37 @@ async function syncEmployees() {
     // - Todo dia: só cadastra/atualiza dados “cadastro”
     // - Dia 27: atualiza o credito_mensal_cents de todo mundo
     // - Qualquer dia: se for funcionário novo (CPF não existe ainda), insere já com crédito
-    const syncCredit = shouldSyncMonthlyCredit();
+    let syncCredit = shouldSyncMonthlyCredit();
+    let creditGuardTripped = false;
 
     console.log(
       syncCredit
         ? "📅 Hoje é rodada MENSAL: vai sincronizar credito_mensal de todos."
         : "🗓️ Rodada DIÁRIA: vai sincronizar cadastro; e crédito só para funcionários NOVOS."
     );
+
+    // Trava de segurança pra rodada MENSAL: ela sobrescreve
+    // credito_mensal_cents de TODO MUNDO de uma vez (é o único mecanismo que
+    // reabastece o saldo de verdade — ver "Restaurar saldo" no admin). Se a
+    // coluna "credito_mensal" sumir da planilha, for renomeada, ou alguém
+    // limpar as células por engano, todo mundo leria 0 e a rodada mensal
+    // zeraria o saldo de todos os 255 funcionários de uma vez, sem erro
+    // nenhum. Isso é fisicamente impossível de acontecer numa planilha real
+    // preenchida — então trata como sinal de que algo está errado e aborta a
+    // parte de crédito (cadastro ainda sincroniza normalmente).
+    if (syncCredit) {
+      const totalCreditoNaPlanilha = sheetEmployees.reduce((sum, e) => sum + e.credito_mensal_cents, 0);
+      if (totalCreditoNaPlanilha <= 0) {
+        console.error(
+          "🛑 Rodada MENSAL abortada: a soma de credito_mensal de todos os funcionários na planilha deu " +
+            "R$ 0,00. Isso indica que a coluna 'credito_mensal' sumiu, foi renomeada ou está vazia — não " +
+            "que os 255 funcionários realmente têm saldo zero. Corrija a planilha e rode de novo (ou force " +
+            "com SYNC_CREDITO_MENSAL=1). Ninguém teve o saldo alterado por esta rodada."
+        );
+        syncCredit = false;
+        creditGuardTripped = true;
+      }
+    }
 
     const payload = sheetEmployees.map((e) => {
       const base = {
@@ -343,6 +388,14 @@ async function syncEmployees() {
     console.log(`   Total na planilha: ${sheetEmployees.length}`);
     console.log(`   Removidos: ${cpfsToDelete.length}`);
     console.log(`   Crédito mensal sincronizado hoje? ${syncCredit ? "SIM (todos)" : "NÃO (só novos)"}`);
+
+    if (creditGuardTripped) {
+      // Cadastro sincronizou normalmente, mas o reabastecimento mensal NÃO
+      // rodou (trava de segurança acima) — sai com código diferente de 0
+      // pra quem chamou este script (webhook de /reset-employee-balances,
+      // ou o próprio cron) enxergar isto como falha, não como sucesso.
+      process.exitCode = 2;
+    }
   } catch (err) {
     console.error("💥 Erro geral na sincronização:", err);
     process.exit(1);
