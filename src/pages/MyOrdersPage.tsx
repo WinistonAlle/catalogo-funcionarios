@@ -684,11 +684,6 @@ const MyOrdersPage: React.FC = () => {
                         <span className="text-sm font-semibold text-gray-900">
                           {order.erp_external_id || orderNumber}
                         </span>
-                        {order.erp_external_id && (
-                          <span className="text-[11px] font-mono text-gray-400">
-                            Ref. {orderNumber}
-                          </span>
-                        )}
                       </div>
                       <div className="text-xs text-gray-500 mt-0.5">
                         {new Date(order.created_at).toLocaleString("pt-BR")}

@@ -1654,11 +1654,6 @@ export default function AdminOrders() {
                           <div style={styles.mobileTitle}>
                             {o.erp_external_id || o.order_number || "—"}
                           </div>
-                          {o.erp_external_id && (
-                            <div style={styles.cigamRef}>
-                              Ref. {o.order_number}
-                            </div>
-                          )}
                           <div
                             style={styles.mobileSub}
                             title={o.employee_name || ""}
@@ -1834,11 +1829,6 @@ export default function AdminOrders() {
               <div style={{ minWidth: 0 }}>
                 <div style={styles.modalTitle}>
                   Pedido {selected.erp_external_id || selected.order_number || "—"}
-                  {selected.erp_external_id && (
-                    <span style={styles.cigamRefInline}>
-                      Ref. {selected.order_number}
-                    </span>
-                  )}
                 </div>
                 <div style={styles.modalSub}>
                   {selected.employee_name || "Nome não encontrado"} •{" "}
@@ -2481,9 +2471,6 @@ export default function AdminOrders() {
                                   >
                                     <td style={styles.tdStrong}>
                                       {r.erp_external_id || r.order_number || "—"}
-                                      <div style={styles.tdMuted}>
-                                        {r.erp_external_id ? r.order_number : r.order_id}
-                                      </div>
                                     </td>
 
                                     <td style={styles.td}>

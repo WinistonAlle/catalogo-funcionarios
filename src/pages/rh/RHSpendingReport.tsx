@@ -945,10 +945,7 @@ export default function RHSpendingReport() {
                         <OrderTitle>
                           {order.erp_external_id || order.order_number || "Pedido sem número"}
                         </OrderTitle>
-                        <OrderMeta>
-                          {formatDateTime(order.created_at)}
-                          {order.erp_external_id ? ` • Ref. ${order.order_number}` : ""}
-                        </OrderMeta>
+                        <OrderMeta>{formatDateTime(order.created_at)}</OrderMeta>
                       </div>
 
                       <StatusBadge $status={status || "sem_status"}>{status || "sem status"}</StatusBadge>
