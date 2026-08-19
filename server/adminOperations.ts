@@ -18,7 +18,9 @@ export type AdminOperationAction =
   | "sync_employees"
   | "restore_employee_balances"
   /** Criação de senha no primeiro acesso de admin/RH (ver rota /primeiro-acesso). */
-  | "first_access";
+  | "first_access"
+  /** Impressão manual da lista de separação (botão em AdminOrders). */
+  | "print_portaria";
 export type AdminOperationStatus = "running" | "success" | "failed" | "blocked";
 
 export type AdminOperationLogRow = {

@@ -70,11 +70,20 @@ export async function printPortariaList(params: {
   printerHost: string;
   now?: Date;
   limit?: number;
+  /**
+   * O disparo automático só age depois do corte (13:40) — pra não pegar
+   * pedido feito no meio da tarde antes da hora certa. O botão manual do
+   * faturamento ("Imprimir pedidos da portaria" em AdminOrders) é o oposto:
+   * intenção explícita de alguém, pode rodar a qualquer hora do dia útil.
+   * O filtro por `created_at < corte de hoje` continua valendo do mesmo
+   * jeito — só pula a checagem de HORÁRIO, não a de QUAIS pedidos entram.
+   */
+  ignoreCutoffGuard?: boolean;
 }): Promise<PortariaPrintResult[]> {
-  const { supabase, printerHost, now = new Date(), limit = 200 } = params;
+  const { supabase, printerHost, now = new Date(), limit = 200, ignoreCutoffGuard = false } = params;
 
   if (!isBusinessDayInSaoPaulo(now)) return [];
-  if (!isAfterCutoffInSaoPaulo(now)) return [];
+  if (!ignoreCutoffGuard && !isAfterCutoffInSaoPaulo(now)) return [];
 
   const corte = cutoffInstantForToday(now);
   const pedidos = await buscarPedidosParaImprimir(supabase, corte, limit);

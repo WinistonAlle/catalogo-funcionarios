@@ -5,7 +5,12 @@ import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Bg } from "../../components/ui/app-surface";
-import { getAdminOperationsStatus, resetAllEmployeeBalances, triggerEmployeeSyncNow } from "@/lib/adminOperations";
+import {
+  getAdminOperationsStatus,
+  printPortariaNow,
+  resetAllEmployeeBalances,
+  triggerEmployeeSyncNow,
+} from "@/lib/adminOperations";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -75,6 +80,7 @@ const Container = styled.div`
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-areas:
     "sync reset"
+    "portaria portaria"
     "report history"
     "catalog catalog";
   gap: 24px;
@@ -84,6 +90,7 @@ const Container = styled.div`
     grid-template-areas:
       "sync"
       "reset"
+      "portaria"
       "report"
       "history"
       "catalog";
@@ -184,6 +191,10 @@ const ResetBox = styled(Box)`
   }
 `;
 
+const PortariaBox = styled(Box)`
+  grid-area: portaria;
+`;
+
 const CatalogBox = styled(Box)`
   grid-area: catalog;
 `;
@@ -272,6 +283,7 @@ function getBalanceResetWindow(date = new Date()) {
 const RhHome: React.FC = () => {
   const navigate = useNavigate();
   const [syncingEmployees, setSyncingEmployees] = useState(false);
+  const [printingPortaria, setPrintingPortaria] = useState(false);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const [resettingBalances, setResettingBalances] = useState(false);
   const statusQuery = useQuery({
@@ -304,6 +316,21 @@ const RhHome: React.FC = () => {
       toast.error(err?.message || "Erro ao sincronizar funcionários.");
     } finally {
       setSyncingEmployees(false);
+    }
+  };
+
+  const handlePrintPortaria = async () => {
+    setPrintingPortaria(true);
+
+    try {
+      const result = await printPortariaNow();
+      toast.success(result.message);
+      await statusQuery.refetch();
+    } catch (err: any) {
+      console.error("Erro ao imprimir a lista da portaria:", err);
+      toast.error(err?.message || "Erro ao imprimir a lista da portaria.");
+    } finally {
+      setPrintingPortaria(false);
     }
   };
 
@@ -378,6 +405,14 @@ const RhHome: React.FC = () => {
                   : "Proteção ativa contra repetição no mesmo ciclo."}
               </Subtitle>
             </ResetBox>
+
+            <PortariaBox onClick={handlePrintPortaria} disabled={printingPortaria}>
+              <Title>{printingPortaria ? "Imprimindo..." : "Imprimir Pedidos da Portaria"}</Title>
+              <Subtitle>
+                Imprime na impressora do faturamento os pedidos ainda não impressos — desça o papel na mão
+                como sempre foi feito. Não conflita com o disparo automático das 13:40.
+              </Subtitle>
+            </PortariaBox>
 
             <ReportBox onClick={() => navigate("/rh/relatorio-gastos")}>
               <Title>Relatório de Gastos</Title>

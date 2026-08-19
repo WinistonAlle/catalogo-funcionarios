@@ -1069,6 +1069,93 @@ async function runPortariaPrint() {
   }
 }
 
+/**
+ * Impressão manual da lista de separação, pro faturamento resgatar o fluxo
+ * de antes: eles clicam, imprime na impressora DELES (não na da portaria —
+ * ver FATURAMENTO_PRINTER_HOST), e descem o papel andando como sempre
+ * fizeram. Convive sem conflito com o disparo automático das 13:40: os dois
+ * chamam a mesma printPortariaList, que só pega pedido com printed_at nulo
+ * — o que for impresso aqui não é impresso de novo lá, e vice-versa.
+ *
+ * ignoreCutoffGuard: true porque isto é intenção explícita de alguém, pode
+ * rodar a qualquer hora do dia útil (não só depois das 13:40) — mas o
+ * critério de QUAIS pedidos entram (criados antes do corte de hoje)
+ * continua o mesmo.
+ */
+const FATURAMENTO_PRINTER_HOST = process.env.FATURAMENTO_PRINTER_HOST;
+
+app.post("/print-portaria-now", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) {
+      return res.status(auth.status).json({ ok: false, message: auth.error });
+    }
+
+    if (!FATURAMENTO_PRINTER_HOST) {
+      return res.status(400).json({
+        ok: false,
+        message: "FATURAMENTO_PRINTER_HOST não configurado no .env do servidor.",
+      });
+    }
+
+    if (portariaPrintRunning) {
+      return res.status(409).json({
+        ok: false,
+        message: "Já existe uma impressão da lista da portaria em andamento.",
+      });
+    }
+
+    portariaPrintRunning = true;
+    const runningLog = await insertOperationLog(supabase, {
+      action: "print_portaria",
+      status: "running",
+      actor: auth.actor,
+      message: "Impressão manual da lista da portaria iniciada.",
+    }).catch(() => null);
+
+    try {
+      const results = await printPortariaList({
+        supabase,
+        printerHost: FATURAMENTO_PRINTER_HOST,
+        ignoreCutoffGuard: true,
+      });
+
+      const printed = results.filter((r) => r.status === "IMPRESSO").length;
+      const errors = results.filter((r) => r.status === "ERRO");
+
+      await updateOperationLog(supabase, runningLog?.id, {
+        status: errors.length > 0 && printed === 0 ? "failed" : "success",
+        message: `${printed} folha(s) impressa(s), ${errors.length} com erro.`,
+        metadata: { printed, errors: errors.length, results },
+      }).catch(() => null);
+
+      return res.json({
+        ok: true,
+        message:
+          results.length === 0
+            ? "Nenhum pedido pendente pra imprimir."
+            : `${printed} folha(s) impressa(s), ${errors.length} com erro.`,
+        printed,
+        errors: errors.length,
+        results,
+      });
+    } catch (err: any) {
+      await updateOperationLog(supabase, runningLog?.id, {
+        status: "failed",
+        message: "Falha ao imprimir a lista da portaria.",
+        metadata: { error: err?.message ?? String(err) },
+      }).catch(() => null);
+
+      return res.status(500).json({ ok: false, message: err?.message || "Falha ao imprimir." });
+    } finally {
+      portariaPrintRunning = false;
+    }
+  } catch (err: any) {
+    portariaPrintRunning = false;
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`🧩 Webhook de operações rodando em http://localhost:${PORT}`);
   if (CIGAM_AUTO_SYNC_INTERVAL_MS > 0) {

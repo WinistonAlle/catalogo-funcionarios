@@ -11,7 +11,7 @@ export type ResetEmployeeBalancesResponse = {
   };
 };
 
-export type AdminOperationAction = "sync_employees" | "restore_employee_balances";
+export type AdminOperationAction = "sync_employees" | "restore_employee_balances" | "print_portaria";
 export type AdminOperationStatus = "running" | "success" | "failed" | "blocked";
 
 export type AdminOperationLog = {
@@ -123,6 +123,20 @@ export async function resetAllEmployeeBalances() {
   );
 }
 
+export type PrintPortariaResult = {
+  ok: boolean;
+  message: string;
+  printed: number;
+  errors: number;
+  results: { orderId: string; orderNumber: string; status: "IMPRESSO" | "ERRO"; error?: string }[];
+};
+
+export async function printPortariaNow() {
+  return requestWithAuth<PrintPortariaResult>(["/automation/print-portaria-now"], {
+    method: "POST",
+  });
+}
+
 export async function getAdminOperationsStatus() {
   return requestWithAuth<AdminOperationsStatusResponse>(
     ["/automation/operations/status", "/api/operations-status"],
@@ -152,6 +166,7 @@ export async function listAdminOperationHistory(opts?: {
 export function formatOperationAction(action?: AdminOperationAction | null) {
   if (action === "sync_employees") return "Sincronização de funcionários";
   if (action === "restore_employee_balances") return "Restauração de saldo";
+  if (action === "print_portaria") return "Impressão da lista da portaria";
   return "Operação";
 }
 

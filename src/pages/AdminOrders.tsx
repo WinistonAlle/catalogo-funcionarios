@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
+import { printPortariaNow } from "@/lib/adminOperations";
 
 type OrderRow = {
   id: string;
@@ -426,6 +427,7 @@ export default function AdminOrders() {
   const [selected, setSelected] = useState<OrderRow | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   const [canceling, setCanceling] = useState(false);
+  const [printingPortaria, setPrintingPortaria] = useState(false);
 
   const [history, setHistory] = useState<AdminActionRow[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -752,6 +754,19 @@ export default function AdminOrders() {
       setOrderItems([]);
     } finally {
       setItemsLoading(false);
+    }
+  }
+
+  async function handlePrintPortaria() {
+    if (printingPortaria) return;
+    setPrintingPortaria(true);
+    try {
+      const result = await printPortariaNow();
+      alert(result.message);
+    } catch (e: any) {
+      alert(e?.message || "Erro ao imprimir a lista da portaria.");
+    } finally {
+      setPrintingPortaria(false);
     }
   }
 
@@ -1148,6 +1163,20 @@ export default function AdminOrders() {
           </div>
 
           <div style={headerActionsStyle}>
+            <button
+              style={{
+                ...styles.ghostBtn,
+                ...(isMobile
+                  ? { width: "100%", height: 42, borderRadius: 14 }
+                  : {}),
+              }}
+              onClick={handlePrintPortaria}
+              disabled={printingPortaria}
+              title="Imprime na impressora do faturamento os pedidos ainda não impressos — o mesmo fluxo de antes, pra descer o papel na mão"
+            >
+              {printingPortaria ? "Imprimindo…" : "Imprimir pedidos da portaria"}
+            </button>
+
             <button
               style={{
                 ...styles.ghostBtn,
