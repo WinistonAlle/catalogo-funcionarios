@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
 import { processPendingOrders } from "./cigam/process-pending-orders";
 import { syncEstoque } from "./cigam/sync-estoque";
-import { gerarPdfPortaria, printPortariaList } from "./print/portariaList";
+import { gerarPdfPortaria, gerarPdfPedidoUnico, printPortariaList } from "./print/portariaList";
 import { CigamClient } from "./cigam/client";
 import {
   filtrarPayloadAviso,
@@ -1258,6 +1258,61 @@ app.post("/print-portaria-now", async (req, res) => {
     }
   } catch (err: any) {
     portariaPrintRunning = false;
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
+/**
+ * Impressão avulsa de UM pedido — botão "Imprimir" por linha em AdminOrders,
+ * pra reimprimir ou imprimir na hora um pedido específico sem esperar o
+ * disparo automático ou baixar a lista inteira ("vai que acontece algo").
+ * Sem os filtros de corte/dia útil/pago do fluxo normal — ver
+ * gerarPdfPedidoUnico para o porquê.
+ */
+app.post("/print-order-now/:orderId", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) {
+      return res.status(auth.status).json({ ok: false, message: auth.error });
+    }
+
+    const orderId = String(req.params.orderId ?? "").trim();
+    if (!orderId) {
+      return res.status(400).json({ ok: false, message: "orderId é obrigatório." });
+    }
+
+    const runningLog = await insertOperationLog(supabase, {
+      action: "print_order",
+      status: "running",
+      actor: auth.actor,
+      message: `Impressão avulsa do pedido ${orderId} iniciada.`,
+    }).catch(() => null);
+
+    try {
+      const { pdf, orderNumber, jaImpresso } = await gerarPdfPedidoUnico({ supabase, orderId });
+
+      await updateOperationLog(supabase, runningLog?.id, {
+        status: "success",
+        message: `PDF do pedido ${orderNumber} gerado.`,
+        metadata: { orderId, orderNumber, jaImpresso },
+      }).catch(() => null);
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="pedido-${orderNumber}.pdf"`
+      );
+      return res.status(200).send(pdf);
+    } catch (err: any) {
+      await updateOperationLog(supabase, runningLog?.id, {
+        status: "failed",
+        message: "Falha ao gerar o PDF do pedido.",
+        metadata: { orderId, error: err?.message ?? String(err) },
+      }).catch(() => null);
+
+      return res.status(500).json({ ok: false, message: err?.message || "Falha ao gerar o PDF." });
+    }
+  } catch (err: any) {
     return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
   }
 });

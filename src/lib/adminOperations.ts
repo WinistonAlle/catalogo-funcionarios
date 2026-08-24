@@ -11,7 +11,11 @@ export type ResetEmployeeBalancesResponse = {
   };
 };
 
-export type AdminOperationAction = "sync_employees" | "restore_employee_balances" | "print_portaria";
+export type AdminOperationAction =
+  | "sync_employees"
+  | "restore_employee_balances"
+  | "print_portaria"
+  | "print_order";
 export type AdminOperationStatus = "running" | "success" | "failed" | "blocked";
 
 export type AdminOperationLog = {
@@ -130,13 +134,21 @@ export type PrintPortariaResult = {
 };
 
 /**
- * Gera o PDF da lista da portaria e dispara o download no navegador — o
- * faturamento abre o arquivo e imprime como imprime qualquer documento, sem
- * IP de impressora nenhum. A rota devolve o PDF direto (não JSON) quando tem
- * pedido pendente; só volta JSON pro caso "nada pendente" ou erro — por isso
- * não dá pra usar requestWithAuth aqui (ele só entende JSON).
+ * Gera o PDF da lista da portaria e abre numa aba nova, já pronta pro
+ * navegador imprimir (Ctrl+P / ícone de impressora do visualizador de PDF
+ * embutido) — sem passar pela pasta de Downloads. A rota devolve o PDF direto
+ * (não JSON) quando tem pedido pendente; só volta JSON pro caso "nada
+ * pendente" ou erro — por isso não dá pra usar requestWithAuth aqui (ele só
+ * entende JSON).
+ *
+ * `targetWindow` deve ser aberto de forma SÍNCRONA no clique (antes do
+ * `await` do fetch) e passado pra cá — abrir a aba só depois da resposta
+ * chegar cai no bloqueio de pop-up da maioria dos navegadores, porque deixa
+ * de contar como reação direta a um clique.
  */
-export async function printPortariaNow(): Promise<PrintPortariaResult> {
+export async function printPortariaNow(
+  targetWindow?: Window | null
+): Promise<PrintPortariaResult> {
   const accessToken = await getAccessToken();
   const response = await fetch("/automation/print-portaria-now", {
     method: "POST",
@@ -148,25 +160,83 @@ export async function printPortariaNow(): Promise<PrintPortariaResult> {
   if (contentType.includes("application/pdf")) {
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `lista-portaria-${new Date().toISOString().slice(0, 10)}.pdf`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    // Só libera depois de um instante — revogar cedo demais derruba o
-    // download em alguns navegadores que ainda estão lendo o blob.
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
 
-    return { message: "PDF gerado e baixado — imprima o arquivo normalmente.", baixou: true };
+    if (targetWindow && !targetWindow.closed) {
+      targetWindow.location.href = url;
+    } else {
+      // Sem aba pré-aberta (ou o usuário fechou antes da resposta chegar):
+      // cai pra download, que sempre funciona.
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `lista-portaria-${new Date().toISOString().slice(0, 10)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+    // Só libera depois de um tempo — revogar cedo demais derruba o PDF em
+    // navegadores que ainda estão carregando o blob na aba nova.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+
+    return { message: "Lista aberta numa aba nova — use o botão de imprimir do navegador.", baixou: true };
   }
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload?.ok === false) {
+    targetWindow?.close();
     throw new Error(payload?.message || "Não foi possível gerar o PDF da lista da portaria.");
   }
 
+  targetWindow?.close();
   return { message: payload?.message || "Nenhum pedido pendente pra imprimir.", baixou: false };
+}
+
+function abrirOuBaixarPdf(blob: Blob, filename: string, targetWindow?: Window | null): void {
+  const url = URL.createObjectURL(blob);
+
+  if (targetWindow && !targetWindow.closed) {
+    targetWindow.location.href = url;
+  } else {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+export type PrintOrderResult = {
+  message: string;
+};
+
+/**
+ * Reimpressão/impressão avulsa de UM pedido — botão "Imprimir" por linha em
+ * AdminOrders. Abre numa aba nova (mesmo padrão de printPortariaNow), sem os
+ * filtros de corte/dia útil/pago do fluxo normal: é intenção explícita de
+ * alguém clicando num pedido específico.
+ */
+export async function printOrderNow(
+  orderId: string,
+  targetWindow?: Window | null
+): Promise<PrintOrderResult> {
+  const accessToken = await getAccessToken();
+  const response = await fetch(`/automation/print-order-now/${orderId}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  const contentType = response.headers.get("content-type") || "";
+
+  if (contentType.includes("application/pdf")) {
+    const blob = await response.blob();
+    abrirOuBaixarPdf(blob, `pedido-${orderId}.pdf`, targetWindow);
+    return { message: "Pedido aberto numa aba nova — use o botão de imprimir do navegador." };
+  }
+
+  const payload = await response.json().catch(() => ({}));
+  targetWindow?.close();
+  throw new Error(payload?.message || "Não foi possível gerar o PDF do pedido.");
 }
 
 export async function getAdminOperationsStatus() {
@@ -199,6 +269,7 @@ export function formatOperationAction(action?: AdminOperationAction | null) {
   if (action === "sync_employees") return "Sincronização de funcionários";
   if (action === "restore_employee_balances") return "Restauração de saldo";
   if (action === "print_portaria") return "Impressão da lista da portaria";
+  if (action === "print_order") return "Impressão avulsa de pedido";
   return "Operação";
 }
 

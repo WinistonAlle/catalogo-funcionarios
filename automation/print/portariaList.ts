@@ -82,6 +82,69 @@ export type PortariaPdfResultado = {
   pedidos: { orderId: string; orderNumber: string }[];
 };
 
+export type PedidoUnicoResultado = {
+  pdf: Buffer;
+  orderNumber: string;
+  /** true quando este pedido já tinha `printed_at` — reimpressão, não marca de novo. */
+  jaImpresso: boolean;
+};
+
+/**
+ * Gera o PDF de UM pedido específico, fora do fluxo normal (corte, dia útil,
+ * "foi pago") — botão "Imprimir" avulso em AdminOrders, pra reimprimir ou
+ * imprimir na hora um pedido específico se algo sair fora do previsto (folha
+ * perdida, impressora falhou, pedido esquecido). Por isso NÃO tem os
+ * filtros de `buscarPedidosParaImprimir`: o admin já escolheu o pedido pela
+ * tela, então a intenção é explícita — só pedido cancelado continua
+ * recusado, porque não faz sentido separar mercadoria de um pedido que não
+ * vale mais.
+ *
+ * Marca `printed_at` só se ainda estiver nulo — reimprimir um pedido que já
+ * tinha saído não mexe no timestamp original nem duplica no relatório do
+ * disparo automático.
+ */
+export async function gerarPdfPedidoUnico(params: {
+  supabase: SupabaseClient;
+  orderId: string;
+}): Promise<PedidoUnicoResultado> {
+  const { supabase, orderId } = params;
+
+  const { data, error } = await supabase
+    .from("orders")
+    .select(
+      "id, order_number, employee_name, erp_external_id, cancelled_at, printed_at, order_items(product_name, quantity, unit_price, products(cigam_code, cigam_unit, weight))"
+    )
+    .eq("id", orderId)
+    .maybeSingle();
+
+  if (error) throw new Error(`Falha ao buscar o pedido: ${error.message}`);
+  if (!data) throw new Error("Pedido não encontrado.");
+
+  const pedido = data as unknown as OrderRow & {
+    cancelled_at: string | null;
+    printed_at: string | null;
+  };
+
+  if (pedido.cancelled_at) {
+    throw new Error("Este pedido está cancelado — a portaria não separa mercadoria dele.");
+  }
+
+  const pdf = await buildOrderSheetPdf(paraOrderSheetData(pedido));
+  const jaImpresso = !!pedido.printed_at;
+
+  if (!jaImpresso) {
+    const { error: updateError } = await supabase
+      .from("orders")
+      .update({ printed_at: new Date().toISOString() })
+      .eq("id", orderId);
+    if (updateError) {
+      throw new Error(`PDF gerado, mas falhou ao marcar printed_at: ${updateError.message}`);
+    }
+  }
+
+  return { pdf, orderNumber: pedido.order_number, jaImpresso };
+}
+
 /**
  * Gera UM PDF com todos os pedidos pendentes (uma folha por pedido) e marca
  * printed_at em todos — pro botão manual "Imprimir pedidos da portaria"

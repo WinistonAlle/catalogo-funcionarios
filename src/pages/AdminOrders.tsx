@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
-import { printPortariaNow } from "@/lib/adminOperations";
+import { printPortariaNow, printOrderNow } from "@/lib/adminOperations";
 
 type OrderRow = {
   id: string;
@@ -465,6 +465,7 @@ export default function AdminOrders() {
   const [cancelReason, setCancelReason] = useState("");
   const [canceling, setCanceling] = useState(false);
   const [printingPortaria, setPrintingPortaria] = useState(false);
+  const [printingOrderId, setPrintingOrderId] = useState<string | null>(null);
 
   const [history, setHistory] = useState<AdminActionRow[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -797,13 +798,31 @@ export default function AdminOrders() {
   async function handlePrintPortaria() {
     if (printingPortaria) return;
     setPrintingPortaria(true);
+    // Aberta AGORA, ainda dentro do clique — se esperar a resposta do
+    // servidor pra abrir, a maioria dos navegadores bloqueia como pop-up.
+    const aba = window.open("", "_blank");
     try {
-      const result = await printPortariaNow();
-      alert(result.message);
+      const result = await printPortariaNow(aba);
+      if (!result.baixou) alert(result.message);
     } catch (e: any) {
       alert(e?.message || "Erro ao imprimir a lista da portaria.");
     } finally {
       setPrintingPortaria(false);
+    }
+  }
+
+  async function handlePrintOrder(orderId: string) {
+    if (printingOrderId) return;
+    setPrintingOrderId(orderId);
+    // Aberta AGORA, ainda dentro do clique — mesma razão do botão em massa:
+    // esperar a resposta do servidor pra abrir cai no bloqueio de pop-up.
+    const aba = window.open("", "_blank");
+    try {
+      await printOrderNow(orderId, aba);
+    } catch (e: any) {
+      alert(e?.message || "Erro ao imprimir o pedido.");
+    } finally {
+      setPrintingOrderId(null);
     }
   }
 
@@ -1651,16 +1670,31 @@ export default function AdminOrders() {
                             </td>
 
                             <td style={{ ...styles.td, textAlign: "right" }}>
-                              <button
-                                style={{
-                                  ...styles.smallBtn,
-                                  ...(isCanceled ? styles.disabledBtn : {}),
-                                }}
-                                disabled={isCanceled}
-                                onClick={() => setSelected(o)}
-                              >
-                                Gerenciar
-                              </button>
+                              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                                <button
+                                  style={{
+                                    ...styles.smallBtn,
+                                    ...(isCanceled || printingOrderId === o.id
+                                      ? styles.disabledBtn
+                                      : {}),
+                                  }}
+                                  disabled={isCanceled || printingOrderId === o.id}
+                                  onClick={() => handlePrintOrder(o.id)}
+                                  title="Reimprimir (ou imprimir agora) só este pedido, fora da lista em massa"
+                                >
+                                  {printingOrderId === o.id ? "Gerando…" : "Imprimir"}
+                                </button>
+                                <button
+                                  style={{
+                                    ...styles.smallBtn,
+                                    ...(isCanceled ? styles.disabledBtn : {}),
+                                  }}
+                                  disabled={isCanceled}
+                                  onClick={() => setSelected(o)}
+                                >
+                                  Gerenciar
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -1806,6 +1840,22 @@ export default function AdminOrders() {
 
                           <button
                             style={{
+                              ...styles.secondaryBtn,
+                              padding: "10px 12px",
+                              height: 42,
+                              borderRadius: 14,
+                              ...(isCanceled || printingOrderId === o.id
+                                ? styles.disabledBtn
+                                : {}),
+                            }}
+                            disabled={isCanceled || printingOrderId === o.id}
+                            onClick={() => handlePrintOrder(o.id)}
+                          >
+                            {printingOrderId === o.id ? "Gerando…" : "Imprimir este pedido"}
+                          </button>
+
+                          <button
+                            style={{
                               ...styles.primaryBtn,
                               padding: "10px 12px",
                               height: 42,
@@ -1865,14 +1915,28 @@ export default function AdminOrders() {
                 </div>
               </div>
 
-              <button
-                style={styles.iconBtn}
-                onClick={() => setSelected(null)}
-                aria-label="Fechar"
-                title="Fechar"
-              >
-                ✕
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <button
+                  style={{
+                    ...styles.smallBtn,
+                    ...(selected.status === "cancelado" || printingOrderId === selected.id
+                      ? styles.disabledBtn
+                      : {}),
+                  }}
+                  disabled={selected.status === "cancelado" || printingOrderId === selected.id}
+                  onClick={() => handlePrintOrder(selected.id)}
+                >
+                  {printingOrderId === selected.id ? "Gerando…" : "Imprimir"}
+                </button>
+                <button
+                  style={styles.iconBtn}
+                  onClick={() => setSelected(null)}
+                  aria-label="Fechar"
+                  title="Fechar"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
 
             <div

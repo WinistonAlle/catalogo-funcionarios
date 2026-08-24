@@ -20,7 +20,9 @@ export type AdminOperationAction =
   /** Criação de senha no primeiro acesso de admin/RH (ver rota /primeiro-acesso). */
   | "first_access"
   /** Impressão manual da lista de separação (botão em AdminOrders). */
-  | "print_portaria";
+  | "print_portaria"
+  /** Impressão avulsa de um pedido específico (botão "Imprimir" por linha). */
+  | "print_order";
 export type AdminOperationStatus = "running" | "success" | "failed" | "blocked";
 
 export type AdminOperationLogRow = {
