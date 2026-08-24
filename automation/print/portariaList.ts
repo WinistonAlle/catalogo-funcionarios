@@ -1,7 +1,7 @@
 import { SupabaseClient } from "@supabase/supabase-js";
 import { isBusinessDayInSaoPaulo } from "../holidays";
 import { cutoffInstantForToday, isAfterCutoffInSaoPaulo } from "./cutoff";
-import { buildOrderSheetPdf, buildOrderSheetsPdf, type OrderSheetData } from "./pdfBuilder";
+import { buildOrderSheetPdf, buildOrderSheetsPdf, VIAS_PADRAO, type OrderSheetData } from "./pdfBuilder";
 import { printOrderSheet } from "./printClient";
 
 type ItemRow = {
@@ -149,7 +149,10 @@ export async function gerarPdfPedidoUnico(params: {
     );
   }
 
-  const pdf = await buildOrderSheetPdf(paraOrderSheetData(pedido));
+  // Duas vias como na leva do dia: a avulsa é o caminho de recuperação
+  // (folha atolou, pedido entrou depois), e nesse caso o RH e a portaria
+  // precisam da cópia deles tanto quanto na impressão normal.
+  const pdf = await buildOrderSheetPdf(paraOrderSheetData(pedido), VIAS_PADRAO);
   const jaImpresso = !!pedido.printed_at;
 
   if (!jaImpresso) {
@@ -194,7 +197,7 @@ export async function gerarPdfPortaria(params: {
 
   if (pedidos.length === 0) return { pdf: Buffer.alloc(0), pedidos: [] };
 
-  const pdf = await buildOrderSheetsPdf(pedidos.map(paraOrderSheetData));
+  const pdf = await buildOrderSheetsPdf(pedidos.map(paraOrderSheetData), VIAS_PADRAO);
 
   const ids = pedidos.map((p) => p.id);
   const { error: updateError } = await supabase
@@ -252,7 +255,11 @@ export async function printPortariaList(params: {
 
   for (const pedido of pedidos) {
     try {
-      const pdf = await buildOrderSheetPdf(paraOrderSheetData(pedido));
+      // Via única, e marcada PORTARIA: este caminho sai direto na
+      // impressora da portaria, então não existe ninguém no meio para
+      // entregar a segunda via ao RH — mandar as duas só deixaria a folha
+      // do RH esquecida na bandeja de lá.
+      const pdf = await buildOrderSheetPdf(paraOrderSheetData(pedido), ["PORTARIA"]);
 
       await printOrderSheet(pdf, printerHost);
 

@@ -171,13 +171,30 @@ function cellText(
 }
 
 /**
+ * Quem fica com cada cópia da folha. O faturamento imprime as duas e
+ * entrega: uma vai para o RH (que arquiva, mesmo tendo o pedido no sistema)
+ * e a outra para a portaria (que separa a mercadoria e colhe a assinatura).
+ * Era assim que funcionava antes deste sistema existir, e voltou a ser em
+ * 24/08/2026 — o disparo automático direto na impressora da portaria saiu de
+ * cena junto.
+ */
+export type Via = "RH" | "PORTARIA";
+
+/** As duas vias, na ordem em que saem do PDF. Ver buildOrderSheetsPdf. */
+export const VIAS_PADRAO: readonly Via[] = ["RH", "PORTARIA"];
+
+/**
  * Desenha uma folha de pedido a partir da página ATUAL de um doc já aberto —
  * quem chama decide se essa página é nova (doc recém-criado, ou um
  * doc.addPage() antes de chamar de novo para o próximo pedido). Extraído de
  * buildOrderSheetPdf pra dar pra colocar vários pedidos no MESMO PDF
  * (buildOrderSheetsPdf), sem duplicar a lógica de desenho.
+ *
+ * `via` marca a folha na faixa preta do topo. Sem ela a folha sai como
+ * saía antes (faixa só com o selo), que é o certo para quem imprime uma
+ * via única.
  */
-function drawOrderSheet(doc: PDFKit.PDFDocument, pedido: OrderSheetData): void {
+function drawOrderSheet(doc: PDFKit.PDFDocument, pedido: OrderSheetData, via?: Via): void {
     const contentLeft = PAGE_MARGIN;
     const contentRight = doc.page.width - PAGE_MARGIN;
     const contentWidth = contentRight - contentLeft;
@@ -229,6 +246,25 @@ function drawOrderSheet(doc: PDFKit.PDFDocument, pedido: OrderSheetData): void {
         align: "center",
         characterSpacing: 0.5,
       });
+
+    // Identificação da via, encostada na ponta direita da MESMA faixa. Vai
+    // aqui, e não num canto qualquer, porque as duas vias são folhas
+    // idênticas: quem está separando as pilhas precisa ver de quem é a
+    // folha no mesmo lugar em que já olha o selo, sem virar o papel nem
+    // procurar. O selo continua centralizado na largura toda (a via é
+    // curta e não chega perto dele — "VIA PORTARIA" mede ~55pt num
+    // contentWidth de ~515pt).
+    if (via) {
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(9)
+        .fillColor("#FFFFFF")
+        .text(`VIA ${via}`, contentLeft, y + 9, {
+          width: contentWidth - 10,
+          align: "right",
+          characterSpacing: 0.5,
+        });
+    }
     y += BANNER_H + 18;
 
     // ------------------------------------------------------------------
@@ -413,8 +449,16 @@ function drawOrderSheet(doc: PDFKit.PDFDocument, pedido: OrderSheetData): void {
 /**
  * Uma folha A4 por pedido — separada de propósito, porque a câmara fria
  * grampeia cada uma antes de separar.
+ *
+ * `vias` decide quantas folhas saem e como cada uma é marcada: passar
+ * VIAS_PADRAO dá as duas cópias (RH e portaria) do fluxo do faturamento,
+ * e o padrão — uma folha sem marca de via — é o que serve para quem
+ * imprime direto numa impressora só, sem ninguém para entregar a segunda.
  */
-export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
+export function buildOrderSheetPdf(
+  pedido: OrderSheetData,
+  vias: readonly Via[] | readonly [undefined] = [undefined]
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: "A4", margin: PAGE_MARGIN });
     const chunks: Buffer[] = [];
@@ -422,7 +466,10 @@ export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
 
-    drawOrderSheet(doc, pedido);
+    vias.forEach((via, index) => {
+      if (index > 0) doc.addPage();
+      drawOrderSheet(doc, pedido, via);
+    });
     doc.end();
   });
 }
@@ -433,8 +480,18 @@ export function buildOrderSheetPdf(pedido: OrderSheetData): Promise<Buffer> {
  * pedidos da portaria": o faturamento baixa um arquivo só com tudo que
  * está pendente, em vez de um PDF por pedido, e imprime como imprime
  * qualquer documento — sem precisar de IP de impressora nenhum.
+ *
+ * As vias saem em BLOCOS, não intercaladas: todos os pedidos marcados
+ * "VIA RH" e, só depois, todos de novo marcados "VIA PORTARIA". Assim
+ * uma impressão só devolve duas pilhas prontas — corta no meio, uma vai
+ * inteira pro RH e a outra pra portaria. Intercalar (RH, portaria, RH,
+ * portaria...) obrigaria a folhear o bolo inteiro separando folha a folha,
+ * que é exatamente o trabalho manual que este formato existe pra evitar.
  */
-export function buildOrderSheetsPdf(pedidos: OrderSheetData[]): Promise<Buffer> {
+export function buildOrderSheetsPdf(
+  pedidos: OrderSheetData[],
+  vias: readonly Via[] | readonly [undefined] = [undefined]
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: "A4", margin: PAGE_MARGIN });
     const chunks: Buffer[] = [];
@@ -442,11 +499,28 @@ export function buildOrderSheetsPdf(pedidos: OrderSheetData[]): Promise<Buffer> 
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
 
-    pedidos.forEach((pedido, index) => {
+    sequenciaDeFolhas(pedidos, vias).forEach(({ pedido, via }, index) => {
       if (index > 0) doc.addPage();
-      drawOrderSheet(doc, pedido);
+      drawOrderSheet(doc, pedido, via);
     });
 
     doc.end();
   });
+}
+
+/**
+ * A ordem das folhas do PDF da leva: em BLOCOS por via — todos os pedidos
+ * da primeira via, depois todos da segunda.
+ *
+ * Separada de `buildOrderSheetsPdf` para poder ser verificada: o pdfkit
+ * embute a fonte como subconjunto e escreve o texto como índice de glifo,
+ * então o nome do funcionário não existe como texto legível dentro do PDF
+ * gerado — não dá para afirmar a ordem lendo o arquivo. Aqui a ordem é
+ * dado puro, e o teste olha exatamente o que o requisito diz.
+ */
+export function sequenciaDeFolhas(
+  pedidos: readonly OrderSheetData[],
+  vias: readonly Via[] | readonly [undefined]
+): { pedido: OrderSheetData; via?: Via }[] {
+  return vias.flatMap((via) => pedidos.map((pedido) => ({ pedido, via })));
 }
