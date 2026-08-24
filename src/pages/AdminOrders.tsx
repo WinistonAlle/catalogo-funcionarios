@@ -1192,9 +1192,6 @@ export default function AdminOrders() {
 
             <div style={{ flex: 1, marginLeft: isMobile ? 0 : 10 }}>
               <div style={styles.hTitle}>Administração de pedidos</div>
-              <div style={styles.hSub}>
-                Visualize, cancele, remova itens e consulte histórico
-              </div>
             </div>
 
             {isMobile && <span style={styles.headerChip}>Admin</span>}
@@ -1387,27 +1384,12 @@ export default function AdminOrders() {
             </div>
           </div>
 
-          <div style={styles.helpRow}>
-            <span style={styles.helpText}>
-              {hasCustomFilters
-                ? "Filtros customizados ativos."
-                : "Padrão: exibindo somente os pedidos de hoje."}
-            </span>
-            <span style={styles.helpText}>
-              {isMobile
-                ? "Toque no badge de pagamento (segure) para ver detalhes."
-                : "Passe o mouse sobre o badge de pagamento para ver detalhes."}
-            </span>
-          </div>
         </section>
 
         {!loading && !err && orders.length > 0 && (
           <section style={styles.bulkCard}>
             <div>
               <div style={styles.bulkTitle}>Atualização de status</div>
-              <div style={styles.bulkText}>
-                O admin pode alterar individualmente ou aplicar em lote.
-              </div>
             </div>
 
             <div style={styles.bulkControls}>

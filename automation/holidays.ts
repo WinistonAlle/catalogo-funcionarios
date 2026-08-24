@@ -100,3 +100,23 @@ export function isBusinessDayInSaoPaulo(data: Date = new Date()): boolean {
 
   return true;
 }
+
+/**
+ * Meia-noite (00:00 -03:00) do próximo dia útil ESTRITAMENTE depois do dia
+ * de `data`. Usado para atrasar o lançamento no CIGAM de pedidos feitos após
+ * o corte de separação (13:40) — decisão do Winiston, 24/08/2026: pedido
+ * feito depois do corte só entra no CIGAM no próximo dia útil, mesma lógica
+ * de "próximo dia útil" já usada pela lista da portaria (pula fim de semana
+ * e feriado nacional/local calculado).
+ */
+export function nextBusinessDayStart(data: Date = new Date()): Date {
+  let [ano, mes, dia] = chaveSaoPaulo(data).split("-").map(Number);
+  let chave = somarDias(ano, mes, dia, 1);
+
+  while (!isBusinessDayInSaoPaulo(new Date(`${chave}T12:00:00Z`))) {
+    [ano, mes, dia] = chave.split("-").map(Number);
+    chave = somarDias(ano, mes, dia, 1);
+  }
+
+  return new Date(`${chave}T00:00:00-03:00`);
+}

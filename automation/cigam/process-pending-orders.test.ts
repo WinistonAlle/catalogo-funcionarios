@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildItens, efetivacaoConcluiu } from "./process-pending-orders";
+import { buildItens, efetivacaoConcluiu, isEligibleForCigamEntry } from "./process-pending-orders";
 
 /**
  * O CIGAM responde `success: false` na efetivação mesmo quando ela deu certo, se
@@ -118,5 +118,52 @@ describe("buildItens — conversão de KG", () => {
     expect(() => buildItens(pedidoCom({ quantity: 1, unit_price: 17.7, cigam_code: null }))).toThrow(
       /sem código CIGAM/i
     );
+  });
+});
+
+/**
+ * Decisão do Winiston, 24/08/2026: pedido feito depois do corte de separação
+ * (13:40) só entra no CIGAM no próximo dia útil — a separação física só
+ * acontece nesse dia, então lançar (e dar baixa de estoque) no mesmo dia do
+ * pedido tardio estaria adiantando o CIGAM a algo que ainda não existe
+ * separado. Pedido feito ANTES do corte não muda: entra normalmente, sem
+ * atraso, na próxima varredura.
+ *
+ * 21/08/2026 é sexta-feira e 24/08/2026 é segunda — o par usado nos testes
+ * de fim de semana abaixo.
+ */
+describe("isEligibleForCigamEntry", () => {
+  it("libera na hora um pedido feito ANTES do corte", () => {
+    const criadoEm = new Date("2026-08-21T10:00:00-03:00"); // sexta, 10h
+    const agora = new Date("2026-08-21T10:01:00-03:00");
+    expect(isEligibleForCigamEntry(criadoEm, agora)).toBe(true);
+  });
+
+  it("segura um pedido feito DEPOIS do corte, no mesmo dia", () => {
+    const criadoEm = new Date("2026-08-21T15:00:00-03:00"); // sexta, 15h — depois do corte
+    const agora = new Date("2026-08-21T16:00:00-03:00");
+    expect(isEligibleForCigamEntry(criadoEm, agora)).toBe(false);
+  });
+
+  it("no instante exato do corte, ainda conta como depois (segura)", () => {
+    const criadoEm = new Date("2026-08-21T13:40:00-03:00");
+    expect(isEligibleForCigamEntry(criadoEm, criadoEm)).toBe(false);
+  });
+
+  it("libera um pedido tardio de sexta só na segunda — pula sábado e domingo", () => {
+    const criadoEm = new Date("2026-08-21T15:00:00-03:00"); // sexta, 15h
+
+    // Sábado e domingo: ainda preso.
+    expect(isEligibleForCigamEntry(criadoEm, new Date("2026-08-22T09:00:00-03:00"))).toBe(false);
+    expect(isEligibleForCigamEntry(criadoEm, new Date("2026-08-23T09:00:00-03:00"))).toBe(false);
+
+    // Segunda, virada da meia-noite: libera — não precisa esperar o corte
+    // da segunda, só o dia útil começar.
+    expect(isEligibleForCigamEntry(criadoEm, new Date("2026-08-24T00:00:01-03:00"))).toBe(true);
+  });
+
+  it("pedido feito de madrugada (antes do corte) não é afetado pela regra", () => {
+    const criadoEm = new Date("2026-08-24T00:05:00-03:00"); // segunda, pouco depois da meia-noite
+    expect(isEligibleForCigamEntry(criadoEm, criadoEm)).toBe(true);
   });
 });

@@ -15,6 +15,8 @@
  */
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { CigamClient } from "./client";
+import { nextBusinessDayStart } from "../holidays";
+import { cutoffInstantForToday } from "../print/cutoff";
 
 type ItemRow = {
   product_name: string;
@@ -32,8 +34,30 @@ type OrderRow = {
   order_number: string;
   employee_name: string | null;
   erp_external_id: string | null;
+  created_at: string;
   order_items: ItemRow[];
 };
+
+/**
+ * Pedido feito depois do corte de separação (13:40) só entra no CIGAM no
+ * próximo dia útil — decisão do Winiston, 24/08/2026. Motivo: a separação
+ * física só acontece no dia útil seguinte (ver "Lista de separação impressa
+ * na portaria"), então lançar no CIGAM no mesmo dia dá baixa de estoque e
+ * abre o pedido antes de a mercadoria de fato existir separada.
+ *
+ * Pedido feito ANTES do corte segue com o comportamento de sempre (entra na
+ * próxima varredura, sem atraso nenhum) — o atraso vale só pro pedido tardio.
+ * `cutoffInstantForToday(createdAt)` calcula o corte do PRÓPRIO dia em que o
+ * pedido foi feito (o nome do parâmetro na origem é genérico), não o de hoje.
+ */
+export function isEligibleForCigamEntry(
+  createdAt: Date,
+  agora: Date = new Date()
+): boolean {
+  const corteDoDiaDoPedido = cutoffInstantForToday(createdAt);
+  if (createdAt < corteDoDiaDoPedido) return true;
+  return agora >= nextBusinessDayStart(createdAt);
+}
 
 export type ProcessResult = {
   orderId: string;
@@ -185,7 +209,7 @@ export async function processPendingOrders(options: {
   const { data: orders, error } = await supabase
     .from("orders")
     .select(
-      "id, order_number, employee_name, erp_external_id, order_items(product_name, quantity, unit_price, products(cigam_code, cigam_unit, weight))"
+      "id, order_number, employee_name, erp_external_id, created_at, order_items(product_name, quantity, unit_price, products(cigam_code, cigam_unit, weight))"
     )
     .eq("erp_status", "PENDING")
     .is("cancelled_at", null)
@@ -212,7 +236,15 @@ export async function processPendingOrders(options: {
 
   if (error) throw new Error(`Falha ao buscar pedidos pendentes: ${error.message}`);
 
-  const rows = (orders ?? []) as unknown as OrderRow[];
+  const todosPendentes = (orders ?? []) as unknown as OrderRow[];
+  const agora = new Date();
+  const rows = todosPendentes.filter((order) =>
+    isEligibleForCigamEntry(new Date(order.created_at), agora)
+  );
+  // Pedido feito depois do corte fica pra trás sem tocar em nada — não vira
+  // ERROR nem ganha erp_error, só não entra nesta rodada. A próxima varredura
+  // (a cada 2 min) reavalia sozinha, e ele libera assim que o próximo dia
+  // útil começar. Igual aos outros filtros: ausente do resultado, sem log.
   if (rows.length === 0) return [];
 
   const cigam = new CigamClient();
