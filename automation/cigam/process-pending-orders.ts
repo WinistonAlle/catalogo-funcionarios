@@ -15,7 +15,7 @@
  */
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { CigamClient } from "./client";
-import { nextBusinessDayStart } from "../holidays";
+import { isBusinessDayInSaoPaulo, nextBusinessDayStart } from "../holidays";
 import { cutoffInstantForToday } from "../print/cutoff";
 
 type ItemRow = {
@@ -45,17 +45,23 @@ type OrderRow = {
  * na portaria"), então lançar no CIGAM no mesmo dia dá baixa de estoque e
  * abre o pedido antes de a mercadoria de fato existir separada.
  *
- * Pedido feito ANTES do corte segue com o comportamento de sempre (entra na
- * próxima varredura, sem atraso nenhum) — o atraso vale só pro pedido tardio.
- * `cutoffInstantForToday(createdAt)` calcula o corte do PRÓPRIO dia em que o
- * pedido foi feito (o nome do parâmetro na origem é genérico), não o de hoje.
+ * Pedido feito ANTES do corte, em dia útil, segue com o comportamento de
+ * sempre (entra na próxima varredura, sem atraso nenhum) — o atraso vale só
+ * pro pedido tardio. `cutoffInstantForToday(createdAt)` calcula o corte do
+ * PRÓPRIO dia em que o pedido foi feito (o nome do parâmetro na origem é
+ * genérico), não o de hoje.
+ *
+ * O pedido feito em dia NÃO ÚTIL também espera. Sem essa checagem, dois
+ * pedidos do mesmo sábado se comportavam diferente sem motivo: o de 10:00
+ * entrava no CIGAM no próprio sábado (por estar "antes do corte") e o de
+ * 15:00 só na segunda — sendo que os dois só são separados na segunda.
  */
 export function isEligibleForCigamEntry(
   createdAt: Date,
   agora: Date = new Date()
 ): boolean {
   const corteDoDiaDoPedido = cutoffInstantForToday(createdAt);
-  if (createdAt < corteDoDiaDoPedido) return true;
+  if (isBusinessDayInSaoPaulo(createdAt) && createdAt < corteDoDiaDoPedido) return true;
   return agora >= nextBusinessDayStart(createdAt);
 }
 
@@ -399,7 +405,24 @@ if (process.argv[1]?.endsWith("process-pending-orders.ts")) {
 
     const results = await processPendingOrders({ supabase, dryRun });
     if (results.length === 0) {
-      console.log("👌 Nenhum pedido pendente para processar.");
+      // "Nada processado" e "nada pendente" não são a mesma coisa desde que o
+      // corte das 13:40 passou a segurar pedido tardio para o próximo dia útil.
+      // Dizer só "nenhum pedido pendente" aqui mandaria quem está
+      // diagnosticando procurar problema no lugar errado.
+      const { count } = await supabase
+        .from("orders")
+        .select("id", { count: "exact", head: true })
+        .eq("erp_status", "PENDING")
+        .is("cancelled_at", null)
+        .or("wallet_debited.eq.true,pay_on_pickup_cents.gt.0,wallet_used_cents.gt.0");
+
+      if (count && count > 0) {
+        console.log(
+          `⏳ ${count} pedido(s) pendente(s), nenhum liberado agora: foram feitos depois do corte das 13:40 e entram no próximo dia útil.`
+        );
+      } else {
+        console.log("👌 Nenhum pedido pendente para processar.");
+      }
       return;
     }
 

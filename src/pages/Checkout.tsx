@@ -367,23 +367,16 @@ const Checkout: React.FC = () => {
         }
       }
 
-      const { data: updated, error: upErr } = await supabase
-        .from("orders")
-        .update({
-          payment_method: "wallet",
-          wallet_debited: true,
-          spent_from_balance_cents: totalCents,
-          pay_on_pickup_cents: 0,
-        })
-        .eq("id", orderId)
-        .select("id, payment_method, wallet_debited, spent_from_balance_cents, pay_on_pickup_cents")
-        .maybeSingle();
-
-      if (upErr) {
-        console.error("Erro ao salvar pagamento no pedido (orders.update):", upErr);
-      } else {
-        console.log("✅ Pedido atualizado com pagamento:", updated);
-      }
+      // Nada de gravar pagamento daqui. Até 24/08/2026 existia um segundo
+      // `.update()` nesta altura escrevendo payment_method / wallet_debited /
+      // spent_from_balance_cents / pay_on_pickup_cents — numa chamada de rede
+      // separada, cujo erro era apenas logado: se falhasse, o saldo já tinha
+      // saído pelo RPC e o pedido ficava com wallet_debited = false, o que foi
+      // exatamente o motivo de a varredura do CIGAM precisar carregar
+      // `wallet_used_cents` como rede de segurança (ver CLAUDE.md).
+      // Agora place_order_with_wallet_v2 grava tudo isso na MESMA transação em
+      // que debita o saldo, então não há mais como as duas coisas divergirem —
+      // e o funcionário nem tem mais permissão de UPDATE em orders.
 
       clearCart();
 

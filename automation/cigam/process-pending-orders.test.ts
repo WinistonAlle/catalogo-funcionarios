@@ -166,4 +166,25 @@ describe("isEligibleForCigamEntry", () => {
     const criadoEm = new Date("2026-08-24T00:05:00-03:00"); // segunda, pouco depois da meia-noite
     expect(isEligibleForCigamEntry(criadoEm, criadoEm)).toBe(true);
   });
+
+  // Sem a checagem de dia útil, dois pedidos do MESMO sábado se comportavam
+  // diferente sem motivo: o das 10h entrava no CIGAM no próprio sábado (por
+  // estar "antes do corte") e o das 15h só na segunda — sendo que os dois só
+  // são separados na segunda de qualquer jeito.
+  it("segura pedido de fim de semana mesmo antes do corte, e libera na segunda", () => {
+    const sabadoCedo = new Date("2026-08-22T10:00:00-03:00");
+    const sabadoTarde = new Date("2026-08-22T15:00:00-03:00");
+
+    // No próprio sábado, nenhum dos dois entra.
+    expect(isEligibleForCigamEntry(sabadoCedo, new Date("2026-08-22T11:00:00-03:00"))).toBe(false);
+    expect(isEligibleForCigamEntry(sabadoTarde, new Date("2026-08-22T16:00:00-03:00"))).toBe(false);
+
+    // Domingo também não.
+    expect(isEligibleForCigamEntry(sabadoCedo, new Date("2026-08-23T09:00:00-03:00"))).toBe(false);
+
+    // Segunda, os dois liberam juntos.
+    const segunda = new Date("2026-08-24T00:00:01-03:00");
+    expect(isEligibleForCigamEntry(sabadoCedo, segunda)).toBe(true);
+    expect(isEligibleForCigamEntry(sabadoTarde, segunda)).toBe(true);
+  });
 });

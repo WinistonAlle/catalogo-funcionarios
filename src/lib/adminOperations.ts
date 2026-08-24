@@ -159,24 +159,11 @@ export async function printPortariaNow(
 
   if (contentType.includes("application/pdf")) {
     const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-
-    if (targetWindow && !targetWindow.closed) {
-      targetWindow.location.href = url;
-    } else {
-      // Sem aba pré-aberta (ou o usuário fechou antes da resposta chegar):
-      // cai pra download, que sempre funciona.
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `lista-portaria-${new Date().toISOString().slice(0, 10)}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    }
-    // Só libera depois de um tempo — revogar cedo demais derruba o PDF em
-    // navegadores que ainda estão carregando o blob na aba nova.
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
-
+    abrirOuBaixarPdf(
+      blob,
+      nomeDoArquivo(response, `lista-portaria-${new Date().toISOString().slice(0, 10)}.pdf`),
+      targetWindow
+    );
     return { message: "Lista aberta numa aba nova — use o botão de imprimir do navegador.", baixou: true };
   }
 
@@ -190,12 +177,26 @@ export async function printPortariaNow(
   return { message: payload?.message || "Nenhum pedido pendente pra imprimir.", baixou: false };
 }
 
+/**
+ * O nome bom do arquivo é o que o servidor mandou no Content-Disposition
+ * (`pedido-014711.pdf`, com o número do CIGAM). Sem isto, o fallback de
+ * download salvava o UUID interno do pedido no nome, que não diz nada para
+ * quem depois procura o arquivo.
+ */
+function nomeDoArquivo(response: Response, fallback: string): string {
+  const header = response.headers.get("content-disposition") || "";
+  const match = header.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+  return match?.[1] ? decodeURIComponent(match[1]) : fallback;
+}
+
 function abrirOuBaixarPdf(blob: Blob, filename: string, targetWindow?: Window | null): void {
   const url = URL.createObjectURL(blob);
 
   if (targetWindow && !targetWindow.closed) {
     targetWindow.location.href = url;
   } else {
+    // Sem aba pré-aberta (ou o usuário fechou antes da resposta chegar):
+    // cai pra download, que sempre funciona.
     const a = document.createElement("a");
     a.href = url;
     a.download = filename;
@@ -203,6 +204,8 @@ function abrirOuBaixarPdf(blob: Blob, filename: string, targetWindow?: Window | 
     a.click();
     a.remove();
   }
+  // Só libera depois de um tempo — revogar cedo demais derruba o PDF em
+  // navegadores que ainda estão carregando o blob na aba nova.
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
@@ -230,7 +233,7 @@ export async function printOrderNow(
 
   if (contentType.includes("application/pdf")) {
     const blob = await response.blob();
-    abrirOuBaixarPdf(blob, `pedido-${orderId}.pdf`, targetWindow);
+    abrirOuBaixarPdf(blob, nomeDoArquivo(response, `pedido-${orderId}.pdf`), targetWindow);
     return { message: "Pedido aberto numa aba nova — use o botão de imprimir do navegador." };
   }
 

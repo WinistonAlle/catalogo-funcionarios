@@ -112,7 +112,7 @@ export async function gerarPdfPedidoUnico(params: {
   const { data, error } = await supabase
     .from("orders")
     .select(
-      "id, order_number, employee_name, erp_external_id, cancelled_at, printed_at, order_items(product_name, quantity, unit_price, products(cigam_code, cigam_unit, weight))"
+      "id, order_number, employee_name, erp_external_id, cancelled_at, printed_at, wallet_debited, wallet_used_cents, pay_on_pickup_cents, order_items(product_name, quantity, unit_price, products(cigam_code, cigam_unit, weight))"
     )
     .eq("id", orderId)
     .maybeSingle();
@@ -123,10 +123,30 @@ export async function gerarPdfPedidoUnico(params: {
   const pedido = data as unknown as OrderRow & {
     cancelled_at: string | null;
     printed_at: string | null;
+    wallet_debited: boolean | null;
+    wallet_used_cents: number | null;
+    pay_on_pickup_cents: number | null;
   };
 
   if (pedido.cancelled_at) {
     throw new Error("Este pedido está cancelado — a portaria não separa mercadoria dele.");
+  }
+
+  // Mesmo critério de "foi pago" de `buscarPedidosParaImprimir`. O corte de
+  // horário e o de dia útil ficam de fora de propósito (é ação explícita do
+  // admin), mas este NÃO pode: se o pagamento falhar entre o insert do pedido
+  // e o RPC, sobra um pedido zerado que ninguém pagou — mandar separar
+  // mercadoria dele é prejuízo, e ainda marcaria printed_at, escondendo-o da
+  // lista automática se algum dia fosse pago de verdade.
+  const foiPago =
+    pedido.wallet_debited === true ||
+    Number(pedido.wallet_used_cents ?? 0) > 0 ||
+    Number(pedido.pay_on_pickup_cents ?? 0) > 0;
+
+  if (!foiPago) {
+    throw new Error(
+      "Este pedido não consta como pago — o pagamento pode ter falhado. Confira antes de mandar separar."
+    );
   }
 
   const pdf = await buildOrderSheetPdf(paraOrderSheetData(pedido));
