@@ -301,6 +301,42 @@ function IconMixed({ size = 14 }: { size?: number }) {
   );
 }
 
+function IconPrinter({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M6.5 8.5V4a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v4.5"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <rect
+        x="3.5"
+        y="8.5"
+        width="17"
+        height="9"
+        rx="2"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M6.5 14.5h11V21a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-6.5Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path d="M7 11.5h2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function Badge({ kind, tooltip }: { kind: PaymentKind; tooltip: string }) {
   const cfg = useMemo(() => {
     if (kind === "wallet") {
@@ -1167,16 +1203,18 @@ export default function AdminOrders() {
           <div style={headerActionsStyle}>
             <button
               style={{
-                ...styles.ghostBtn,
+                ...styles.printBtn,
                 ...(isMobile
                   ? { width: "100%", height: 42, borderRadius: 14 }
                   : {}),
+                ...(printingPortaria ? styles.disabledBtn : {}),
               }}
               onClick={handlePrintPortaria}
               disabled={printingPortaria}
-              title="Baixa um PDF com os pedidos da portaria ainda não impressos — imprima o arquivo e desça o papel na mão, como sempre foi feito"
+              title="Baixa um PDF com os pedidos de hoje ainda não impressos — imprima o arquivo e desça o papel na mão, como sempre foi feito"
             >
-              {printingPortaria ? "Gerando PDF…" : "Imprimir pedidos da portaria"}
+              <IconPrinter />
+              {printingPortaria ? "Gerando PDF…" : "Imprimir pedidos de hoje"}
             </button>
 
             <button
@@ -1271,7 +1309,7 @@ export default function AdminOrders() {
               <label style={styles.label}>Nº do pedido</label>
               <input
                 style={styles.input}
-                placeholder="Ex.: GM-20260102-1234"
+                placeholder="Ex.: 014711 (nº do CIGAM)"
                 value={orderFilter}
                 onChange={(e) => setOrderFilter(e.target.value)}
               />
@@ -1494,6 +1532,7 @@ export default function AdminOrders() {
                             }}
                           />
                         </th>
+                        <th style={styles.th}>Pedido</th>
                         <th style={styles.th}>Funcionário</th>
                         <th style={styles.th}>Pagamento</th>
                         <th style={styles.th}>Total</th>
@@ -1522,6 +1561,13 @@ export default function AdminOrders() {
                                   toggleOrderSelection(o.id, e.target.checked)
                                 }
                               />
+                            </td>
+
+                            <td style={styles.tdStrong}>
+                              {o.erp_external_id || o.order_number || "—"}
+                              {!o.erp_external_id && o.order_number && (
+                                <div style={styles.tdMuted}>Aguardando CIGAM</div>
+                              )}
                             </td>
 
                             <td style={styles.td}>
@@ -1959,12 +2005,14 @@ export default function AdminOrders() {
                         </div>
                       </div>
 
-                      <div style={summaryItemStyle}>
-                        <div style={styles.summaryLabel}>Loja física</div>
-                        <div style={styles.summaryValue}>
-                          {brlFromCents(meta.pickup)}
+                      {meta.pickup > 0 && (
+                        <div style={summaryItemStyle}>
+                          <div style={styles.summaryLabel}>Loja física</div>
+                          <div style={styles.summaryValue}>
+                            {brlFromCents(meta.pickup)}
+                          </div>
                         </div>
-                      </div>
+                      )}
                     </div>
                   );
                 })()}
@@ -2911,6 +2959,21 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 900,
   },
 
+  printBtn: {
+    height: 42,
+    padding: "0 16px",
+    borderRadius: 14,
+    border: "1px solid rgba(180,83,9,0.30)",
+    background: "linear-gradient(180deg, #F59E0B, #D97706)",
+    color: "#fff",
+    cursor: "pointer",
+    fontWeight: 950,
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    boxShadow: "0 14px 30px rgba(217,119,6,0.28)",
+  },
+
   secondaryBtn: {
     height: 44,
     padding: "0 14px",
@@ -3053,9 +3116,9 @@ const styles: Record<string, CSSProperties> = {
   },
 
   smallBtn: {
-    height: 36,
-    padding: "0 12px",
-    borderRadius: 12,
+    height: 44,
+    padding: "0 14px",
+    borderRadius: 14,
     border: "1px solid rgba(0,0,0,0.10)",
     background: "#fff",
     cursor: "pointer",

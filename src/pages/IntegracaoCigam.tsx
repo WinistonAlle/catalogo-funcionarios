@@ -317,7 +317,7 @@ const IntegracaoCigam = () => {
                     const r = rotulo(p);
                     return (
                       <tr key={p.id}>
-                        <td>{p.order_number}</td>
+                        <td>{p.erp_external_id || p.order_number}</td>
                         <td>{p.funcionario || "—"}</td>
                         <td>
                           <Chip $tom={r.tom}>{r.texto}</Chip>
