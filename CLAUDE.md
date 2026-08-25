@@ -294,10 +294,14 @@ Os dois intervalos são deliberadamente diferentes, e a razão importa:
   antes de instanciar o `CigamClient` quando não há nenhum `PENDING` — logo,
   varredura vazia **não faz login** e não custa nada.
 - **Estoque a cada 30 min porque bate no CIGAM toda vez** (172 materiais, até 2
-  passadas). Como o CIGAM só admite uma sessão por usuário e o PDV da loja usa a
-  **mesma credencial**, sync agressivo vira guerra de sessão com o caixa da
-  loja. A janela entre um sync e outro é coberta pela reconsulta ao vivo no
-  checkout (`GET /automation/estoque`).
+  passadas) — é a chamada cara, e 30 min mantém o custo baixo. A janela entre um
+  sync e outro é coberta pela reconsulta ao vivo no checkout
+  (`GET /automation/estoque`).
+
+  > **Atualizado em 25/08/2026.** Este parágrafo justificava os 30 min com
+  > "guerra de sessão com o caixa da loja, que usa a mesma credencial". **Isso
+  > acabou em 24/08**: aqui roda `SIST.FUNC` e o PDV roda `PDV.GM` (ver o topo
+  > do arquivo). O intervalo continua 30 min pelo custo, não por conflito.
 
 O webhook roda uma carga de estoque **na subida** (`void runStockSync()`), então
 todo `pm2 restart webhook` dispara um sync completo.
@@ -411,6 +415,42 @@ O que limita o estrago:
 
 Se um dia se quiser fechar isso, o menor caminho é deixar o `POST` exigir um
 código por pessoa — a rota já isola tudo num lugar só.
+
+#### Placar do primeiro acesso — 25/08/2026
+
+**2 de 7 fecharam a janela.** Verificado batendo o
+`GET /automation/primeiro-acesso` nas 7 contas:
+
+| conta | `pendente` | situação |
+|---|---|---|
+| Winiston | `false` | senha criada em 18/08 |
+| JOSIAS | `false` | senha criada em **25/08**, 17:42 (log com IP) |
+| ANDRÉ, JULIO, RH | `true` | nunca acessaram |
+| **EVA, Mateus** | `true` | **acessaram em 13/08 e ainda assim estão abertas** |
+
+⚠️ **O critério de risco é `must_change_password`, não `last_sign_in_at`.** EVA
+e Mateus logaram em 13/08, mas o `reset-primeiro-acesso.ts` rodou em **17/08** e
+invalidou a senha das 7 contas. Ter logado antes disso não protege nada: o CPF
+delas ainda abre "Crie sua senha". Olhar só quem já logou dá 3 contas abertas;
+o número certo é **5**.
+
+Consulta que responde isso sem ambiguidade:
+
+```sql
+SELECT e.full_name, u.raw_user_meta_data->>must_change_password AS pendente
+  FROM public.employees e
+  JOIN auth.users u ON u.id = e.user_id
+ WHERE e.role::text IN (admin,rh)
+ ORDER BY 2 DESC, 1;
+```
+
+**Como o JOSIAS apareceu como "pedido sumido".** Em 25/08 ele reportou que um
+pedido estava no CIGAM e não no sistema. Não havia nada errado com o pedido: sem
+sessão autenticada, `auth.uid()` não bate com `employees.user_id`, a policy
+`orders_privileged` não vale e o banco devolve **zero** pedidos. Ele não estava
+deixando de ver *um* pedido — não via **nenhum**. Fez o primeiro acesso e passou
+a ver os 304. Sintoma a reconhecer: admin que diz "sumiu o pedido" com a lista
+inteira vazia é conta sem primeiro acesso, não perda de dado.
 
 Validado de ponta a ponta em 17/08/2026, com admin sintético e navegador real:
 CPF novo → "Crie sua senha" → `/admin`; senhas divergentes e senha curta
@@ -649,14 +689,19 @@ real e queimá-lo** mesmo respondendo `success:false`.
 
 ### Retry de sessão — importante
 
-O CIGAM admite **uma sessão ativa por usuário**, e o **PDV da loja usa a mesma
-credencial `winiston.a`**. Cada login derruba o outro. A sessão morta chega como
+O CIGAM admite **uma sessão ativa por usuário**. A sessão morta chega como
 **HTTP 500 com "Usuário não autenticado" no corpo — não como 401**.
 
 `withAuthRetry` detecta, faz relogin e repete uma vez. A promise de relogin é
 compartilhada para chamadas concorrentes não se invalidarem em loop.
 
-Solução de raiz (backlog): usuário de integração dedicado no CIGAM.
+> **Atualizado em 25/08/2026.** Este trecho dizia que o **PDV usava a mesma
+> credencial `winiston.a`** e que cada login derrubava o outro; a "solução de
+> raiz" ficava no backlog. **Feito em 24/08**: cada sistema tem o seu usuário
+> (`SIST.FUNC` aqui, `PDV.GM` no PDV). O `withAuthRetry` continua necessário —
+> a sessão ainda cai se alguém logar no portal com o `SIST.FUNC` na mão, ou se
+> o próprio CIGAM expirar —, mas **não existe mais conflito estrutural entre os
+> dois sistemas**. Ao avaliar risco de "derrubar o caixa", partir daqui.
 
 ### Quais pedidos a varredura pega — e o buraco que isso tapa
 
