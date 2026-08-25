@@ -487,10 +487,15 @@ export function buildOrderSheetPdf(
  * inteira pro RH e a outra pra portaria. Intercalar (RH, portaria, RH,
  * portaria...) obrigaria a folhear o bolo inteiro separando folha a folha,
  * que é exatamente o trabalho manual que este formato existe pra evitar.
+ *
+ * `opcoes.controleDeRetirada` acrescenta a canhoteira no fim de tudo — a
+ * folha onde a portaria colhe a assinatura de quem retira. Ver
+ * drawControleDeRetirada.
  */
 export function buildOrderSheetsPdf(
   pedidos: OrderSheetData[],
-  vias: readonly Via[] | readonly [undefined] = [undefined]
+  vias: readonly Via[] | readonly [undefined] = [undefined],
+  opcoes: { controleDeRetirada?: boolean } = {}
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: "A4", margin: PAGE_MARGIN });
@@ -503,6 +508,14 @@ export function buildOrderSheetsPdf(
       if (index > 0) doc.addPage();
       drawOrderSheet(doc, pedido, via);
     });
+
+    // A canhoteira vai por ÚLTIMO, depois do bloco da portaria — ver
+    // drawControleDeRetirada. Sem pedido nenhum ela não sai: folha de
+    // controle vazia é papel jogado fora.
+    if (opcoes.controleDeRetirada && pedidos.length > 0) {
+      doc.addPage();
+      drawControleDeRetirada(doc, pedidos);
+    }
 
     doc.end();
   });
@@ -523,4 +536,288 @@ export function sequenciaDeFolhas(
   vias: readonly Via[] | readonly [undefined]
 ): { pedido: OrderSheetData; via?: Via }[] {
   return vias.flatMap((via) => pedidos.map((pedido) => ({ pedido, via })));
+}
+
+// ======================================================================
+// Canhoteira / controle de retirada da portaria
+// ======================================================================
+
+/**
+ * Uma linha da canhoteira. Dado puro, separado do desenho pelo MESMO motivo
+ * de `sequenciaDeFolhas`: o pdfkit embute a fonte como subconjunto e escreve
+ * o texto como índice de glifo, então nada disso existe legível dentro do
+ * PDF gerado — se o conteúdo da folha não for verificável aqui, não é
+ * verificável em lugar nenhum.
+ */
+export interface LinhaControleRetirada {
+  /** Número do pedido no CIGAM quando já sincronizado, senão o interno — o
+   *  mesmo que sai na caixa "PEDIDO" da folha, pra bater na hora de achar o
+   *  maço de mercadoria. */
+  pedido: string;
+  funcionario: string;
+  /** Linhas de produto, não quantidade total — igual ao "N itens" do rodapé
+   *  da folha do pedido. */
+  itens: number;
+  total: number;
+}
+
+export function linhasDoControle(pedidos: readonly OrderSheetData[]): LinhaControleRetirada[] {
+  return pedidos.map((pedido) => ({
+    pedido: pedido.cigamOrderId ?? pedido.orderNumber,
+    funcionario: pedido.employeeName,
+    itens: pedido.items.length,
+    total: pedido.items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0),
+  }));
+}
+
+interface ControleColumns {
+  pedido: Column;
+  funcionario: Column;
+  itens: Column;
+  total: Column;
+  hora: Column;
+  assinatura: Column;
+}
+
+function buildControleColumns(contentLeft: number, contentRight: number): ControleColumns {
+  // 78pt e não 58: pedido ainda não sincronizado com o CIGAM sai com o
+  // número interno inteiro ("GM-20260825-9596"), não com os 6 dígitos do
+  // CIGAM. Em 58pt ele quebrava no meio da data.
+  const pedidoW = 78;
+  const itensW = 40;
+  const totalW = 64;
+  const horaW = 58;
+  // A maior coluna da folha, de longe: é onde alguém assina À MÃO, e
+  // assinatura apertada é assinatura ilegível — não adianta a folha existir
+  // como prova se não dá pra ler quem assinou.
+  const assinaturaW = 122;
+  const funcionarioW = contentRight - contentLeft - pedidoW - itensW - totalW - horaW - assinaturaW;
+
+  const pedido = { x: contentLeft, width: pedidoW };
+  const funcionario = { x: pedido.x + pedido.width, width: funcionarioW };
+  const itens = { x: funcionario.x + funcionario.width, width: itensW };
+  const total = { x: itens.x + itens.width, width: totalW };
+  const hora = { x: total.x + total.width, width: horaW };
+  const assinatura = { x: hora.x + hora.width, width: assinaturaW };
+
+  return { pedido, funcionario, itens, total, hora, assinatura };
+}
+
+// Alta o bastante pra caber assinatura de caneta (~12mm). A folha do pedido
+// usa 20pt porque lá ninguém escreve dentro da linha; aqui escreve.
+const CONTROLE_ROW_H = 34;
+const CONTROLE_HEADER_H = 24;
+
+/**
+ * A canhoteira: uma folha só, com todos os pedidos da leva em linhas, onde a
+ * portaria colhe a assinatura de cada funcionário na entrega.
+ *
+ * Por que uma folha de controle e não um canhoto destacável por pedido: a
+ * portaria entrega vários pedidos na mesma janela, e um maço de canhotinhos
+ * soltos se perde. Numa folha só, o que ainda não foi retirado é a linha em
+ * branco — dá pra ver de relance o que sobrou no fim do dia, e o papel vai
+ * inteiro pro arquivo.
+ *
+ * Fecha a pilha da portaria: as folhas saem em blocos (todas do RH, depois
+ * todas da portaria — ver `sequenciaDeFolhas`), então esta folha, no fim de
+ * tudo, cai naturalmente em cima da pilha certa quando o faturamento corta o
+ * bolo no meio.
+ */
+function drawControleDeRetirada(
+  doc: PDFKit.PDFDocument,
+  pedidos: readonly OrderSheetData[],
+  hoje: Date = new Date()
+): void {
+  const contentLeft = PAGE_MARGIN;
+  const contentRight = doc.page.width - PAGE_MARGIN;
+  const contentWidth = contentRight - contentLeft;
+  const pageBottom = doc.page.height - PAGE_MARGIN;
+
+  const linhas = linhasDoControle(pedidos);
+  const dataHoje = hoje.toLocaleDateString("pt-BR");
+  const cols = buildControleColumns(contentLeft, contentRight);
+
+  // ------------------------------------------------------------------
+  // Cabeçalho — mesmo desenho da folha do pedido (logo à esquerda, caixa à
+  // direita), com a DATA no lugar do número do pedido: aqui o documento é
+  // do dia, não de um pedido.
+  // ------------------------------------------------------------------
+  let y = PAGE_MARGIN;
+  const HEADER_HEIGHT = 47;
+  const INFO_BOX_W = 100;
+
+  if (existsSync(LOGO_PATH)) {
+    doc.image(LOGO_PATH, contentLeft, y, { fit: [96, HEADER_HEIGHT] });
+  }
+
+  const infoBoxX = contentRight - INFO_BOX_W;
+  doc.roundedRect(infoBoxX, y, INFO_BOX_W, HEADER_HEIGHT, 4).lineWidth(1).strokeColor(BOX_BORDER).stroke();
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(FONT.boxLabel)
+    .fillColor(MUTED)
+    .text("DATA", infoBoxX, y + 10, { width: INFO_BOX_W, align: "center", characterSpacing: 0.5 });
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(FONT.boxValue)
+    .fillColor(INK)
+    .text(dataHoje, infoBoxX + 6, y + 22, { width: INFO_BOX_W - 12, align: "center" });
+
+  y += HEADER_HEIGHT + 12;
+
+  const BANNER_H = 26;
+  doc.rect(contentLeft, y, contentWidth, BANNER_H).fill(BANNER_BG);
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(11)
+    .fillColor("#FFFFFF")
+    .text("CONTROLE DE RETIRADA — PORTARIA", contentLeft, y + 8, {
+      width: contentWidth,
+      align: "center",
+      characterSpacing: 0.5,
+    });
+  y += BANNER_H + 16;
+
+  const totalGeral = linhas.reduce((sum, linha) => sum + linha.total, 0);
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(FONT.itemsSummary)
+    .fillColor(INK)
+    .text(
+      `${linhas.length} pedido${linhas.length === 1 ? "" : "s"} para retirada · Total geral ${formatBRL(totalGeral)}`,
+      contentLeft,
+      y,
+      { width: contentWidth }
+    );
+  y += 15;
+  doc
+    .font("Helvetica")
+    .fontSize(FONT.boxLabel + 1.5)
+    .fillColor(MUTED)
+    .text(
+      "Só entregue depois de o funcionário assinar. Anote a hora. Linha em branco = pedido não retirado.",
+      contentLeft,
+      y,
+      { width: contentWidth }
+    );
+  y += 20;
+
+  // ------------------------------------------------------------------
+  // Tabela — mesma zebra e mesmas réguas da folha do pedido, só que com as
+  // duas últimas colunas VAZIAS de propósito: é onde a portaria escreve.
+  // ------------------------------------------------------------------
+  function drawControleHeader(topY: number): number {
+    doc.rect(contentLeft, topY, contentWidth, CONTROLE_HEADER_H).fill(TABLE_HEADER_BG);
+    doc.font("Helvetica-Bold").fontSize(FONT.tableHeader).fillColor("#FFFFFF");
+    cellText(doc, "Pedido", cols.pedido, topY, CONTROLE_HEADER_H);
+    cellText(doc, "Funcionário", cols.funcionario, topY, CONTROLE_HEADER_H);
+    cellText(doc, "Itens", cols.itens, topY, CONTROLE_HEADER_H, { align: "right" });
+    cellText(doc, "Total", cols.total, topY, CONTROLE_HEADER_H, { align: "right" });
+    cellText(doc, "Hora", cols.hora, topY, CONTROLE_HEADER_H, { align: "center" });
+    cellText(doc, "Assinatura do funcionário", cols.assinatura, topY, CONTROLE_HEADER_H, { align: "center" });
+    return topY + CONTROLE_HEADER_H;
+  }
+
+  function closeControleSegment(topY: number, bottomY: number) {
+    doc.lineWidth(0.5).strokeColor(RULE);
+    for (const col of [cols.funcionario, cols.itens, cols.total, cols.hora, cols.assinatura]) {
+      doc.moveTo(col.x, topY).lineTo(col.x, bottomY).stroke();
+    }
+    doc.lineWidth(1).strokeColor(INK).rect(contentLeft, topY, contentWidth, bottomY - topY).stroke();
+  }
+
+  /** Pauta clarinha dentro da célula, pra assinatura não sair torta nem
+   *  invadir a linha de baixo. */
+  function pauta(col: Column, rowY: number) {
+    doc
+      .moveTo(col.x + 8, rowY + CONTROLE_ROW_H - 9)
+      .lineTo(col.x + col.width - 8, rowY + CONTROLE_ROW_H - 9)
+      .lineWidth(0.5)
+      .strokeColor(RULE)
+      .stroke();
+  }
+
+  y = drawControleHeader(y);
+  let segmentTop = y - CONTROLE_HEADER_H;
+
+  if (linhas.length === 0) {
+    cellText(
+      doc.font("Helvetica").fontSize(FONT.tableCell).fillColor(MUTED),
+      "(nenhum pedido pendente)",
+      cols.funcionario,
+      y,
+      CONTROLE_ROW_H
+    );
+    y += CONTROLE_ROW_H;
+  }
+
+  linhas.forEach((linha, index) => {
+    // Quebra ANTES de desenhar, mesma lição da tabela de itens: deixar o
+    // pdfkit criar a página sozinho gera uma folha nova por célula.
+    if (y + CONTROLE_ROW_H > pageBottom) {
+      closeControleSegment(segmentTop, y);
+      doc.addPage();
+      y = PAGE_MARGIN;
+      doc
+        .font("Helvetica")
+        .fontSize(FONT.continuation)
+        .fillColor(MUTED)
+        .text(`Controle de retirada ${dataHoje} — continuação`, contentLeft, y);
+      y += 18;
+      y = drawControleHeader(y);
+      segmentTop = y - CONTROLE_HEADER_H;
+    }
+
+    if (index % 2 === 1) {
+      doc.rect(contentLeft, y, contentWidth, CONTROLE_ROW_H).fill(ZEBRA_BG);
+    }
+
+    // Número do pedido em destaque: é por ele que a portaria acha a folha
+    // grampeada no maço de mercadoria. O número do CIGAM tem 6 dígitos e
+    // sai no corpo da tabela; o interno, de pedido ainda não sincronizado,
+    // tem 16 caracteres e só cabe numa linha se encolher — encolhido ainda
+    // é melhor que quebrado no meio da data.
+    const pedidoComprido = linha.pedido.length > 8;
+    doc.font("Helvetica-Bold").fontSize(pedidoComprido ? 7.5 : FONT.tableCell).fillColor(INK);
+    cellText(doc, linha.pedido, cols.pedido, y, CONTROLE_ROW_H, { padding: pedidoComprido ? 4 : 6 });
+
+    doc.font("Helvetica").fontSize(FONT.tableCell).fillColor(INK);
+    cellText(doc, linha.funcionario, cols.funcionario, y, CONTROLE_ROW_H);
+    cellText(doc, qtyFormatter.format(linha.itens), cols.itens, y, CONTROLE_ROW_H, { align: "right" });
+    cellText(doc, formatBRL(linha.total), cols.total, y, CONTROLE_ROW_H, { align: "right" });
+
+    pauta(cols.hora, y);
+    pauta(cols.assinatura, y);
+
+    doc.moveTo(contentLeft, y + CONTROLE_ROW_H).lineTo(contentRight, y + CONTROLE_ROW_H).lineWidth(0.5).strokeColor(RULE).stroke();
+    y += CONTROLE_ROW_H;
+  });
+
+  closeControleSegment(segmentTop, y);
+  y += 26;
+
+  // ------------------------------------------------------------------
+  // Fecho — quem responde pela folha. Mesma medida do fechamento da folha
+  // do pedido: somada, não chutada.
+  // ------------------------------------------------------------------
+  const FECHO_H = 34;
+  if (y + FECHO_H > pageBottom) {
+    doc.addPage();
+    y = PAGE_MARGIN;
+  }
+
+  const sigWidth = (contentWidth - 30) / 2;
+  const sigRightX = contentLeft + sigWidth + 30;
+  doc.lineWidth(1).strokeColor(INK);
+  doc.moveTo(sigRightX, y).lineTo(sigRightX + sigWidth, y).stroke();
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(FONT.signature)
+    .fillColor(INK)
+    .text("RESPONSÁVEL PELA PORTARIA", sigRightX, y + 8, { width: sigWidth, align: "center" });
+  doc
+    .font("Helvetica")
+    .fontSize(FONT.boxLabel + 1)
+    .fillColor(MUTED)
+    .text(`Folha gerada em ${dataHoje}.`, contentLeft, y + 8, { width: sigWidth });
 }

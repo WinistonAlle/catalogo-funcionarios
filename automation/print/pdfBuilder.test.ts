@@ -1,6 +1,6 @@
 // automation/print/pdfBuilder.test.ts
 import { describe, expect, it } from "vitest";
-import { buildOrderSheetPdf, buildOrderSheetsPdf, sequenciaDeFolhas, VIAS_PADRAO } from "./pdfBuilder";
+import { buildOrderSheetPdf, buildOrderSheetsPdf, linhasDoControle, sequenciaDeFolhas, VIAS_PADRAO } from "./pdfBuilder";
 
 describe("buildOrderSheetPdf", () => {
   it("produz um PDF não vazio, com a assinatura %PDF", async () => {
@@ -83,6 +83,76 @@ describe("buildOrderSheetsPdf", () => {
     expect(contarPaginas(buffer)).toBe(6);
   });
 
+  /**
+   * A canhoteira é UMA folha a mais no fim, não uma por pedido — se virar
+   * uma por pedido, a portaria volta a ter maço de canhotinho solto, que é
+   * exatamente o que esta folha existe pra evitar.
+   */
+  it("com controle de retirada, sai UMA folha a mais no fim", async () => {
+    const pedidos = [pedidoDeTeste("GM-1"), pedidoDeTeste("GM-2"), pedidoDeTeste("GM-3")];
+    const buffer = await buildOrderSheetsPdf(pedidos, VIAS_PADRAO, { controleDeRetirada: true });
+    expect(contarPaginas(buffer)).toBe(7);
+  });
+
+  it("sem pedido nenhum, não gera folha de controle em branco", async () => {
+    const semControle = await buildOrderSheetsPdf([], VIAS_PADRAO);
+    const comControle = await buildOrderSheetsPdf([], VIAS_PADRAO, { controleDeRetirada: true });
+    expect(contarPaginas(comControle)).toBe(contarPaginas(semControle));
+  });
+
+  it("não pede controle de retirada por padrão — quem imprime uma via só não ganha folha extra", async () => {
+    const buffer = await buildOrderSheetsPdf([pedidoDeTeste("GM-1")], ["PORTARIA"]);
+    expect(contarPaginas(buffer)).toBe(1);
+  });
+
+  it("a canhoteira aguenta uma leva grande sem estourar a folha", async () => {
+    const pedidos = Array.from({ length: 40 }, (_, i) => pedidoDeTeste(`GM-${i + 1}`));
+    const buffer = await buildOrderSheetsPdf(pedidos, ["PORTARIA"], { controleDeRetirada: true });
+    // 40 folhas de pedido + a canhoteira paginada (não cabe em uma folha só).
+    expect(contarPaginas(buffer)).toBeGreaterThan(41);
+  });
+});
+
+/**
+ * O conteúdo da canhoteira não é verificável lendo o PDF (pdfkit escreve o
+ * texto como índice de glifo de fonte embutida em subconjunto), então é aqui
+ * que se olha o que vai na folha — mesmo motivo de sequenciaDeFolhas.
+ */
+describe("linhasDoControle", () => {
+  it("uma linha por pedido, na ordem recebida", () => {
+    const linhas = linhasDoControle([pedidoDeTeste("GM-1", "ANA"), pedidoDeTeste("GM-2", "BRUNO")]);
+    expect(linhas.map((l) => l.funcionario)).toEqual(["ANA", "BRUNO"]);
+  });
+
+  /**
+   * O número que a portaria usa pra achar o maço é o do CIGAM, o mesmo que
+   * sai na caixa "PEDIDO" da folha — se cair no interno quando o pedido já
+   * sincronizou, a folha da mercadoria e a canhoteira deixam de bater.
+   */
+  it("usa o número do CIGAM quando o pedido já sincronizou, e o interno quando não", () => {
+    const linhas = linhasDoControle([
+      { orderNumber: "GM-20260825-9590", cigamOrderId: "015046", employeeName: "ANA", items: [] },
+      { orderNumber: "GM-20260825-9591", employeeName: "BRUNO", items: [] },
+    ]);
+
+    expect(linhas.map((l) => l.pedido)).toEqual(["015046", "GM-20260825-9591"]);
+  });
+
+  it("total da linha é a soma de preço × quantidade, igual ao TOTAL da folha do pedido", () => {
+    const [linha] = linhasDoControle([
+      {
+        orderNumber: "GM-1",
+        employeeName: "ANA",
+        items: [
+          { productName: "Pão de Queijo 1kg", quantity: 2, unitPrice: 14.85 },
+          { productName: "Coxinha", quantity: 3, unitPrice: 3.5 },
+        ],
+      },
+    ]);
+
+    expect(linha.itens).toBe(2);
+    expect(linha.total).toBeCloseTo(2 * 14.85 + 3 * 3.5, 2);
+  });
 });
 
 describe("sequenciaDeFolhas", () => {

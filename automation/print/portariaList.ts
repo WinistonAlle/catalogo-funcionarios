@@ -197,7 +197,14 @@ export async function gerarPdfPortaria(params: {
 
   if (pedidos.length === 0) return { pdf: Buffer.alloc(0), pedidos: [] };
 
-  const pdf = await buildOrderSheetsPdf(pedidos.map(paraOrderSheetData), VIAS_PADRAO);
+  // controleDeRetirada: a canhoteira que fecha a pilha da portaria — uma
+  // folha só, com todos os pedidos da leva em linhas, onde o funcionário
+  // assina na entrega. Só sai aqui, no PDF da leva: num pedido avulso
+  // (gerarPdfPedidoUnico) uma folha de controle de UMA linha não controla
+  // nada — lá a assinatura do rodapé da própria folha já resolve.
+  const pdf = await buildOrderSheetsPdf(pedidos.map(paraOrderSheetData), VIAS_PADRAO, {
+    controleDeRetirada: true,
+  });
 
   const ids = pedidos.map((p) => p.id);
   const { error: updateError } = await supabase

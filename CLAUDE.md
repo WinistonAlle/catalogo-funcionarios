@@ -906,6 +906,44 @@ desligado) continua saindo em **via única marcada `VIA PORTARIA`** — lá não
 existe ninguém no meio pra entregar a segunda via, ela só ficaria esquecida na
 bandeja.
 
+### A canhoteira: folha de controle de retirada (25/08/2026)
+
+A **última folha** do PDF da leva é a canhoteira — `CONTROLE DE RETIRADA —
+PORTARIA`. Uma linha por pedido (Pedido · Funcionário · Itens · Total · Hora ·
+Assinatura), com as duas últimas colunas em branco de propósito: é onde a
+portaria anota a hora e colhe a **assinatura do funcionário que retira**. Fecha
+com uma linha pro `RESPONSÁVEL PELA PORTARIA`.
+
+**Por que uma folha de controle e não um canhoto destacável por pedido:** a
+portaria entrega vários pedidos na mesma janela, e um maço de canhotinho solto
+se perde. Numa folha só, **o que não foi retirado é a linha em branco** — dá
+pra ver de relance o que sobrou no fim do dia, e o papel vai inteiro pro
+arquivo.
+
+**Onde ela cai na pilha:** por último, depois do bloco `VIA PORTARIA`. Como as
+folhas saem em blocos (ver "Duas vias"), o faturamento corta o bolo no meio e
+ela já vai junto da pilha certa, sem ninguém precisar separar nada.
+
+**Onde ela NÃO sai:**
+
+- **Pedido avulso** (`gerarPdfPedidoUnico`, botão "Imprimir" do Admin Pedidos):
+  folha de controle de uma linha não controla nada, e lá a assinatura do rodapé
+  da própria folha já resolve.
+- **Leva vazia:** sem pedido nenhum ela não sai — folha de controle em branco é
+  papel jogado fora.
+- **Impressão direta** (`printPortariaList`, desligado): não pede.
+
+Quem liga é `portariaList.ts`, passando `{ controleDeRetirada: true }` pro
+`buildOrderSheetsPdf`. O desenho é `drawControleDeRetirada`; o **conteúdo** das
+linhas é `linhasDoControle`, exportado e separado do desenho pelo mesmo motivo
+de `sequenciaDeFolhas` (o texto não existe legível dentro do PDF gerado, então
+é ali que dá pra verificar o que vai na folha).
+
+⚠️ **O número do pedido tem que bater com o da folha grampeada na mercadoria:**
+é o do CIGAM (`erp_external_id`) quando o pedido já sincronizou, e o interno só
+quando ainda não. É a mesma regra da caixa `PEDIDO` da folha — se divergir, a
+portaria não acha o maço. Tem teste em cima disso.
+
 ### O disparo automático (desligado desde 24/08/2026)
 
 O código continua inteiro e testado; o que o desliga é a ausência de
