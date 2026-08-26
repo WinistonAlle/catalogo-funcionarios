@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import styled from "styled-components";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
+import { CYCLE_START_DAY, getSaoPauloPayCycleKey } from "@/lib/payCycle";
 import {
   Dialog,
   DialogContent,
@@ -19,15 +20,13 @@ type ReportRow = {
   orders_count: number | null;
   total_spent: number | null;
   payroll_discount: number | null;
-  spent_pay_on_pickup: number | null;
 };
 
 type SortKey =
   | "employee_name"
   | "orders_count"
   | "total_spent"
-  | "payroll_discount"
-  | "spent_pay_on_pickup";
+  | "payroll_discount";
 
 type OrderItem = {
   id: string | number | null;
@@ -49,7 +48,6 @@ type OrderRow = {
   created_at: string;
   wallet_used_cents: number | null;
   spent_from_balance_cents: number | null;
-  pay_on_pickup_cents: number | null;
   order_items?: OrderItem[];
 };
 
@@ -92,8 +90,32 @@ const addDaysToISODate = (value: string, days: number) => {
   return toISODate(date);
 };
 
-const getMonthDateRange = (key: string) => {
-  const match = key.trim().match(/^(\d{4})-(\d{2})$/);
+/**
+ * Ciclo de pagamento -> intervalo de datas REAL.
+ *
+ * O ciclo fecha no dia 26 (CYCLE_START_DAY = 27 em src/lib/payCycle.ts), entao
+ * o ciclo "2026-07" vai de 27/07 a 26/08 — NAO e o mes 07 do calendario.
+ *
+ * Ate 26/08/2026 esta funcao devolvia 01/07 a 31/07 para essa mesma chave: o
+ * relatorio dizia "ciclo 2026-07" e somava o mes de julho inteiro, deixando de
+ * fora os pedidos de 27/07 em diante. Como isto e relatorio de desconto em
+ * folha, o total simplesmente nao batia com o que ia ser descontado.
+ */
+const getCycleDateRange = (key: string) => {
+  const parsed = parseCycleKey(key);
+  if (!parsed) return null;
+
+  const { year, monthIndex } = parsed;
+  const start = new Date(year, monthIndex, CYCLE_START_DAY);
+  const end = new Date(year, monthIndex + 1, CYCLE_START_DAY - 1);
+  return {
+    start: toISODate(start),
+    end: toISODate(end),
+  };
+};
+
+const parseCycleKey = (key: string) => {
+  const match = String(key ?? "").trim().match(/^(\d{4})-(\d{2})$/);
   if (!match) return null;
 
   const year = Number(match[1]);
@@ -103,25 +125,27 @@ const getMonthDateRange = (key: string) => {
     return null;
   }
 
-  const start = new Date(year, monthIndex, 1);
-  const end = new Date(year, monthIndex + 1, 0);
-  return {
-    start: toISODate(start),
-    end: toISODate(end),
-  };
+  return { year, monthIndex };
+};
+
+/** Anda `delta` ciclos para tras (negativo) ou para frente (positivo). */
+const shiftCycleKey = (key: string, delta: number) => {
+  const parsed = parseCycleKey(key);
+  if (!parsed) return key;
+
+  const moved = new Date(parsed.year, parsed.monthIndex + delta, 1);
+  return `${moved.getFullYear()}-${String(moved.getMonth() + 1).padStart(2, "0")}`;
+};
+
+/** "27/07 a 26/08 de 2026" — o que o RH precisa ler, nao "2026-07". */
+const formatCycleLabel = (key: string) => {
+  const range = getCycleDateRange(key);
+  if (!range) return key || "—";
+  return `${formatShortDate(range.start)} a ${formatShortDate(range.end)}`;
 };
 
 const getOrderWalletSpent = (order: Pick<OrderRow, "wallet_used_cents" | "spent_from_balance_cents">) =>
   Math.max(n(order.wallet_used_cents), n(order.spent_from_balance_cents));
-
-const getOrderPickupSpent = (order: Pick<OrderRow, "total_value" | "wallet_used_cents" | "spent_from_balance_cents" | "pay_on_pickup_cents">) => {
-  const explicitPickup = n(order.pay_on_pickup_cents);
-  if (explicitPickup > 0) return explicitPickup;
-
-  const totalInCents = Math.round(n(order.total_value) * 100);
-  const walletInCents = getOrderWalletSpent(order as OrderRow);
-  return Math.max(0, totalInCents - walletInCents);
-};
 
 function downloadTextFile(filename: string, content: string) {
   const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
@@ -185,7 +209,6 @@ function buildRowsFromOrders(orders: OrderRow[], monthKey: string): {
         orders_count: 0,
         total_spent: 0,
         payroll_discount: 0,
-        spent_pay_on_pickup: 0,
       });
     }
 
@@ -193,7 +216,6 @@ function buildRowsFromOrders(orders: OrderRow[], monthKey: string): {
     row.orders_count = n(row.orders_count) + 1;
     row.total_spent = n(row.total_spent) + n(order.total_value);
     row.payroll_discount = n(row.payroll_discount) + centsToBRL(getOrderWalletSpent(order));
-    row.spent_pay_on_pickup = n(row.spent_pay_on_pickup) + centsToBRL(getOrderPickupSpent(order));
 
     if (!ordersByEmployee[employeeId]) {
       ordersByEmployee[employeeId] = [];
@@ -259,21 +281,17 @@ const Button = styled.button<{ $primary?: boolean; $danger?: boolean }>`
   border-radius: 10px;
   border: 1px solid
     ${({ $primary, $danger }) =>
-      $danger
-        ? "rgba(140,0,0,0.18)"
-        : $primary
-          ? "rgba(184,38,38,0.35)"
-          : "#ddd"};
+      $danger ? "rgba(140,0,0,0.18)" : $primary ? "#1f2937" : "#ddd"};
   background: ${({ $primary, $danger }) =>
-    $danger ? "#fff5f5" : $primary ? "rgba(184,38,38,0.10)" : "#fff"};
-  color: ${({ $primary, $danger }) => ($danger ? "#8c0000" : $primary ? "#b82626" : "#222")};
+    $danger ? "#fff5f5" : $primary ? "#1f2937" : "#fff"};
+  color: ${({ $primary, $danger }) => ($danger ? "#8c0000" : $primary ? "#fff" : "#222")};
   font-weight: 800;
   cursor: pointer;
   transition: all 0.15s ease;
 
   &:hover {
     background: ${({ $primary, $danger }) =>
-      $danger ? "#ffe8e8" : $primary ? "rgba(184,38,38,0.14)" : "#f6f6f6"};
+      $danger ? "#ffe8e8" : $primary ? "#111827" : "#f6f6f6"};
     transform: translateY(-1px);
   }
 
@@ -324,50 +342,168 @@ const Input = styled.input`
   outline: none;
 
   &:focus {
-    border-color: rgba(184, 38, 38, 0.55);
-    box-shadow: 0 0 0 4px rgba(184, 38, 38, 0.12);
+    border-color: #6b7280;
+    box-shadow: 0 0 0 3px rgba(31, 41, 55, 0.12);
   }
+`;
+
+const CycleBar = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+`;
+
+const CycleNav = styled.button`
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: 1px solid #d8d8d8;
+  background: #fff;
+  font-size: 1rem;
+  font-weight: 900;
+  color: #333;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    border-color: #9ca3af;
+    background: #f6f6f6;
+  }
+
+  &:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+`;
+
+const CycleInfo = styled.div`
+  flex: 1;
+  min-width: 220px;
+  text-align: center;
+`;
+
+const CycleRange = styled.div`
+  font-size: 1.15rem;
+  font-weight: 900;
+  color: #111;
+`;
+
+const CycleNote = styled.div`
+  margin-top: 2px;
+  font-size: 0.8rem;
+  color: #666;
+  font-weight: 700;
+`;
+
+const Hero = styled.div`
+  padding: 20px 22px;
+  border-radius: 14px;
+  background: #1f2937;
+  color: #fff;
+`;
+
+const HeroLabel = styled.div`
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.62);
+`;
+
+const HeroValue = styled.div`
+  margin-top: 6px;
+  font-size: 2.4rem;
+  font-weight: 900;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+`;
+
+const HeroNote = styled.div`
+  margin-top: 6px;
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.6);
+  font-weight: 600;
+`;
+
+/** Os numeros de apoio ficam FORA do painel — nao competem com o total. */
+const SideStats = styled.div`
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+
+  @media (max-width: 620px) {
+    grid-template-columns: 1fr;
+  }
+`;
+
+const Stat = styled.div`
+  border: 1px solid #e9e9e9;
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: #fafafa;
+`;
+
+const StatLabel = styled.div`
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6b7280;
+`;
+
+const StatValue = styled.div`
+  margin-top: 4px;
+  font-size: 1.15rem;
+  font-weight: 900;
+  color: #111;
+  font-variant-numeric: tabular-nums;
+`;
+
+const TopGrid = styled.div`
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+
+  @media (max-width: 860px) {
+    grid-template-columns: 1fr;
+  }
+`;
+
+const SectionTitle = styled.h2`
+  margin: 26px 0 0;
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #6b7280;
+`;
+
+const SearchRow = styled.div`
+  margin-top: 16px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+`;
+
+const LinkButton = styled.button`
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 0.85rem;
+  font-weight: 800;
+  color: #374151;
+  cursor: pointer;
+  text-decoration: underline;
 `;
 
 const Hint = styled.div`
   margin-top: 10px;
   color: #666;
   font-size: 0.82rem;
-`;
-
-const Summary = styled.div`
-  margin-top: 16px;
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 12px;
-
-  @media (max-width: 980px) {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
-  @media (max-width: 480px) {
-    grid-template-columns: 1fr;
-  }
-`;
-
-const SummaryItem = styled.div`
-  border: 1px solid #e9e9e9;
-  border-radius: 12px;
-  padding: 12px;
-  background: #fff;
-`;
-
-const SummaryLabel = styled.div`
-  font-size: 0.75rem;
-  color: #666;
-  font-weight: 800;
-`;
-
-const SummaryValue = styled.div`
-  margin-top: 6px;
-  font-size: 1rem;
-  font-weight: 900;
-  color: #111;
 `;
 
 const ErrorBox = styled.div`
@@ -391,7 +527,7 @@ const TableWrap = styled.div`
 const Table = styled.table`
   width: 100%;
   border-collapse: collapse;
-  min-width: 980px;
+  min-width: 720px;
 `;
 
 const Th = styled.th<{ align?: "left" | "right" }>`
@@ -425,14 +561,15 @@ const Empty = styled.div`
 const DetailButton = styled.button`
   padding: 8px 10px;
   border-radius: 9px;
-  border: 1px solid rgba(184, 38, 38, 0.18);
-  background: rgba(184, 38, 38, 0.08);
-  color: #b82626;
+  border: 1px solid #d8d8d8;
+  background: #fff;
+  color: #374151;
   font-weight: 800;
   cursor: pointer;
 
   &:hover {
-    background: rgba(184, 38, 38, 0.12);
+    background: #f3f4f6;
+    border-color: #9ca3af;
   }
 `;
 
@@ -480,9 +617,9 @@ const StatusBadge = styled.span<{ $status: string }>`
   font-weight: 900;
   text-transform: capitalize;
   border: 1px solid
-    ${({ $status }) => ($status === CANCELED_STATUS ? "rgba(140,0,0,0.15)" : "rgba(184,38,38,0.15)")};
-  background: ${({ $status }) => ($status === CANCELED_STATUS ? "#fff1f1" : "#fff7f7")};
-  color: ${({ $status }) => ($status === CANCELED_STATUS ? "#8c0000" : "#b82626")};
+    ${({ $status }) => ($status === CANCELED_STATUS ? "rgba(140,0,0,0.2)" : "#e5e7eb")};
+  background: ${({ $status }) => ($status === CANCELED_STATUS ? "#fff1f1" : "#f3f4f6")};
+  color: ${({ $status }) => ($status === CANCELED_STATUS ? "#8c0000" : "#374151")};
 `;
 
 const OrderBreakdown = styled.div`
@@ -567,6 +704,14 @@ export default function RHSpendingReport() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string>("");
 
+  const [customPeriodOpen, setCustomPeriodOpen] = useState(false);
+  const currentCycleKey = getSaoPauloPayCycleKey();
+  const isCurrentCycle = monthKeyInput === currentCycleKey;
+  const isCustomPeriod = (() => {
+    const range = getCycleDateRange(monthKeyInput);
+    return !range || range.start !== startDate || range.end !== endDate;
+  })();
+
   const [sortKey, setSortKey] = useState<SortKey>("payroll_discount");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
@@ -584,8 +729,10 @@ export default function RHSpendingReport() {
         ? data
         : data?.key ?? data?.month_key ?? data?.current_pay_cycle_key ?? "";
 
-    if (!key) throw new Error("RPC current_pay_cycle_key não retornou um month_key válido.");
-    return key as string;
+    // Se a RPC devolver lixo, o ciclo ainda da para calcular aqui — a regra do
+    // dia 27 e a mesma dos dois lados. Melhor abrir no ciclo certo do que
+    // estourar a tela inteira.
+    return (parseCycleKey(String(key)) ? String(key) : getSaoPauloPayCycleKey());
   }
 
   async function fetchOrders(start: string, end: string) {
@@ -607,7 +754,6 @@ export default function RHSpendingReport() {
         created_at,
         wallet_used_cents,
         spent_from_balance_cents,
-        pay_on_pickup_cents,
         order_items (
           id,
           product_name,
@@ -628,8 +774,14 @@ export default function RHSpendingReport() {
     setLoading(true);
     setError("");
     try {
-      const key = await loadCurrentCycle();
-      const range = getMonthDateRange(key);
+      let key: string;
+      try {
+        key = await loadCurrentCycle();
+      } catch {
+        key = getSaoPauloPayCycleKey();
+      }
+
+      const range = getCycleDateRange(key);
       if (!range) throw new Error("Não foi possível converter o ciclo atual em intervalo de datas.");
 
       setMonthKey(key);
@@ -682,16 +834,33 @@ export default function RHSpendingReport() {
     }
   }
 
-  function applyMonthPreset() {
-    const range = getMonthDateRange(monthKeyInput);
-    if (!range) {
-      setError("Use o formato de ciclo AAAA-MM para preencher as datas automaticamente.");
-      return;
-    }
+  /** Troca de ciclo e ja carrega — sem passar por "preencher datas" e "Carregar". */
+  async function applyCycle(key: string) {
+    const range = getCycleDateRange(key);
+    if (!range) return;
 
+    setRefreshing(true);
     setError("");
+    setSearch("");
+    setSelectedEmployeeId(null);
+    setMonthKey(key);
+    setMonthKeyInput(key);
     setStartDate(range.start);
     setEndDate(range.end);
+    setCustomPeriodOpen(false);
+
+    try {
+      const orders = await fetchOrders(range.start, range.end);
+      const built = buildRowsFromOrders(orders, key);
+      setRows(built.rows);
+      setOrdersByEmployee(built.ordersByEmployee);
+    } catch (e: any) {
+      setError(e?.message ?? "Erro ao carregar o ciclo.");
+      setRows([]);
+      setOrdersByEmployee({});
+    } finally {
+      setRefreshing(false);
+    }
   }
 
   const filtered = useMemo(() => {
@@ -725,7 +894,6 @@ export default function RHSpendingReport() {
     return {
       total: sorted.reduce((a, r) => a + n(r.total_spent), 0),
       desconto: sorted.reduce((a, r) => a + n(r.payroll_discount), 0),
-      retirada: sorted.reduce((a, r) => a + n(r.spent_pay_on_pickup), 0),
       pedidos: sorted.reduce((a, r) => a + n(r.orders_count), 0),
       funcionarios: sorted.length,
     };
@@ -764,15 +932,11 @@ export default function RHSpendingReport() {
         <Header>
           <LeftHeader>
             <Title>Relatório de Gastos</Title>
-            <Subtitle>Consolidação por funcionário com filtro de período e detalhamento por pedido.</Subtitle>
+            <Subtitle>Quanto cada funcionário gastou do saldo no ciclo. Pedidos cancelados não entram.</Subtitle>
           </LeftHeader>
 
           <Actions>
             <Button onClick={() => navigate("/rh")}>Voltar</Button>
-
-            <Button onClick={reload} disabled={loading || refreshing || !startDate || !endDate}>
-              {refreshing ? "Atualizando..." : "Carregar"}
-            </Button>
 
             <Button $primary onClick={exportCSV} disabled={!canExport}>
               Exportar CSV
@@ -781,90 +945,121 @@ export default function RHSpendingReport() {
         </Header>
 
         <Card>
-          <Filters>
-            <Field>
-              <Label>Ciclo</Label>
-              <Input
-                value={monthKeyInput}
-                onChange={(e) => setMonthKeyInput(e.target.value)}
-                placeholder="ex: 2026-03"
-              />
-            </Field>
-
-            <Field>
-              <Label>Data inicial</Label>
-              <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
-            </Field>
-
-            <Field>
-              <Label>Data final</Label>
-              <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
-            </Field>
-
-            <Field style={{ flex: 1 }}>
-              <Label>Buscar funcionário</Label>
-              <Input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Nome ou CPF"
-              />
-            </Field>
-
-            <Button type="button" onClick={applyMonthPreset} disabled={!monthKeyInput.trim()}>
-              Usar ciclo nas datas
-            </Button>
-
-            <Button
+          <CycleBar>
+            <CycleNav
               type="button"
-              $danger
-              onClick={() => {
-                const range = getMonthDateRange(monthKeyInput || monthKey);
-                setSearch("");
-                setSelectedEmployeeId(null);
-                if (range) {
-                  setStartDate(range.start);
-                  setEndDate(range.end);
-                }
-              }}
+              title="Ciclo anterior"
+              disabled={refreshing || loading}
+              onClick={() => applyCycle(shiftCycleKey(monthKeyInput, -1))}
             >
-              Limpar busca
-            </Button>
-          </Filters>
+              ‹
+            </CycleNav>
 
-          <Hint>
-            O filtro de datas considera a data do pedido. Pedidos cancelados não entram no consolidado.
-          </Hint>
+            <CycleInfo>
+              <CycleRange>
+                {isCustomPeriod && startDate && endDate
+                  ? `${formatShortDate(startDate)} a ${formatShortDate(endDate)}`
+                  : formatCycleLabel(monthKeyInput)}
+              </CycleRange>
+              <CycleNote>
+                {isCustomPeriod
+                  ? "Período personalizado"
+                  : isCurrentCycle
+                    ? "Ciclo atual — fecha dia 26"
+                    : `Ciclo ${monthKeyInput}`}
+              </CycleNote>
+            </CycleInfo>
+
+            <CycleNav
+              type="button"
+              title="Próximo ciclo"
+              disabled={refreshing || loading || (isCurrentCycle && !isCustomPeriod)}
+              onClick={() => applyCycle(shiftCycleKey(monthKeyInput, 1))}
+            >
+              ›
+            </CycleNav>
+
+            {isCurrentCycle && !isCustomPeriod ? null : (
+              <Button type="button" onClick={() => applyCycle(currentCycleKey)} disabled={refreshing}>
+                Ciclo atual
+              </Button>
+            )}
+
+            <LinkButton type="button" onClick={() => setCustomPeriodOpen((v) => !v)}>
+              {customPeriodOpen ? "esconder período personalizado" : "período personalizado"}
+            </LinkButton>
+          </CycleBar>
+
+          {customPeriodOpen ? (
+            <>
+              <Filters style={{ marginTop: 12 }}>
+                <Field>
+                  <Label>Data inicial</Label>
+                  <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+                </Field>
+
+                <Field>
+                  <Label>Data final</Label>
+                  <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+                </Field>
+
+                <Button
+                  type="button"
+                  $primary
+                  onClick={reload}
+                  disabled={refreshing || !startDate || !endDate}
+                >
+                  {refreshing ? "Carregando..." : "Aplicar"}
+                </Button>
+              </Filters>
+
+              <Hint>
+                Fora do ciclo, o total não corresponde ao que vai ser descontado na folha.
+              </Hint>
+            </>
+          ) : null}
 
           {error ? <ErrorBox>{error}</ErrorBox> : null}
 
-          <Summary>
-            <SummaryItem>
-              <SummaryLabel>Período</SummaryLabel>
-              <SummaryValue>
-                {startDate && endDate ? `${formatShortDate(startDate)} até ${formatShortDate(endDate)}` : "—"}
-              </SummaryValue>
-            </SummaryItem>
+          <TopGrid>
+            <Hero>
+              <HeroLabel>Total a descontar em folha</HeroLabel>
+              <HeroValue>{loading || refreshing ? "—" : formatBRL(totals.desconto)}</HeroValue>
+              <HeroNote>
+                {isCustomPeriod
+                  ? "Período personalizado — não corresponde ao fechamento da folha."
+                  : `Ciclo ${monthKeyInput} · ${formatCycleLabel(monthKeyInput)}`}
+              </HeroNote>
+            </Hero>
 
-            <SummaryItem>
-              <SummaryLabel>Funcionários</SummaryLabel>
-              <SummaryValue>{totals.funcionarios}</SummaryValue>
-            </SummaryItem>
+            <SideStats>
+              <Stat>
+                <StatLabel>Funcionários</StatLabel>
+                <StatValue>{loading || refreshing ? "—" : totals.funcionarios}</StatValue>
+              </Stat>
+              <Stat>
+                <StatLabel>Pedidos</StatLabel>
+                <StatValue>{loading || refreshing ? "—" : totals.pedidos}</StatValue>
+              </Stat>
+            </SideStats>
+          </TopGrid>
 
-            <SummaryItem>
-              <SummaryLabel>Total a descontar (saldo)</SummaryLabel>
-              <SummaryValue>{formatBRL(totals.desconto)}</SummaryValue>
-            </SummaryItem>
+          <SectionTitle>Por funcionário</SectionTitle>
 
-            <SummaryItem>
-              <SummaryLabel>Pago na retirada</SummaryLabel>
-              <SummaryValue>{formatBRL(totals.retirada)}</SummaryValue>
-            </SummaryItem>
+          <SearchRow>
+            <Input
+              style={{ flex: 1, minWidth: 220 }}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar funcionário por nome ou CPF"
+            />
+            {search ? (
+              <LinkButton type="button" onClick={() => setSearch("")}>
+                limpar busca
+              </LinkButton>
+            ) : null}
+          </SearchRow>
 
-            <SummaryItem>
-              <SummaryLabel>Pedidos</SummaryLabel>
-              <SummaryValue>{totals.pedidos}</SummaryValue>
-            </SummaryItem>
-          </Summary>
 
           <TableWrap>
             {loading ? (
@@ -882,14 +1077,8 @@ export default function RHSpendingReport() {
                     <Th align="right" onClick={() => toggleSort("orders_count")}>
                       Pedidos {sortKey === "orders_count" ? (sortDir === "asc" ? "▲" : "▼") : ""}
                     </Th>
-                    <Th align="right" onClick={() => toggleSort("total_spent")}>
-                      Total (pedido) {sortKey === "total_spent" ? (sortDir === "asc" ? "▲" : "▼") : ""}
-                    </Th>
                     <Th align="right" onClick={() => toggleSort("payroll_discount")}>
-                      Desconto (saldo) {sortKey === "payroll_discount" ? (sortDir === "asc" ? "▲" : "▼") : ""}
-                    </Th>
-                    <Th align="right" onClick={() => toggleSort("spent_pay_on_pickup")}>
-                      Retirada {sortKey === "spent_pay_on_pickup" ? (sortDir === "asc" ? "▲" : "▼") : ""}
+                      Desconto em folha {sortKey === "payroll_discount" ? (sortDir === "asc" ? "▲" : "▼") : ""}
                     </Th>
                     <Th style={{ cursor: "default" }}>Detalhes</Th>
                   </tr>
@@ -901,10 +1090,8 @@ export default function RHSpendingReport() {
                       <Td>{r.employee_cpf ?? "—"}</Td>
                       <Td align="right">{n(r.orders_count)}</Td>
                       <Td align="right" strong>
-                        {formatBRL(n(r.total_spent))}
+                        {formatBRL(n(r.payroll_discount))}
                       </Td>
-                      <Td align="right">{formatBRL(n(r.payroll_discount))}</Td>
-                      <Td align="right">{formatBRL(n(r.spent_pay_on_pickup))}</Td>
                       <Td>
                         <DetailButton type="button" onClick={() => setSelectedEmployeeId(r.employee_id)}>
                           Ver pedidos
@@ -936,7 +1123,6 @@ export default function RHSpendingReport() {
               selectedOrders.map((order) => {
                 const status = String(order.status ?? "").toLowerCase();
                 const wallet = centsToBRL(getOrderWalletSpent(order));
-                const pickup = centsToBRL(getOrderPickupSpent(order));
 
                 return (
                   <OrderCard key={order.id}>
@@ -967,10 +1153,6 @@ export default function RHSpendingReport() {
                         <OrderMetricValue>{formatBRL(wallet)}</OrderMetricValue>
                       </OrderMetric>
 
-                      <OrderMetric>
-                        <OrderMetricLabel>Pago na retirada</OrderMetricLabel>
-                        <OrderMetricValue>{formatBRL(pickup)}</OrderMetricValue>
-                      </OrderMetric>
                     </OrderBreakdown>
 
                     <ItemsList>

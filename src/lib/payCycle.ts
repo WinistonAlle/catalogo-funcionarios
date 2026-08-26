@@ -1,5 +1,6 @@
 const TIMEZONE = "America/Sao_Paulo";
-const CYCLE_START_DAY = 27;
+/** O ciclo vira no dia 27 — entao ele fecha no dia 26 do mes seguinte. */
+export const CYCLE_START_DAY = 27;
 
 function pad(value: number) {
   return String(value).padStart(2, "0");
