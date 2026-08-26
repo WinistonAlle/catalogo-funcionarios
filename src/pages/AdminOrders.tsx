@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
-import { printPortariaNow, printOrderNow } from "@/lib/adminOperations";
+import { printPortariaNow, printOrderNow, confirmPortariaPrint } from "@/lib/adminOperations";
 
 type OrderRow = {
   id: string;
@@ -795,6 +795,13 @@ export default function AdminOrders() {
     }
   }
 
+  /**
+   * Dois passos de propósito: abrir o PDF e, só depois de alguém confirmar que
+   * o papel saiu, tirar os pedidos da lista. Antes o servidor marcava tudo na
+   * hora de gerar — quem fechasse a aba sem imprimir perdia a leva, e o botão
+   * passava a dizer "nenhum pedido pendente" com os pedidos visíveis na tela.
+   * Cancelar aqui é seguro: os pedidos continuam na lista.
+   */
   async function handlePrintPortaria() {
     if (printingPortaria) return;
     setPrintingPortaria(true);
@@ -803,7 +810,27 @@ export default function AdminOrders() {
     const aba = window.open("", "_blank");
     try {
       const result = await printPortariaNow(aba);
-      if (!result.baixou) alert(result.message);
+      if (!result.baixou) {
+        alert(result.message);
+        return;
+      }
+
+      const total = result.pedidos.length;
+      const confirmou = window.confirm(
+        `A lista abriu numa aba nova com ${total} pedido(s).\n\n` +
+          "Imprima as folhas e confira se saíram na impressora.\n\n" +
+          "OK = já saíram, pode tirar da lista.\n" +
+          "Cancelar = deu algo errado, mantenha os pedidos na lista pra imprimir de novo."
+      );
+
+      if (!confirmou) {
+        alert("Nada foi marcado — os pedidos continuam na lista da portaria.");
+        return;
+      }
+
+      const confirmacao = await confirmPortariaPrint(result.pedidos);
+      alert(confirmacao?.message || `${total} pedido(s) marcados como impressos.`);
+      await loadOrders();
     } catch (e: any) {
       alert(e?.message || "Erro ao imprimir a lista da portaria.");
     } finally {

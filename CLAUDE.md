@@ -870,13 +870,62 @@ antes**. Detalhes que valem a pena não desfazer:
 > existir, e o Winiston voltou a esse fluxo. Ver "Duas vias" e "O disparo
 > automático" logo abaixo. O resto desta seção (corte das 13:40, quais pedidos
 > entram, idempotência) **continua valendo**: é a mesma seleção de pedidos, só
-> muda quem manda pro papel.
+> muda quem manda pro papel. Desde 26/08 o botão manual só tira o pedido da
+> lista depois que o faturamento confirma na tela que a folha saiu — ver "O
+> botão marca como impresso SÓ depois da confirmação".
 
 A câmara fria só separa pedido de funcionário até as 13:40. Antes disso era só
 um aviso na tela do Checkout (`isAfterSeparationCutoff`) — o pedido das 15h
 entrava no CIGAM e era efetivado igual ao das 9h, sem nenhum rastro pra quem
 separa. Hoje `automation/print/portariaList.ts` monta uma folha por pedido pago
 e ainda não impresso — folhas separadas, porque a câmara fria grampeia cada uma.
+
+### O botão marca como impresso SÓ depois da confirmação (26/08/2026)
+
+Imprimir a lista são **dois passos**, e essa separação existe por um incidente
+real, não por preciosismo.
+
+Como era: `gerarPdfPortaria` carimbava `printed_at` na leva inteira no momento
+de GERAR o PDF, antes de qualquer papel sair. Como o fluxo manual só abre o PDF
+numa aba pro Ctrl+P, não havia nada confirmando impressão física — fechar a aba
+sem imprimir apagava a leva da lista **para sempre**.
+
+Aconteceu em 26/08/2026, com o faturamento na linha: às 17:04:40 UTC o JOSIAS
+clicou no botão, os três pedidos pendentes (`GM-20260825-9590`,
+`GM-20260825-3235`, `GM-20260826-5795`) foram carimbados de uma vez, o papel
+não saiu, e os cinco cliques seguintes (17:05:10 a 17:05:55, tudo em
+`admin_operation_logs`) responderam **"Nenhum pedido pendente pra imprimir"**
+com os pedidos ali na tela, visíveis. Foi assim que o buraco apareceu: não como
+erro, como uma lista teimosamente vazia.
+
+Como é agora:
+
+| passo | rota | o que faz |
+|---|---|---|
+| 1. gerar | `POST /print-portaria-now` | monta o PDF, devolve os ids da leva no header `X-Portaria-Pedidos`. **Não marca nada.** |
+| 2. confirmar | `POST /print-portaria-confirm` | recebe os ids, marca `printed_at` só em quem ainda estava nulo |
+
+Entre os dois, a tela (`handlePrintPortaria`, `AdminOrders.tsx`) pergunta se as
+folhas saíram. **Cancelar é seguro e é a saída certa quando algo deu errado:**
+os pedidos continuam na lista.
+
+O jeito de falhar virou o oposto do que era, e é o que a gente quer: uma folha
+repetida é papel, um pedido invisível é mercadoria que ninguém separa. A trava
+contra o papel repetido é o `.is("printed_at", null)` do
+`marcarPortariaImpressa` — confirmar duas vezes não reescreve o timestamp de
+quem já saiu.
+
+O caminho da impressora automática (`printPortariaList`) **nunca teve esse
+problema** e não mudou: lá o `printOrderSheet` só resolve depois de a impressora
+confirmar o job, então marcar depois disso já era honesto.
+
+Coberto por `automation/print/portariaList.test.ts` ("gerarPdfPortaria NÃO marca
+printed_at" e "marcarPortariaImpressa: o segundo passo").
+
+Para desfazer um carimbo indevido de antes desta correção, o modelo está em
+`scripts/2026-08-26-devolve-pedidos-carimbados-sem-imprimir.sql` — mas **não
+devolva pedido já `entregue`**: folha de separação de pedido entregue é papel
+jogado fora.
 
 ### Duas vias: RH e portaria (24/08/2026)
 

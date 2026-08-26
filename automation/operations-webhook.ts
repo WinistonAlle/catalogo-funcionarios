@@ -8,7 +8,12 @@ import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
 import { processPendingOrders } from "./cigam/process-pending-orders";
 import { syncEstoque } from "./cigam/sync-estoque";
-import { gerarPdfPortaria, gerarPdfPedidoUnico, printPortariaList } from "./print/portariaList";
+import {
+  gerarPdfPortaria,
+  gerarPdfPedidoUnico,
+  marcarPortariaImpressa,
+  printPortariaList,
+} from "./print/portariaList";
 import { CigamClient } from "./cigam/client";
 import {
   filtrarPayloadAviso,
@@ -1231,8 +1236,8 @@ app.post("/print-portaria-now", async (req, res) => {
 
       await updateOperationLog(supabase, runningLog?.id, {
         status: "success",
-        message: `PDF gerado com ${pedidos.length} pedido(s).`,
-        metadata: { total: pedidos.length, pedidos },
+        message: `PDF gerado com ${pedidos.length} pedido(s) — aguardando confirmação de impressão.`,
+        metadata: { total: pedidos.length, pedidos, marcados: false },
       }).catch(() => null);
 
       if (pedidos.length === 0) {
@@ -1244,6 +1249,11 @@ app.post("/print-portaria-now", async (req, res) => {
         "Content-Disposition",
         `attachment; filename="lista-portaria-${new Date().toISOString().slice(0, 10)}.pdf"`
       );
+      // Os ids da leva viajam no header porque o corpo é o PDF. A tela
+      // devolve essa mesma lista em /print-portaria-confirm depois que o
+      // faturamento diz que as folhas saíram — ver gerarPdfPortaria.
+      res.setHeader("X-Portaria-Pedidos", pedidos.map((p) => p.orderId).join(","));
+      res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Portaria-Pedidos");
       return res.status(200).send(pdf);
     } catch (err: any) {
       await updateOperationLog(supabase, runningLog?.id, {
@@ -1258,6 +1268,61 @@ app.post("/print-portaria-now", async (req, res) => {
     }
   } catch (err: any) {
     portariaPrintRunning = false;
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
+/**
+ * Segundo passo do botão da portaria: o faturamento confirma que as folhas
+ * saíram no papel e SÓ ENTÃO os pedidos somem da lista.
+ *
+ * Gerar o PDF não marca mais nada (ver `gerarPdfPortaria`), então um PDF que
+ * não vira papel deixa os pedidos exatamente onde estavam — prontos pra
+ * próxima tentativa. O preço de não confirmar é uma folha repetida; o preço de
+ * marcar cedo demais era um pedido invisível.
+ */
+app.post("/print-portaria-confirm", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) {
+      return res.status(auth.status).json({ ok: false, message: auth.error });
+    }
+
+    const orderIds = Array.isArray(req.body?.orderIds) ? req.body.orderIds.map(String) : [];
+    if (orderIds.length === 0) {
+      return res.status(400).json({ ok: false, message: "orderIds é obrigatório." });
+    }
+
+    try {
+      const { marcados } = await marcarPortariaImpressa(supabase, orderIds);
+
+      await insertOperationLog(supabase, {
+        action: "print_portaria",
+        status: "success",
+        actor: auth.actor,
+        message: `Impressão confirmada: ${marcados.length} de ${orderIds.length} pedido(s) marcados como impressos.`,
+        metadata: { pedidos: orderIds, marcados, confirmado: true },
+      }).catch(() => null);
+
+      return res.status(200).json({
+        ok: true,
+        marcados: marcados.length,
+        message: `${marcados.length} pedido(s) marcados como impressos.`,
+      });
+    } catch (err: any) {
+      await insertOperationLog(supabase, {
+        action: "print_portaria",
+        status: "failed",
+        actor: auth.actor,
+        message: "Falha ao confirmar a impressão da lista da portaria.",
+        metadata: { pedidos: orderIds, error: err?.message ?? String(err) },
+      }).catch(() => null);
+
+      return res
+        .status(500)
+        .json({ ok: false, message: err?.message || "Falha ao confirmar a impressão." });
+    }
+  } catch (err: any) {
     return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
   }
 });

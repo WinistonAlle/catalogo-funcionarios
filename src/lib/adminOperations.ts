@@ -131,6 +131,12 @@ export type PrintPortariaResult = {
   message: string;
   /** true quando saiu um PDF de verdade (teve pedido pendente) e o download já disparou. */
   baixou: boolean;
+  /**
+   * Ids dos pedidos que entraram nesta leva. Eles ainda NÃO estão marcados
+   * como impressos — quem marca é `confirmPortariaPrint`, depois que alguém
+   * confere que as folhas saíram. Vazio quando não teve leva.
+   */
+  pedidos: string[];
 };
 
 /**
@@ -145,6 +151,11 @@ export type PrintPortariaResult = {
  * `await` do fetch) e passado pra cá — abrir a aba só depois da resposta
  * chegar cai no bloqueio de pop-up da maioria dos navegadores, porque deixa
  * de contar como reação direta a um clique.
+ *
+ * ⚠️ Gerar o PDF **não** tira os pedidos da lista. Quem faz isso é
+ * `confirmPortariaPrint`, com os ids devolvidos aqui em `pedidos` — ver o
+ * comentário de `gerarPdfPortaria` (automation/print/portariaList.ts) pra
+ * história de por que os dois passos são separados.
  */
 export async function printPortariaNow(
   targetWindow?: Window | null
@@ -164,7 +175,15 @@ export async function printPortariaNow(
       nomeDoArquivo(response, `lista-portaria-${new Date().toISOString().slice(0, 10)}.pdf`),
       targetWindow
     );
-    return { message: "Lista aberta numa aba nova — use o botão de imprimir do navegador.", baixou: true };
+    const pedidos = (response.headers.get("X-Portaria-Pedidos") || "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean);
+    return {
+      message: "Lista aberta numa aba nova — use o botão de imprimir do navegador.",
+      baixou: true,
+      pedidos,
+    };
   }
 
   const payload = await response.json().catch(() => ({}));
@@ -174,7 +193,27 @@ export async function printPortariaNow(
   }
 
   targetWindow?.close();
-  return { message: payload?.message || "Nenhum pedido pendente pra imprimir.", baixou: false };
+  return {
+    message: payload?.message || "Nenhum pedido pendente pra imprimir.",
+    baixou: false,
+    pedidos: [],
+  };
+}
+
+/**
+ * Confirma que as folhas da leva saíram no papel — só aqui os pedidos ganham
+ * `printed_at` e somem da lista da portaria. Chamado depois de o faturamento
+ * olhar a impressora, nunca automaticamente.
+ */
+export async function confirmPortariaPrint(orderIds: string[]) {
+  return requestWithAuth<{ ok: boolean; marcados: number; message?: string }>(
+    ["/automation/print-portaria-confirm"],
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orderIds }),
+    }
+  );
 }
 
 /**

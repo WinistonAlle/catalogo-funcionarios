@@ -1,6 +1,6 @@
 // automation/print/portariaList.test.ts
 import { describe, expect, it, vi } from "vitest";
-import { gerarPdfPortaria } from "./portariaList";
+import { gerarPdfPortaria, marcarPortariaImpressa } from "./portariaList";
 
 /**
  * O CORTE DO LADO DA IMPRESSÃO — a metade que não tinha teste.
@@ -111,5 +111,107 @@ describe("gerarPdfPortaria: qual leva o pedido cai", () => {
     await gerarPdfPortaria({ supabase, now: new Date("2026-08-25T15:10:00-03:00") });
 
     expect(chamadas.is).toEqual(["printed_at", null, "cancelled_at", null]);
+  });
+});
+
+
+/**
+ * OS DOIS PASSOS — o bug de 26/08/2026.
+ *
+ * Gerar o PDF marcava a leva inteira como impressa antes de qualquer papel
+ * sair. Quem fechasse a aba sem dar Ctrl+P perdia os pedidos: eles somiam da
+ * lista pra sempre e o botão respondia "nenhum pedido pendente pra imprimir"
+ * com os pedidos ali na tela. Aconteceu em produção — três pedidos carimbados
+ * de uma vez, seguidos de cinco cliques devolvendo zero.
+ *
+ * A garantia que estes testes seguram: gerar NÃO marca, e marcar só acontece
+ * por confirmação explícita.
+ */
+function pedidoDeMentira(id: string, numero: string) {
+  return {
+    id,
+    order_number: numero,
+    employee_name: "FULANO DE TAL",
+    erp_external_id: "015550",
+    order_items: [
+      {
+        product_name: "Pão de Queijo Premium 1kg",
+        quantity: 2,
+        unit_price: 14.85,
+        products: { cigam_code: "002001000001", cigam_unit: "KG", weight: 1 },
+      },
+    ],
+  };
+}
+
+/** Supabase de mentira para o UPDATE de confirmação: `.in().is().select()`. */
+function fakeSupabaseUpdate(linhasAfetadas: { id: string }[]) {
+  const chamadas: Record<string, unknown[]> = {};
+  const query: Record<string, unknown> = {};
+
+  query.update = (...args: unknown[]) => {
+    chamadas.update = args;
+    return query;
+  };
+  query.in = (...args: unknown[]) => {
+    chamadas.in = args;
+    return query;
+  };
+  query.is = (...args: unknown[]) => {
+    chamadas.is = args;
+    return query;
+  };
+  query.select = (...args: unknown[]) => {
+    chamadas.select = args;
+    return Promise.resolve({ data: linhasAfetadas, error: null });
+  };
+
+  return { supabase: { from: () => query } as never, chamadas };
+}
+
+describe("gerarPdfPortaria NÃO marca printed_at", () => {
+  it("gera o PDF da leva sem carimbar nada — quem carimba é a confirmação", async () => {
+    const { supabase, chamadas } = fakeSupabase([
+      pedidoDeMentira("id-1", "GM-20260825-3235"),
+      pedidoDeMentira("id-2", "GM-20260826-5795"),
+    ]);
+
+    const r = await gerarPdfPortaria({
+      supabase,
+      now: new Date("2026-08-26T15:10:00-03:00"),
+    });
+
+    expect(r.pedidos.map((p) => p.orderNumber)).toEqual([
+      "GM-20260825-3235",
+      "GM-20260826-5795",
+    ]);
+    expect(r.pdf.length).toBeGreaterThan(0);
+    // O ponto do teste: nenhum UPDATE saiu na geração.
+    expect(chamadas.update).toBeUndefined();
+  });
+});
+
+describe("marcarPortariaImpressa: o segundo passo", () => {
+  it("marca só os pedidos que ainda não tinham printed_at", async () => {
+    // O banco devolve 1 linha: o outro id já estava impresso e o `.is` filtrou.
+    const { supabase, chamadas } = fakeSupabaseUpdate([{ id: "id-1" }]);
+
+    const r = await marcarPortariaImpressa(supabase, ["id-1", "id-2"]);
+
+    expect(r.marcados).toEqual(["id-1"]);
+    expect(chamadas.in).toEqual(["id", ["id-1", "id-2"]]);
+    // A trava contra reescrever o timestamp de quem já saiu.
+    expect(chamadas.is).toEqual(["printed_at", null]);
+  });
+
+  it("ignora id repetido e vazio, e não vai ao banco com lista vazia", async () => {
+    const repetido = fakeSupabaseUpdate([{ id: "id-1" }]);
+    await marcarPortariaImpressa(repetido.supabase, ["id-1", "id-1", "  "]);
+    expect(repetido.chamadas.in).toEqual(["id", ["id-1"]]);
+
+    const vazio = fakeSupabaseUpdate([]);
+    const r = await marcarPortariaImpressa(vazio.supabase, []);
+    expect(r.marcados).toEqual([]);
+    expect(vazio.chamadas.update).toBeUndefined();
   });
 });

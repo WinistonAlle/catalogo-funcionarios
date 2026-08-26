@@ -169,17 +169,25 @@ export async function gerarPdfPedidoUnico(params: {
 }
 
 /**
- * Gera UM PDF com todos os pedidos pendentes (uma folha por pedido) e marca
- * printed_at em todos — pro botão manual "Imprimir pedidos da portaria"
- * (AdminOrders/RhHome). Diferente do disparo automático (que só marca
- * printed_at depois da impressora confirmar o job), aqui não tem como
- * confirmar impressão física: o arquivo é baixado e impresso como
- * qualquer documento, sem IP de impressora nenhum envolvido. printed_at
- * marca o MOMENTO EM QUE O ARQUIVO FOI GERADO — mesmo princípio de quando
- * a portaria recebia o papel em mãos antes de existir disparo automático.
+ * Gera UM PDF com todos os pedidos pendentes (uma folha por pedido) — pro
+ * botão manual "Imprimir pedidos da portaria" (AdminOrders/RhHome).
  *
- * `pedidos: []` quando não tem nada pendente — devolve PDF `null` nesse
- * caso (nada pra gerar).
+ * **NÃO marca `printed_at`.** Quem marca é `marcarPortariaImpressa`, chamado
+ * depois que o faturamento confirma na tela que as folhas saíram de verdade.
+ *
+ * Por que os dois passos (26/08/2026): antes, gerar o PDF já carimbava a leva
+ * inteira como impressa. Quando o arquivo não virava papel — aba fechada sem
+ * Ctrl+P, pop-up bloqueado, impressora sem papel — os pedidos sumiam da lista
+ * PARA SEMPRE e o botão passava a responder "nenhum pedido pendente pra
+ * imprimir" com os pedidos ali na tela, visíveis. Foi exatamente isso na leva
+ * de 26/08 (GM-20260825-9590, GM-20260825-3235, GM-20260826-5795): carimbados
+ * às 17:04 UTC, seguidos de cinco cliques devolvendo zero pedido.
+ *
+ * O jeito de falhar agora é o oposto, e é o certo: sem confirmação o pedido
+ * CONTINUA na lista. Uma folha a mais é papel; um pedido que some é
+ * mercadoria que ninguém separa.
+ *
+ * `pedidos: []` quando não tem nada pendente — PDF vazio nesse caso.
  */
 export async function gerarPdfPortaria(params: {
   supabase: SupabaseClient;
@@ -206,22 +214,42 @@ export async function gerarPdfPortaria(params: {
     controleDeRetirada: true,
   });
 
-  const ids = pedidos.map((p) => p.id);
-  const { error: updateError } = await supabase
-    .from("orders")
-    .update({ printed_at: new Date().toISOString() })
-    .in("id", ids);
-
-  if (updateError) {
-    throw new Error(
-      `PDF gerado, mas falhou ao marcar printed_at em ${ids.length} pedido(s) — rodar de novo reimprimiria os mesmos: ${updateError.message}`
-    );
-  }
-
   return {
     pdf,
     pedidos: pedidos.map((p) => ({ orderId: p.id, orderNumber: p.order_number })),
   };
+}
+
+/**
+ * Marca `printed_at` na leva que o faturamento confirmou ter saído no papel —
+ * o segundo passo de `gerarPdfPortaria` (ver o porquê lá em cima).
+ *
+ * Só mexe em quem ainda está com `printed_at` nulo: confirmar duas vezes, ou
+ * confirmar uma leva que o disparo automático já carimbou no meio do caminho,
+ * não reescreve o timestamp original. Devolve quantos pedidos de fato mudaram,
+ * que é o número honesto pra mostrar na tela e pro log da operação.
+ */
+export async function marcarPortariaImpressa(
+  supabase: SupabaseClient,
+  orderIds: string[]
+): Promise<{ marcados: string[] }> {
+  const ids = Array.from(
+    new Set((orderIds ?? []).filter((id) => typeof id === "string" && id.trim() !== ""))
+  );
+  if (ids.length === 0) return { marcados: [] };
+
+  const { data, error } = await supabase
+    .from("orders")
+    .update({ printed_at: new Date().toISOString() })
+    .in("id", ids)
+    .is("printed_at", null)
+    .select("id");
+
+  if (error) {
+    throw new Error(`Falha ao marcar os pedidos como impressos: ${error.message}`);
+  }
+
+  return { marcados: (data ?? []).map((linha: { id: string }) => linha.id) };
 }
 
 /**
