@@ -35,7 +35,8 @@ import OperationsHistory from "./pages/OperationsHistory";
 
 // ✅ NOVO: AdminOrders
 import AdminOrders from "./pages/AdminOrders";
-import IntegracaoCigam from "./pages/IntegracaoCigam"; 
+import IntegracaoCigam from "./pages/IntegracaoCigam";
+import { isSuperAdminSession } from "./lib/superAdmin"; 
 // Se o seu arquivo estiver em: src/pages/admin/AdminOrders.tsx, use:
 // import AdminOrders from "./pages/admin/AdminOrders";
 
@@ -87,6 +88,10 @@ function RequireRole({
 }) {
   const sess = getEmployeeSession();
   if (!sess) return <Navigate to="/login" replace />;
+
+  // Superadmin atravessa qualquer rota — inclusive as /rh, que o papel admin
+  // não alcança porque role guarda um valor só. Ver src/lib/superAdmin.ts.
+  if (isSuperAdminSession()) return children;
 
   if (!allow.includes(sess.role)) {
     return <Navigate to={redirectTo} replace />;
@@ -265,10 +270,11 @@ function App() {
                 }
               />
 
+              {/* Histórico operacional é só do admin — o RH não entra nem pela URL. */}
               <Route
                 path="/operacoes"
                 element={
-                  <RequireRole allow={["admin", "rh"]} redirectTo="/catalogo">
+                  <RequireRole allow={["admin"]} redirectTo="/catalogo">
                     <OperationsHistory />
                   </RequireRole>
                 }

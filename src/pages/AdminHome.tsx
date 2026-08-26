@@ -1,3 +1,4 @@
+import { isSuperAdminSession } from "@/lib/superAdmin";
 import { useState } from "react";
 import styled from "styled-components";
 import { useNavigate } from "react-router-dom";
@@ -382,6 +383,14 @@ export default function AdminHome() {
                 Ver auditoria de sincronizações, restaurações de saldo e bloqueios de operação.
               </Subtitle>
             </HistoryBox>
+
+            {/* Só o superadmin: admin comum nao passa no RequireRole de /rh. */}
+            {isSuperAdminSession() ? (
+              <Box type="button" onClick={() => navigate("/rh")}>
+                <Title>RH</Title>
+                <Subtitle>Sincronizar funcionários, restaurar saldo e relatório de gastos.</Subtitle>
+              </Box>
+            ) : null}
 
             <Box type="button" onClick={() => navigate("/catalogo")}>
               <Title>Acessar Catálogo</Title>

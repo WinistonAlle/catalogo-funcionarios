@@ -1,3 +1,4 @@
+import { isSuperAdminCpf } from "@/lib/superAdmin";
 import React, { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
@@ -193,7 +194,10 @@ const ReportsPage: React.FC = () => {
     employee?.tipo === "ADMIN";
 
   const isRH =
-    employee?.is_rh || employee?.role === "rh" || employee?.setor === "RH";
+    employee?.is_rh ||
+    employee?.role === "rh" ||
+    employee?.setor === "RH" ||
+    isSuperAdminCpf(employee?.cpf);
 
   // se não for admin nem RH, manda pro catálogo
   useEffect(() => {

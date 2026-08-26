@@ -7,7 +7,6 @@ import { toast } from "sonner";
 import { Bg } from "../../components/ui/app-surface";
 import {
   getAdminOperationsStatus,
-  printPortariaNow,
   resetAllEmployeeBalances,
   triggerEmployeeSyncNow,
 } from "@/lib/adminOperations";
@@ -75,25 +74,12 @@ const BackButton = styled.button`
 
 const Container = styled.div`
   width: 100%;
-  max-width: 860px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-template-areas:
-    "sync reset"
-    "portaria portaria"
-    "report history"
-    "catalog catalog";
-  gap: 24px;
+  gap: 16px;
 
-  @media (max-width: 900px) {
+  @media (max-width: 760px) {
     grid-template-columns: 1fr;
-    grid-template-areas:
-      "sync"
-      "reset"
-      "portaria"
-      "report"
-      "history"
-      "catalog";
   }
 `;
 
@@ -101,123 +87,68 @@ const Box = styled.button`
   position: relative;
   overflow: hidden;
   width: 100%;
-  min-height: 280px;
+  min-height: 150px;
   background: #ffffff;
-  border-radius: 32px;
-  box-shadow: 0 14px 45px rgba(0, 0, 0, 0.18);
+  border-radius: 18px;
+  border: 1px solid #e6e6e6;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  gap: 14px;
-  transition: all 0.25s ease;
+  justify-content: flex-start;
+  align-items: flex-start;
+  gap: 8px;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
   cursor: pointer;
-  border: 2px solid transparent;
-  padding: 26px;
-  text-align: center;
+  padding: 20px;
+  text-align: left;
 
-  &:hover {
-    transform: translateY(-10px) scale(1.02);
-    border-color: #b82626;
-    background: #faf7f7;
+  &:hover:not(:disabled) {
+    transform: translateY(-2px);
+    border-color: #c9c9c9;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
   }
 
   &:disabled {
-    opacity: 0.72;
+    opacity: 0.6;
     cursor: wait;
   }
-
-  @media (max-width: 640px) {
-    min-height: 240px;
-  }
 `;
 
-const SyncBox = styled(Box)`
-  grid-area: sync;
-  &::before {
-    content: "";
-    position: absolute;
-    inset: -2px;
-    border-radius: 34px;
-    background: conic-gradient(
-      from 0deg,
-      rgba(184, 38, 38, 0.1) 0deg,
-      rgba(184, 38, 38, 0.9) 70deg,
-      rgba(255, 214, 214, 0.35) 130deg,
-      rgba(184, 38, 38, 0.1) 220deg,
-      rgba(184, 38, 38, 0.8) 300deg,
-      rgba(184, 38, 38, 0.1) 360deg
-    );
-    animation: syncBorderSpin 5s linear infinite;
-    z-index: 0;
-  }
+const SyncBox = styled(Box)``;
 
-  &::after {
-    content: "";
-    position: absolute;
-    inset: 2px;
-    border-radius: 30px;
-    background: #ffffff;
-    z-index: 0;
-  }
-
-  > * {
-    position: relative;
-    z-index: 1;
-  }
-
-  @keyframes syncBorderSpin {
-    from {
-      transform: rotate(0deg);
-    }
-    to {
-      transform: rotate(360deg);
-    }
-  }
-`;
-
-const ReportBox = styled(Box)`
-  grid-area: report;
-`;
+const ReportBox = styled(Box)``;
 
 const ResetBox = styled(Box)`
-  grid-area: reset;
-  background: linear-gradient(180deg, #fff5f5 0%, #ffffff 100%);
-  border-color: rgba(184, 38, 38, 0.18);
+  border-color: rgba(184, 38, 38, 0.35);
 
   &:hover:not(:disabled) {
-    border-color: #8f1717;
-    background: linear-gradient(180deg, #ffeaea 0%, #fff7f7 100%);
+    border-color: #b82626;
+    background: #fffafa;
+  }
+
+  h2 {
+    color: #b82626;
   }
 `;
 
-const PortariaBox = styled(Box)`
-  grid-area: portaria;
-`;
+const CatalogBox = styled(Box)``;
 
-const CatalogBox = styled(Box)`
-  grid-area: catalog;
-`;
-
-const HistoryBox = styled(Box)`
-  grid-area: history;
-`;
 
 const Title = styled.h2`
-  color: #b82626;
-  font-size: 1.8rem;
+  color: #1a1a1a;
+  font-size: 1.05rem;
   font-weight: 800;
   margin: 0;
-  text-align: center;
+  text-align: left;
 `;
 
 const Subtitle = styled.p`
-  color: #555;
-  font-size: 1.1rem;
-  text-align: center;
-  width: 85%;
+  color: #666;
+  font-size: 0.88rem;
+  text-align: left;
+  width: 100%;
   margin: 0;
-  line-height: 1.4;
+  line-height: 1.45;
 `;
 
 function getSaoPauloDateParts(date = new Date()) {
@@ -283,7 +214,6 @@ function getBalanceResetWindow(date = new Date()) {
 const RhHome: React.FC = () => {
   const navigate = useNavigate();
   const [syncingEmployees, setSyncingEmployees] = useState(false);
-  const [printingPortaria, setPrintingPortaria] = useState(false);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const [resettingBalances, setResettingBalances] = useState(false);
   const statusQuery = useQuery({
@@ -316,21 +246,6 @@ const RhHome: React.FC = () => {
       toast.error(err?.message || "Erro ao sincronizar funcionários.");
     } finally {
       setSyncingEmployees(false);
-    }
-  };
-
-  const handlePrintPortaria = async () => {
-    setPrintingPortaria(true);
-
-    try {
-      const result = await printPortariaNow();
-      toast.success(result.message);
-      await statusQuery.refetch();
-    } catch (err: any) {
-      console.error("Erro ao imprimir a lista da portaria:", err);
-      toast.error(err?.message || "Erro ao imprimir a lista da portaria.");
-    } finally {
-      setPrintingPortaria(false);
     }
   };
 
@@ -380,7 +295,6 @@ const RhHome: React.FC = () => {
           <OperationsSummaryPanel
             loading={statusQuery.isLoading}
             status={statusQuery.data}
-            onHistoryClick={() => navigate("/operacoes")}
           />
 
           <Container>
@@ -406,23 +320,12 @@ const RhHome: React.FC = () => {
               </Subtitle>
             </ResetBox>
 
-            <PortariaBox onClick={handlePrintPortaria} disabled={printingPortaria}>
-              <Title>{printingPortaria ? "Gerando PDF..." : "Imprimir Pedidos da Portaria"}</Title>
-              <Subtitle>
-                Baixa um PDF com os pedidos ainda não impressos — imprima o arquivo e desça o papel na mão,
-                como sempre foi feito. Não conflita com o disparo automático das 13:40.
-              </Subtitle>
-            </PortariaBox>
 
             <ReportBox onClick={() => navigate("/rh/relatorio-gastos")}>
               <Title>Relatório de Gastos</Title>
               <Subtitle>Quanto cada funcionário gastou do saldo</Subtitle>
             </ReportBox>
 
-            <HistoryBox onClick={() => navigate("/operacoes")}>
-              <Title>Histórico Operacional</Title>
-              <Subtitle>Auditoria de sincronizações, restaurações e bloqueios de operação.</Subtitle>
-            </HistoryBox>
 
             <CatalogBox onClick={() => navigate("/catalogo")}>
               <Title>Acessar Catálogo</Title>

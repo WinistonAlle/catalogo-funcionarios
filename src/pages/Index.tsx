@@ -1,4 +1,5 @@
 // src/pages/Index.tsx
+import { isSuperAdminCpf } from "@/lib/superAdmin";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
@@ -544,7 +545,10 @@ const Index: React.FC = () => {
     employee?.tipo === "ADMIN";
 
   const isRH =
-    employee?.is_rh || employee?.role === "rh" || employee?.setor === "RH";
+    employee?.is_rh ||
+    employee?.role === "rh" ||
+    employee?.setor === "RH" ||
+    isSuperAdminCpf(employee?.cpf);
 
   const debouncedSearchTerm = useDebounce(searchTerm, 500);
 

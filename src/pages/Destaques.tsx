@@ -1,3 +1,4 @@
+import { isSuperAdminCpf } from "@/lib/superAdmin";
 import React, { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
@@ -317,7 +318,10 @@ const Destaques: React.FC = () => {
     employee?.role === "admin" ||
     employee?.tipo === "ADMIN";
   const isRH =
-    employee?.is_rh || employee?.role === "rh" || employee?.setor === "RH";
+    employee?.is_rh ||
+    employee?.role === "rh" ||
+    employee?.setor === "RH" ||
+    isSuperAdminCpf(employee?.cpf);
 
   const displayName = employee?.full_name ?? employee?.name ?? "Funcionário";
 

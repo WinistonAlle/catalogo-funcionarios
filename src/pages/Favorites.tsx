@@ -1,3 +1,4 @@
+import { isSuperAdminCpf } from "@/lib/superAdmin";
 import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
@@ -172,7 +173,10 @@ const FavoritesPage: React.FC = () => {
     employee?.tipo === "ADMIN";
 
   const isRH =
-    employee?.is_rh || employee?.role === "rh" || employee?.setor === "RH";
+    employee?.is_rh ||
+    employee?.role === "rh" ||
+    employee?.setor === "RH" ||
+    isSuperAdminCpf(employee?.cpf);
 
   // ✅ login guard
   useEffect(() => {

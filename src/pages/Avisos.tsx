@@ -1,4 +1,5 @@
 // src/pages/Avisos.tsx
+import { isSuperAdminCpf } from "@/lib/superAdmin";
 import React, { useEffect, useState, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
@@ -277,7 +278,10 @@ const Avisos: React.FC = () => {
     employee?.tipo === "ADMIN";
 
   const isRH =
-    employee?.is_rh || employee?.role === "rh" || employee?.setor === "RH";
+    employee?.is_rh ||
+    employee?.role === "rh" ||
+    employee?.setor === "RH" ||
+    isSuperAdminCpf(employee?.cpf);
 
   const canManage = isAdmin || isRH;
 

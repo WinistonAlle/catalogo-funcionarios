@@ -21,7 +21,8 @@ function getStatusTone(log: AdminOperationLog | null | undefined) {
 type Props = {
   loading?: boolean;
   status: AdminOperationsStatusResponse | null | undefined;
-  onHistoryClick: () => void;
+  /** Sem isto o bloco nao oferece o historico (o RH nao ve o operacional). */
+  onHistoryClick?: () => void;
 };
 
 export default function OperationsSummaryPanel(props: Props) {
@@ -109,9 +110,11 @@ export default function OperationsSummaryPanel(props: Props) {
               ? `${status.recent?.length ?? 0} eventos recentes disponíveis.`
               : "Crie a tabela admin_operation_logs para histórico persistente."}
           </div>
-          <Button className="mt-3" variant="outline" onClick={onHistoryClick}>
-            Ver histórico operacional
-          </Button>
+          {onHistoryClick ? (
+            <Button className="mt-3" variant="outline" onClick={onHistoryClick}>
+              Ver histórico operacional
+            </Button>
+          ) : null}
         </div>
       </div>
     </div>
