@@ -114,6 +114,32 @@ function normalizeRole(roleRaw, context) {
   return "employee";
 }
 
+/**
+ * Deixa rastro da rodada em admin_operation_logs.
+ *
+ * Por que existe (26/08/2026): as rodadas do cron não apareciam em lugar
+ * nenhum. O único sinal era ~/sheets.log, que ninguém lê — e foi exatamente
+ * assim que o cron quebrado (npm de um node que não existe mais) passou uns 4
+ * meses despercebido, acumulando 9919 falhas. Sem rastro no banco, nem a tela
+ * de operações nem a checagem de saúde do webhook conseguem dizer "faz 26h que
+ * a planilha não sincroniza".
+ *
+ * Nunca derruba o sync: log é rastro, não a operação.
+ */
+async function registrarLog(status, message, metadata) {
+  try {
+    const { error } = await supabase.from("admin_operation_logs").insert({
+      action: "sync_employees",
+      status,
+      message,
+      metadata: { origem: process.env.SYNC_ORIGEM || "script", ...metadata },
+    });
+    if (error) console.error("🟡 Não deu para registrar o log da sincronização:", error.message);
+  } catch (err) {
+    console.error("🟡 Não deu para registrar o log da sincronização:", err?.message ?? err);
+  }
+}
+
 function failSync(message, error) {
   if (error) {
     console.error(message, error);
@@ -147,6 +173,18 @@ function parseMoneyToCentsBR(value) {
 // Você pode FORÇAR o modo mensal para teste com: SYNC_CREDITO_MENSAL=1
 function shouldSyncMonthlyCredit() {
   if (process.env.SYNC_CREDITO_MENSAL === "1") return true;
+
+  // Recusa explícita: a rodada de CADASTRO, que roda de 20 em 20 minutos, passa
+  // por aqui com SYNC_CREDITO_MENSAL=0.
+  //
+  // Por que isso existe (26/08/2026): a rodada mensal REESCREVE
+  // credito_mensal_cents com o valor da planilha, e credito_mensal_cents é o
+  // saldo corrente, não um teto. Rodar isso de 20 em 20 minutos no dia 27
+  // devolveria o saldo cheio a cada 20 minutos — quem pedisse R$ 300 às 9h
+  // estaria com R$ 300 de novo às 9h20, o dia inteiro. Comida de graça em
+  // laço. A recarga tem que acontecer UMA vez no dia 27 (a rodada diária das
+  // 03:00 no crontab), e as rodadas frequentes só cuidam de cadastro.
+  if (process.env.SYNC_CREDITO_MENSAL === "0") return false;
 
   // timezone Brasil/São Paulo
   const now = new Date();
@@ -395,9 +433,29 @@ async function syncEmployees() {
       // pra quem chamou este script (webhook de /reset-employee-balances,
       // ou o próprio cron) enxergar isto como falha, não como sucesso.
       process.exitCode = 2;
+      await registrarLog(
+        "failed",
+        "Cadastro sincronizado, mas a recarga mensal de crédito foi ABORTADA pela trava: " +
+          "a soma de credito_mensal na planilha deu R$ 0,00.",
+        { total: sheetEmployees.length, creditoSincronizado: false, travaDeCredito: true }
+      );
+    } else {
+      await registrarLog(
+        "success",
+        `Sincronização concluída: ${sheetEmployees.length} na planilha, ` +
+          `${cpfsToDelete.length} removido(s), crédito mensal ${syncCredit ? "RECARREGADO" : "não tocado"}.`,
+        {
+          total: sheetEmployees.length,
+          removidos: cpfsToDelete.length,
+          creditoSincronizado: syncCredit,
+        }
+      );
     }
   } catch (err) {
     console.error("💥 Erro geral na sincronização:", err);
+    await registrarLog("failed", `Sincronização falhou: ${err?.message ?? err}`, {
+      creditoSincronizado: false,
+    });
     process.exit(1);
   }
 }

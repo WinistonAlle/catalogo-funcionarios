@@ -1121,6 +1121,45 @@ app.get("/estoque", async (req, res) => {
 const STOCK_SYNC_INTERVAL_MS = Number(process.env.STOCK_SYNC_INTERVAL_MS ?? 0);
 let stockSyncRunning = false;
 
+/**
+ * Produto visível sem `cigam_code` é uma bomba-relógio: `buildItens`
+ * (automation/cigam/process-pending-orders.ts) lança "Produto sem código CIGAM"
+ * no PRIMEIRO item sem código e derruba o pedido INTEIRO — com o saldo do
+ * funcionário já debitado no checkout, porque o débito acontece antes de o
+ * pedido chegar no ERP. Não é hipótese: em 13/08/2026 o Pão de Queijo Gourmet
+ * 1kg estava comprável assim.
+ *
+ * A tela não protege: `isOutOfStock` (src/lib/stock.ts) é fail-open, então
+ * produto com saldo desconhecido aparece como disponível.
+ *
+ * Até 26/08 a defesa era um SQL no CLAUDE.md que alguém tinha que lembrar de
+ * rodar depois de cada carga de produto. Agora a checagem anda junto do sync de
+ * estoque, que já roda de 30 em 30 min. Só GRITA no log — esconder produto do
+ * catálogo é decisão de quem vende, não do robô.
+ */
+async function checarProdutosSemCodigoCigam() {
+  const { data, error } = await supabase
+    .from("products")
+    .select("name, cigam_code, is_hidden")
+    .is("cigam_code", null)
+    .or("is_hidden.is.null,is_hidden.eq.false");
+
+  if (error) {
+    console.error("🚨 Não deu para checar produtos sem código CIGAM:", error.message);
+    return;
+  }
+
+  const semCodigo = data ?? [];
+  if (semCodigo.length === 0) return;
+
+  console.error(
+    `🚨 ATENÇÃO: ${semCodigo.length} produto(s) VISÍVEIS no catálogo sem código CIGAM. ` +
+      "Qualquer pedido que incluir um deles vai falhar INTEIRO com o saldo do funcionário " +
+      "já debitado. Esconda no admin (is_hidden = true) ou cadastre o código:"
+  );
+  for (const p of semCodigo) console.error(`   • ${p.name}`);
+}
+
 async function runStockSync() {
   if (stockSyncRunning) return;
   stockSyncRunning = true;
@@ -1131,6 +1170,7 @@ async function runStockSync() {
         (r.preservados > 0 ? `, ${r.preservados} c/ saldo antigo preservado` : "") +
         ")."
     );
+    await checarProdutosSemCodigoCigam();
   } catch (err: any) {
     console.error("📦 Estoque sync falhou:", err?.message ?? err);
   } finally {
@@ -1382,6 +1422,150 @@ app.post("/print-order-now/:orderId", async (req, res) => {
   }
 });
 
+/**
+ * CHECAGEM DE SAÚDE — o vigia que faltava.
+ *
+ * Por que existe (26/08/2026): o cron que sincroniza a planilha morreu num
+ * upgrade de node em ~abril e ninguém percebeu por quatro meses. Foram 9919
+ * falhas empilhadas num arquivo de log que ninguém abre. O sistema inteiro é
+ * assim: quando uma peça para, ela para em SILÊNCIO — nada quebra na cara do
+ * usuário, o pedido só deixa de andar.
+ *
+ * Isto não é monitoramento de verdade (não avisa ninguém fora do servidor). É o
+ * mínimo honesto: um resumo em intervalo fixo no log do pm2, gritando em
+ * `console.error` só quando tem coisa errada, pra que `pm2 logs webhook` responda
+ * "está tudo de pé?" sem precisar de quatro consultas SQL na mão.
+ */
+const HEALTH_CHECK_INTERVAL_MS = Number(process.env.HEALTH_CHECK_INTERVAL_MS ?? 60 * 60 * 1000);
+
+async function runHealthCheck() {
+  const alertas: string[] = [];
+  const agora = new Date();
+
+  // 1. A planilha ainda sincroniza? Foi esta peça que morreu calada.
+  try {
+    const { data } = await supabase
+      .from("admin_operation_logs")
+      .select("created_at, metadata")
+      .eq("action", "sync_employees")
+      .eq("status", "success")
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    const ultimo = data?.[0]?.created_at ? new Date(data[0].created_at) : null;
+    if (!ultimo) {
+      alertas.push("Nunca houve um sync da planilha bem-sucedido registrado.");
+    } else {
+      const horas = (agora.getTime() - ultimo.getTime()) / 3_600_000;
+      // O cron roda de 20 em 20 min; 26h de silêncio é peça parada, não folga.
+      if (horas > 26) {
+        alertas.push(
+          `Sync da planilha parado há ${Math.floor(horas)}h (último em ${ultimo.toISOString()}). ` +
+            "Confira o crontab do xulio e o ~/sheets.log."
+        );
+      }
+    }
+  } catch (err: any) {
+    alertas.push(`Não deu para checar o sync da planilha: ${err?.message ?? err}`);
+  }
+
+  // 2. Fila do CIGAM travada — pedido pago que não vira recibo é dinheiro
+  //    debitado sem contrapartida no ERP.
+  try {
+    const limite = new Date(agora.getTime() - 30 * 60 * 1000).toISOString();
+    const { data } = await supabase
+      .from("orders")
+      .select("order_number, erp_status")
+      .in("erp_status", ["PENDING", "ERROR"])
+      .lt("created_at", limite)
+      .is("cancelled_at", null)
+      .limit(20);
+
+    if (data && data.length > 0) {
+      alertas.push(
+        `${data.length} pedido(s) parados na fila do CIGAM há mais de 30 min: ` +
+          data.map((o: any) => `${o.order_number} (${o.erp_status})`).join(", ") +
+          ". Painel em /admin/integracao."
+      );
+    }
+  } catch (err: any) {
+    alertas.push(`Não deu para checar a fila do CIGAM: ${err?.message ?? err}`);
+  }
+
+  // 3. Pedido pago esperando separação há mais de um dia. Foi o sintoma de
+  //    26/08: três pedidos parados porque ninguém imprimiu a lista.
+  try {
+    const ontem = new Date(agora.getTime() - 24 * 60 * 60 * 1000).toISOString();
+    const { data } = await supabase
+      .from("orders")
+      .select("order_number, employee_name, created_at")
+      .is("printed_at", null)
+      .is("cancelled_at", null)
+      .lt("created_at", ontem)
+      .or("wallet_debited.eq.true,pay_on_pickup_cents.gt.0,wallet_used_cents.gt.0")
+      .limit(20);
+
+    if (data && data.length > 0) {
+      alertas.push(
+        `${data.length} pedido(s) pagos há mais de 24h e ainda não impressos — ninguém puxou a ` +
+          "lista da portaria: " +
+          data.map((o: any) => `${o.order_number} (${o.employee_name})`).join(", ")
+      );
+    }
+  } catch (err: any) {
+    alertas.push(`Não deu para checar pedidos não impressos: ${err?.message ?? err}`);
+  }
+
+  // 4. Dia 27 é o único dia em que o saldo de todo mundo é recarregado. Se
+  //    passar em branco, 250 pessoas entram no ciclo novo com a sobra do
+  //    anterior — e ninguém repara até alguém reclamar que não dá pra comprar.
+  try {
+    const partes = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Sao_Paulo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      hour12: false,
+    }).formatToParts(agora);
+    const dia = Number(partes.find((p) => p.type === "day")?.value ?? "0");
+    const hora = Number(partes.find((p) => p.type === "hour")?.value ?? "0");
+
+    // A rodada mensal é às 03:00; a partir das 05:00 a ausência já é sintoma.
+    if (dia === 27 && hora >= 5) {
+      const inicioDoDia = new Date(agora.getTime() - 24 * 60 * 60 * 1000).toISOString();
+      const { data } = await supabase
+        .from("admin_operation_logs")
+        .select("created_at, metadata")
+        .eq("action", "sync_employees")
+        .eq("status", "success")
+        .gte("created_at", inicioDoDia)
+        .limit(50);
+
+      const recarregou = (data ?? []).some(
+        (linha: any) => linha?.metadata?.creditoSincronizado === true
+      );
+      if (!recarregou) {
+        alertas.push(
+          "HOJE É DIA 27 e a recarga mensal de crédito ainda NÃO rodou. Sem ela todo mundo " +
+            "começa o ciclo novo com a sobra do anterior. Rode o sync da planilha (ou o botão " +
+            "Restaurar saldo, que só abre de 27 a 2)."
+        );
+      }
+    }
+  } catch (err: any) {
+    alertas.push(`Não deu para checar a recarga mensal: ${err?.message ?? err}`);
+  }
+
+  if (alertas.length === 0) {
+    console.log("💚 Checagem de saúde: tudo de pé.");
+    return;
+  }
+
+  console.error(`🚨 Checagem de saúde encontrou ${alertas.length} problema(s):`);
+  for (const alerta of alertas) console.error(`   • ${alerta}`);
+}
+
 app.listen(PORT, () => {
   console.log(`🧩 Webhook de operações rodando em http://localhost:${PORT}`);
   if (CIGAM_AUTO_SYNC_INTERVAL_MS > 0) {
@@ -1399,6 +1583,15 @@ app.listen(PORT, () => {
     void runStockSync(); // primeira carga logo ao subir
   } else {
     console.log("📦 Estoque sync desligado (defina STOCK_SYNC_INTERVAL_MS para ligar).");
+  }
+
+  if (HEALTH_CHECK_INTERVAL_MS > 0) {
+    const minutos = Math.round(HEALTH_CHECK_INTERVAL_MS / 60000);
+    console.log(`💚 Checagem de saúde LIGADA — a cada ${minutos} min (grita só quando tem problema).`);
+    setInterval(runHealthCheck, HEALTH_CHECK_INTERVAL_MS);
+    // Uma passada logo depois de subir, pra quem reinicia o webhook já ver o
+    // estado sem esperar a primeira hora.
+    setTimeout(() => void runHealthCheck(), 60_000);
   }
 
   if (PORTARIA_PRINT_INTERVAL_MS > 0 && PORTARIA_PRINTER_HOST) {

@@ -162,6 +162,72 @@ pm2 logs webhook --lines 30 --nostream | grep -E "auto-sync|Estoque sync"
 
 Fora isso, o fluxo está fechado e rodando sozinho.
 
+## Recarga mensal de crédito — a peça que ficou 4 meses morta (26/08/2026)
+
+**`credito_mensal_cents` é o SALDO CORRENTE, não um teto.** O checkout desconta
+dele; nada o devolve sozinho. Quem reabastece é a rodada MENSAL do
+`scripts/syncEmployeesFromSheet.mjs`, que reescreve o saldo de todo mundo com o
+valor da planilha — e só faz isso **no dia 27** (`shouldSyncMonthlyCredit`). O
+botão "Restaurar saldo" do admin é o caminho manual do mesmo efeito, e só abre
+de 27 a 2.
+
+**O cron que dispara isso estava quebrado desde ~abril/2026.** O node do servidor
+subiu de `v20.11.1` para `v25.8.1` e a linha do crontab ficou apontando pro
+caminho velho: `npm: not found`, **9919 falhas** empilhadas em `~/sheets.log`,
+nenhum alarme. Os syncs que aconteceram no meio (junho, 24 e 25/08) foram todos
+**manuais pela tela**, que usa outro caminho. O botão "Restaurar saldo" rodou uma
+única vez na vida: **27/05/2026**.
+
+Corrigido em 26/08/2026. O crontab agora tem **duas rodadas**, e a separação é
+essencial:
+
+```cron
+# CADASTRO — de 20 em 20 min, NUNCA toca em saldo
+*/20 * * * * cd $APP && SYNC_CREDITO_MENSAL=0 $NODE scripts/syncEmployeesFromSheet.mjs >> ~/sheets.log 2>&1
+# MENSAL — uma vez por dia; no dia 27 (e só nele) recarrega o crédito de todos
+0 3 * * * cd $APP && $NODE scripts/syncEmployeesFromSheet.mjs >> ~/sheets.log 2>&1
+```
+
+⚠️ **A rodada mensal PRECISA acontecer uma vez por dia, nunca em laço.** Como ela
+reescreve o saldo com o valor da planilha, rodar de 20 em 20 minutos no dia 27
+devolveria o saldo cheio a cada 20 minutos: quem gastasse R$ 300 às 9h estaria
+com R$ 300 de novo às 9h20, o dia inteiro. Comida de graça em laço. Foi por isso
+que `SYNC_CREDITO_MENSAL=0` (recusa explícita) passou a existir — antes só havia
+o `=1` que força ligado.
+
+A linha antiga também chamava `npm run automation:sheet-sync`, que sobe um
+**serviço com `setInterval`** — errado pra cron, que já repete sozinha. Agora
+chama o script one-shot direto. Backup do crontab velho em
+`~/crontab.bak-20260826`; o log de falhas em `~/sheets.log.quebrado-20260826`.
+
+**O sync agora deixa rastro no banco.** `registrarLog` grava uma linha em
+`admin_operation_logs` (`action = 'sync_employees'`) ao fim de cada rodada, com
+`metadata.creditoSincronizado` dizendo se a recarga aconteceu. Sem isso não
+existia como saber que o cron estava morto sem abrir um log de 700KB.
+
+## Checagem de saúde (26/08/2026)
+
+`runHealthCheck` no webhook, a cada 60 min (`HEALTH_CHECK_INTERVAL_MS`) e uma vez
+1 min depois de subir. Loga `💚 tudo de pé` no silêncio e `🚨` com a lista quando
+acha problema. Checa quatro coisas, cada uma nascida de um buraco real:
+
+| checa | por que |
+|---|---|
+| sync da planilha parado > 26h | foi a peça que morreu calada por 4 meses |
+| pedido em `PENDING`/`ERROR` há > 30 min | saldo debitado sem contrapartida no ERP |
+| pedido pago e não impresso há > 24h | o sintoma de 26/08: ninguém puxou a lista |
+| dia 27 depois das 05:00 sem recarga | o ciclo novo começando com a sobra do velho |
+
+**Não é monitoramento de verdade** — não avisa ninguém fora do servidor. É o
+mínimo pra que `pm2 logs webhook` responda "está tudo de pé?" sem quatro
+consultas SQL na mão. Se um dia isso precisar alcançar gente, o `whatsapp-sender`
+já roda no mesmo servidor.
+
+A checagem de **produto visível sem `cigam_code`** anda junto do sync de estoque
+(`checarProdutosSemCodigoCigam`, de 30 em 30 min) em vez de ser um SQL que
+alguém precisa lembrar de rodar. Ela só grita — esconder produto do catálogo é
+decisão de quem vende.
+
 ## Painel de integração CIGAM (13/08/2026)
 
 `/admin/integracao` (card "Integração CIGAM" no `/admin`). Substitui o conserto
@@ -1243,11 +1309,13 @@ que foi confirmada ao vivo. Consultar antes de investigar do zero.
   ```
 
   Os outros 8 sem código são a linha Alho OMG, já oculta.
-- **Dois produtos com o nome errado** (não corrigido — decisão comercial):
-  `Pão Francês Integral 12 Horas 70g – Pacote 6kg` (`002006000017`) e o de
-  6 Horas (`002006000016`) dizem "Pacote 6kg" mas têm `weight = 7`. O peso 7 é
-  o **correto** (correção de 06/08 contra a tabela 005); quem está errado é o
-  nome. O funcionário lê "6kg" e paga R$ 44,80 por 7kg.
+- ~~**Dois produtos com o nome errado**~~ — **corrigido em 26/08/2026**
+  (`scripts/2026-08-26-corrige-nome-pacote-7kg.sql`). `002006000017` e
+  `002006000016` diziam "Pacote 6kg" com `weight = 7`; agora dizem "Pacote 7kg".
+  **Só o texto mudou** — `weight`, `employee_price` (R$ 6,40/kg) e `cigam_code`
+  intactos, então o preço continua R$ 44,80 e nada foi reajustado. O peso 7
+  sempre foi o certo (correção de 06/08 contra a tabela 005); quem mentia era o
+  rótulo.
 - `Gostinho Gostoso Risole de Carne Seca com Mandioca 30g – Pacote 3kg`
   (`002003000030`) tem código, mas o CIGAM nunca devolveu saldo para ele — é o
   "1 sem linha" dos logs de sync. Pode ser código que não existe no ERP.
