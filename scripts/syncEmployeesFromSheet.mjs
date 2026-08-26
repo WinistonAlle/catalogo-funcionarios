@@ -171,6 +171,9 @@ function parseMoneyToCentsBR(value) {
 
 // Decide se hoje é “rodada mensal” (dia 27) ou diária.
 // Você pode FORÇAR o modo mensal para teste com: SYNC_CREDITO_MENSAL=1
+/** O ciclo de crédito vira todo dia 27 (igual a CYCLE_START_DAY do front). */
+const CYCLE_START_DAY = 27;
+
 function shouldSyncMonthlyCredit() {
   if (process.env.SYNC_CREDITO_MENSAL === "1") return true;
 
@@ -192,6 +195,94 @@ function shouldSyncMonthlyCredit() {
     new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", day: "2-digit" }).format(now)
   );
   return daySP === 27;
+}
+
+/**
+ * Começo do ciclo corrente, em São Paulo. O ciclo vira todo dia 27 — ver
+ * CYCLE_START_DAY em src/lib/payCycle.ts (duplicado aqui porque este script é
+ * .mjs e não importa TypeScript).
+ *
+ * Devolve o instante do dia 27 mais recente: se hoje é dia 27 ou depois, é o 27
+ * deste mês; se é antes, é o 27 do mês passado.
+ */
+export function inicioDoCicloAtual(agora = new Date()) {
+  const partes = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(agora);
+  const ano = Number(partes.find((p) => p.type === "year").value);
+  const mes = Number(partes.find((p) => p.type === "month").value);
+  const dia = Number(partes.find((p) => p.type === "day").value);
+
+  let anoCiclo = ano;
+  let mesCiclo = mes;
+  if (dia < CYCLE_START_DAY) {
+    mesCiclo = mes === 1 ? 12 : mes - 1;
+    anoCiclo = mes === 1 ? ano - 1 : ano;
+  }
+
+  const mm = String(mesCiclo).padStart(2, "0");
+  // São Paulo é UTC-3 fixo desde 2019 — dá pra montar o ISO direto.
+  return new Date(`${anoCiclo}-${mm}-${CYCLE_START_DAY}T00:00:00-03:00`);
+}
+
+/**
+ * A RECARGA SÓ PODE ACONTECER UMA VEZ POR CICLO.
+ *
+ * A rodada mensal reescreve `credito_mensal_cents` com o valor da planilha, e
+ * essa coluna é o SALDO CORRENTE, não um teto. Rodar duas vezes no mesmo dia 27
+ * devolve o saldo cheio e apaga o que as pessoas já gastaram — comida de graça,
+ * sem erro nenhum aparecendo.
+ *
+ * O cron já roda uma vez só (03:00). O buraco era o botão "Sincronizar
+ * funcionários" da tela do admin: ele chama ESTE MESMO script, e no dia 27 o
+ * script decidia recarregar olhando só "hoje é dia 27?". Um admin puxando um
+ * funcionário novo da planilha às 10h do dia 27 devolvia o saldo de todo mundo.
+ * Coisa banal de fazer, consequência invisível.
+ *
+ * A régua é o log que o próprio sync grava (`registrarLog`): se já existe uma
+ * rodada com `creditoSincronizado: true` dentro do ciclo corrente, não recarrega
+ * de novo. Mesmo princípio do `hasSuccessfulRestoreForCycle` que já protege o
+ * botão "Restaurar saldo".
+ *
+ * Escape explícito: SYNC_CREDITO_MENSAL_FORCAR=1, pro caso de a recarga ter
+ * saído errada e precisar mesmo rodar de novo.
+ */
+async function jaRecarregouNesteCiclo(agora = new Date()) {
+  const inicio = inicioDoCicloAtual(agora).toISOString();
+
+  const { data, error } = await supabase
+    .from("admin_operation_logs")
+    .select("created_at, metadata")
+    .eq("action", "sync_employees")
+    .eq("status", "success")
+    .gte("created_at", inicio)
+    .limit(200);
+
+  if (error) {
+    // Sem conseguir ler o log não dá pra afirmar que NÃO recarregou. Entre
+    // recarregar duas vezes (dinheiro) e deixar de recarregar (o vigia do
+    // webhook grita no dia 27 e alguém roda na mão), o lado seguro é não mexer.
+    console.error(
+      "🛑 Não deu para conferir se a recarga já rodou neste ciclo:",
+      error.message,
+      "— por segurança, NÃO vou recarregar. Rode de novo ou use SYNC_CREDITO_MENSAL_FORCAR=1."
+    );
+    return true;
+  }
+
+  const anterior = (data || []).find((linha) => linha?.metadata?.creditoSincronizado === true);
+  if (anterior) {
+    console.log(
+      `🔒 Recarga mensal já aconteceu neste ciclo (em ${anterior.created_at}). ` +
+        "Pulando — o saldo de ninguém vai ser reescrito."
+    );
+    return true;
+  }
+
+  return false;
 }
 
 function shouldDeleteMissingEmployees() {
@@ -314,6 +405,11 @@ async function syncEmployees() {
     // - Qualquer dia: se for funcionário novo (CPF não existe ainda), insere já com crédito
     let syncCredit = shouldSyncMonthlyCredit();
     let creditGuardTripped = false;
+
+    // Uma vez por ciclo, e só. Ver jaRecarregouNesteCiclo.
+    if (syncCredit && process.env.SYNC_CREDITO_MENSAL_FORCAR !== "1") {
+      if (await jaRecarregouNesteCiclo()) syncCredit = false;
+    }
 
     console.log(
       syncCredit
@@ -460,4 +556,5 @@ async function syncEmployees() {
   }
 }
 
-syncEmployees();
+// Rodar ao importar atrapalharia o teste, que só quer as funções puras.
+if (!process.env.VITEST) syncEmployees();

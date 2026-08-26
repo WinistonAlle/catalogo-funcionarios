@@ -205,6 +205,41 @@ chama o script one-shot direto. Backup do crontab velho em
 `metadata.creditoSincronizado` dizendo se a recarga aconteceu. Sem isso não
 existia como saber que o cron estava morto sem abrir um log de 700KB.
 
+### A recarga acontece UMA vez por ciclo — e a trava não é o dia 27
+
+Consertar o cron tapou metade do buraco. A outra metade era o botão
+**"Sincronizar funcionários"** da tela do admin: ele chama **este mesmo script**
+(`runEmployeeSyncScript`), e o script decidia recarregar olhando só
+`shouldSyncMonthlyCredit()` — ou seja, "hoje é dia 27?".
+
+O cenário: às 03:00 do dia 27 o cron recarrega todo mundo. Às 10h um admin clica
+em "Sincronizar funcionários" pra puxar um funcionário novo da planilha — coisa
+banal — e **recarrega todo mundo de novo**, apagando o que as pessoas gastaram
+na manhã. Quem tivesse comprado R$ 80 volta pros R$ 300 cheios. Nada dá erro.
+
+`jaRecarregouNesteCiclo()` fecha isso. A régua é o log que o próprio sync grava:
+se já existe uma rodada `sync_employees` / `success` com
+`metadata.creditoSincronizado = true` dentro do ciclo corrente, não recarrega.
+Mesmo princípio do `hasSuccessfulRestoreForCycle` que já protegia o botão
+"Restaurar saldo" — o caminho do script é que não tinha.
+
+- Ciclo corrente = do dia 27 mais recente até o próximo, em São Paulo
+  (`inicioDoCicloAtual`, `CYCLE_START_DAY = 27` duplicado de `src/lib/payCycle.ts`
+  porque .mjs não importa TS). Coberto por `scripts/syncEmployeesFromSheet.test.ts`,
+  5 casos, incluindo virada de ano e a armadilha de ler o dia em UTC (26/08 23:30
+  em São Paulo já é 27/08 em UTC — ler errado recarregaria um dia antes).
+- **Falha ao consultar o log = não recarrega.** Entre recarregar duas vezes
+  (dinheiro) e deixar de recarregar (o vigia grita no dia 27 e alguém roda na
+  mão), o lado seguro é não mexer.
+- Escape explícito: `SYNC_CREDITO_MENSAL_FORCAR=1`, pro caso de a recarga ter
+  saído errada e precisar mesmo rodar de novo.
+
+**Validado ao vivo em 26/08/2026**, na véspera do dia 27: com um log de recarga
+simulado no ciclo, o script rodado com `SYNC_CREDITO_MENSAL=1` (forçando a
+intenção) respondeu `🔒 Recarga mensal já aconteceu neste ciclo` e não tocou em
+saldo nenhum — a distribuição dos 247 saldos ficou idêntica antes e depois.
+Backup do teste em `~/backups/employees-20260826-antes-teste-trava.sql`.
+
 ## Checagem de saúde (26/08/2026)
 
 `runHealthCheck` no webhook, a cada 60 min (`HEALTH_CHECK_INTERVAL_MS`) e uma vez

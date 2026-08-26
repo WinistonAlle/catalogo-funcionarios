@@ -91,6 +91,6 @@ export default defineConfig(({ mode }) => ({
   // tsconfig do app, mas o vitest o alcança normalmente.
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts", "automation/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "automation/**/*.test.ts", "scripts/**/*.test.ts"],
   },
 }));
