@@ -6,7 +6,7 @@ import { spawn } from "child_process";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
-import { processPendingOrders } from "./cigam/process-pending-orders";
+import { processPendingOrders, isEligibleForCigamEntry } from "./cigam/process-pending-orders";
 import { syncEstoque } from "./cigam/sync-estoque";
 import {
   gerarPdfPortaria,
@@ -1471,20 +1471,34 @@ async function runHealthCheck() {
 
   // 2. Fila do CIGAM travada — pedido pago que não vira recibo é dinheiro
   //    debitado sem contrapartida no ERP.
+  //
+  //    ⚠️ `PENDING` sozinho NÃO é sintoma: pedido feito depois do corte das
+  //    13:40 (ou em dia não útil) fica em PENDING de propósito até o próximo
+  //    dia útil. A primeira versão desta checagem ignorava isso e acusou o
+  //    GM-20260826-6865, das 14:30, que estava perfeitamente normal. Alerta que
+  //    grita à toa é alerta que todo mundo aprende a ignorar — e aí volta a ser
+  //    o log que ninguém lê. Por isso a régua aqui é a MESMA da integração:
+  //    `isEligibleForCigamEntry`.
   try {
     const limite = new Date(agora.getTime() - 30 * 60 * 1000).toISOString();
     const { data } = await supabase
       .from("orders")
-      .select("order_number, erp_status")
+      .select("order_number, erp_status, created_at")
       .in("erp_status", ["PENDING", "ERROR"])
       .lt("created_at", limite)
       .is("cancelled_at", null)
-      .limit(20);
+      .limit(50);
 
-    if (data && data.length > 0) {
+    const travados = (data ?? []).filter((o: any) =>
+      // ERROR é falha de verdade em qualquer horário. PENDING só conta como
+      // travado se o pedido JÁ podia ter entrado e mesmo assim não entrou.
+      o.erp_status === "ERROR" || isEligibleForCigamEntry(new Date(o.created_at), agora)
+    );
+
+    if (travados.length > 0) {
       alertas.push(
-        `${data.length} pedido(s) parados na fila do CIGAM há mais de 30 min: ` +
-          data.map((o: any) => `${o.order_number} (${o.erp_status})`).join(", ") +
+        `${travados.length} pedido(s) parados na fila do CIGAM: ` +
+          travados.map((o: any) => `${o.order_number} (${o.erp_status})`).join(", ") +
           ". Painel em /admin/integracao."
       );
     }
