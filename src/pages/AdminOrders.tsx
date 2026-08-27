@@ -24,6 +24,9 @@ type OrderRow = {
   status: string | null;
   created_at: string;
 
+  /** Quando a folha de separação saiu. Nulo = nunca foi impresso. */
+  printed_at: string | null;
+
   cancelled_at: string | null;
   cancel_reason: string | null;
 };
@@ -618,6 +621,7 @@ export default function AdminOrders() {
           "pay_on_pickup_cents",
           "status",
           "created_at",
+          "printed_at",
           "cancelled_at",
           "cancel_reason",
         ].join(","),
@@ -707,6 +711,7 @@ export default function AdminOrders() {
           "pay_on_pickup_cents",
           "status",
           "created_at",
+          "printed_at",
           "cancelled_at",
           "cancel_reason",
         ].join(","),
@@ -819,7 +824,7 @@ export default function AdminOrders() {
       const confirmou = window.confirm(
         `A lista abriu numa aba nova com ${total} pedido(s).\n\n` +
           "Imprima as folhas e confira se saíram na impressora.\n\n" +
-          "OK = já saíram, pode tirar da lista.\n" +
+          "OK = já saíram: tira da lista e marca os pedidos como ENTREGUES.\n" +
           "Cancelar = deu algo errado, mantenha os pedidos na lista pra imprimir de novo."
       );
 
@@ -829,7 +834,10 @@ export default function AdminOrders() {
       }
 
       const confirmacao = await confirmPortariaPrint(result.pedidos);
-      alert(confirmacao?.message || `${total} pedido(s) marcados como impressos.`);
+      alert(
+        confirmacao?.message ||
+          `${total} pedido(s) marcados como impressos e entregues.`
+      );
       await loadOrders();
     } catch (e: any) {
       alert(e?.message || "Erro ao imprimir a lista da portaria.");
@@ -840,6 +848,30 @@ export default function AdminOrders() {
 
   async function handlePrintOrder(orderId: string) {
     if (printingOrderId) return;
+
+    // Imprimir marca o pedido como ENTREGUE (ver marcaDeImpressao em
+    // automation/print/portariaList.ts), então um pedido com printed_at é
+    // folha que já circulou na portaria. Reimprimir continua permitido — é o
+    // caminho de recuperação quando o papel atolou, sumiu ou saiu ilegível —
+    // mas passa a perguntar, porque imprimir a mesma folha sem querer é
+    // mercadoria separada duas vezes.
+    const pedido =
+      orders.find((o) => o.id === orderId) ??
+      (selected?.id === orderId ? selected : null);
+
+    if (pedido?.printed_at) {
+      const quando = new Date(pedido.printed_at).toLocaleString("pt-BR");
+      const seguir = window.confirm(
+        `O pedido ${pedido.order_number} JÁ FOI IMPRESSO em ${quando}.\n\n` +
+          "Imprimir de novo só faz sentido se a folha não chegou na portaria " +
+          "(atolou, sumiu, saiu ilegível) — a portaria não pode separar a " +
+          "mercadoria duas vezes.\n\n" +
+          "OK = imprimir mesmo assim.\n" +
+          "Cancelar = não imprimir."
+      );
+      if (!seguir) return;
+    }
+
     setPrintingOrderId(orderId);
     // Aberta AGORA, ainda dentro do clique — mesma razão do botão em massa:
     // esperar a resposta do servidor pra abrir cai no bloqueio de pop-up.

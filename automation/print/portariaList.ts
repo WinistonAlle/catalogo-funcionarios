@@ -4,6 +4,30 @@ import { cutoffInstantForToday, isAfterCutoffInSaoPaulo } from "./cutoff";
 import { buildOrderSheetPdf, buildOrderSheetsPdf, VIAS_PADRAO, type OrderSheetData } from "./pdfBuilder";
 import { printOrderSheet } from "./printClient";
 
+/**
+ * O que "imprimir" grava no pedido: o carimbo de que a folha saiu E o status
+ * `entregue`.
+ *
+ * Por que os dois juntos (27/08/2026): `printed_at` não aparece em lugar
+ * nenhum da tela — quem olha a lista de pedidos vê o STATUS. Com o pedido
+ * continuando "aguardando separação" depois de a folha sair, a única defesa
+ * contra imprimir a mesma folha duas vezes era a memória de quem clicou. Na
+ * prática o pessoal já vinha marcando "entregue" na mão logo depois de
+ * imprimir (5 pedidos assim entre 25 e 27/08, todos com printed_at nulo) —
+ * agora a impressão marca sozinha, no mesmo instante, e o pedido sai da fila
+ * da portaria e do quadro de separação de uma vez só.
+ *
+ * `entregue` também tranca a edição de itens (isManageLocked em AdminOrders e
+ * o guard das RPCs de item), e isso é o certo depois de a folha estar
+ * circulando: mudar item de um pedido cuja lista de separação já foi pra
+ * portaria é papel e banco discordando. CANCELAR continua liberado
+ * (`admin_cancel_order_v2` não recusa pedido entregue) — essa é a saída de
+ * verdade quando o pedido não pode mais acontecer, e ela estorna o saldo.
+ */
+function marcaDeImpressao(agora: Date = new Date()) {
+  return { printed_at: agora.toISOString(), status: "entregue" };
+}
+
 type ItemRow = {
   product_name: string;
   quantity: number;
@@ -99,9 +123,10 @@ export type PedidoUnicoResultado = {
  * recusado, porque não faz sentido separar mercadoria de um pedido que não
  * vale mais.
  *
- * Marca `printed_at` só se ainda estiver nulo — reimprimir um pedido que já
- * tinha saído não mexe no timestamp original nem duplica no relatório do
- * disparo automático.
+ * Marca `printed_at` e o status `entregue` (ver `marcaDeImpressao`) só se
+ * `printed_at` ainda estiver nulo — reimprimir um pedido que já tinha saído
+ * não mexe no timestamp original nem duplica no relatório do disparo
+ * automático.
  */
 export async function gerarPdfPedidoUnico(params: {
   supabase: SupabaseClient;
@@ -158,10 +183,12 @@ export async function gerarPdfPedidoUnico(params: {
   if (!jaImpresso) {
     const { error: updateError } = await supabase
       .from("orders")
-      .update({ printed_at: new Date().toISOString() })
+      .update(marcaDeImpressao())
       .eq("id", orderId);
     if (updateError) {
-      throw new Error(`PDF gerado, mas falhou ao marcar printed_at: ${updateError.message}`);
+      throw new Error(
+        `PDF gerado, mas falhou ao marcar o pedido como impresso/entregue: ${updateError.message}`
+      );
     }
   }
 
@@ -221,8 +248,9 @@ export async function gerarPdfPortaria(params: {
 }
 
 /**
- * Marca `printed_at` na leva que o faturamento confirmou ter saído no papel —
- * o segundo passo de `gerarPdfPortaria` (ver o porquê lá em cima).
+ * Marca `printed_at` — e o status `entregue`, ver `marcaDeImpressao` — na leva
+ * que o faturamento confirmou ter saído no papel: o segundo passo de
+ * `gerarPdfPortaria` (ver o porquê lá em cima).
  *
  * Só mexe em quem ainda está com `printed_at` nulo: confirmar duas vezes, ou
  * confirmar uma leva que o disparo automático já carimbou no meio do caminho,
@@ -240,9 +268,13 @@ export async function marcarPortariaImpressa(
 
   const { data, error } = await supabase
     .from("orders")
-    .update({ printed_at: new Date().toISOString() })
+    .update(marcaDeImpressao())
     .in("id", ids)
     .is("printed_at", null)
+    // Os ids vêm da tela, não da consulta da leva: se um pedido for cancelado
+    // entre gerar o PDF e confirmar a impressão, ele não pode ressuscitar
+    // como "entregue" — o estorno já aconteceu e a mercadoria não sai.
+    .is("cancelled_at", null)
     .select("id");
 
   if (error) {
@@ -307,7 +339,7 @@ export async function printPortariaList(params: {
       try {
         const { error: updateError } = await supabase
           .from("orders")
-          .update({ printed_at: new Date().toISOString() })
+          .update(marcaDeImpressao())
           .eq("id", pedido.id);
         if (updateError) throw new Error(updateError.message);
       } catch (updateErr: any) {
