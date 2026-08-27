@@ -1662,6 +1662,15 @@ async function runHealthCheck() {
 
   // 3. Pedido pago esperando separação há mais de um dia. Foi o sintoma de
   //    26/08: três pedidos parados porque ninguém imprimiu a lista.
+  //
+  //    ⚠️ O que interessa aqui é pedido PARADO, não pedido sem carimbo. Desde
+  //    que a impressão virou manual (24/08), o faturamento entrega sem passar
+  //    pelo /print-portaria-confirm, então `printed_at` fica nulo para sempre
+  //    em pedido que já foi entregue. Sem o filtro de status abaixo, esta
+  //    checagem acusava os mesmos entregues todo dia, para sempre — foi o que
+  //    aconteceu com GM-20260825-3235, GM-20260826-5795 e GM-20260826-6865.
+  //    Mesma armadilha do item 2: alerta que grita à toa é alerta que ninguém
+  //    lê. Pedido concluído não está esperando ninguém.
   try {
     const ontem = new Date(agora.getTime() - 24 * 60 * 60 * 1000).toISOString();
     const { data } = await supabase
@@ -1669,6 +1678,7 @@ async function runHealthCheck() {
       .select("order_number, employee_name, created_at")
       .is("printed_at", null)
       .is("cancelled_at", null)
+      .not("status", "in", "(entregue,cancelado)")
       .lt("created_at", ontem)
       .or("wallet_debited.eq.true,pay_on_pickup_cents.gt.0,wallet_used_cents.gt.0")
       .limit(20);
