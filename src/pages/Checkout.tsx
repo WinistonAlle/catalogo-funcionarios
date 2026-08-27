@@ -382,9 +382,9 @@ const Checkout: React.FC = () => {
       descParts.push(`Saldo após: ${formatBRLFromCents(afterOrderAvailableCents)}`);
 
       toast.success("Pedido confirmado!", {
-        description: `Pedido ${
-          orderNumber ?? `#${orderId}`
-        } enviado para separação. ${descParts.join(" • ")}`,
+        description: `Enviado para separação. ${descParts.join(
+          " • "
+        )} • O número do pedido aparece em "Meus pedidos".`,
       });
 
       navigate("/catalogo");

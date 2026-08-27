@@ -260,9 +260,8 @@ function TabelaPedidos({
       <thead>
         <tr className="border-b bg-gray-100 text-left print:bg-white">
           <th className="px-2 py-1.5">Data</th>
-          <th className="px-2 py-1.5">Pedido</th>
+          <th className="px-2 py-1.5">Pedido (CIGAM)</th>
           <th className="px-2 py-1.5">Funcionário</th>
-          <th className="px-2 py-1.5">Recibo CIGAM</th>
           <th className="px-2 py-1.5 text-right">Valor</th>
           {mostrarMotivos && <th className="px-2 py-1.5">Pendência</th>}
         </tr>
@@ -273,9 +272,18 @@ function TabelaPedidos({
             <td className="whitespace-nowrap px-2 py-1.5">
               {new Date(l.criadoEm).toLocaleDateString("pt-BR")}
             </td>
-            <td className="px-2 py-1.5 font-mono text-xs">{l.orderNumber}</td>
+            {/*
+              O papel que o RH concilia contra o CIGAM mostra o número do
+              CIGAM. Eram duas colunas para o MESMO pedido — "Pedido" com o
+              GM-... interno e "Recibo CIGAM" com o número do ERP; viraram
+              uma. Sem recibo o pedido cai na lista de CONFERIR com a
+              pendência "nunca recebeu número de recibo", e aí o GM-... é o
+              único jeito de achá-lo aqui dentro.
+            */}
+            <td className="px-2 py-1.5 font-mono text-xs">
+              {l.recibo ?? l.orderNumber}
+            </td>
             <td className="px-2 py-1.5">{l.employeeName}</td>
-            <td className="px-2 py-1.5 font-mono text-xs">{l.recibo ?? "—"}</td>
             <td className="whitespace-nowrap px-2 py-1.5 text-right">
               {formatarReais(l.valorCents)}
             </td>

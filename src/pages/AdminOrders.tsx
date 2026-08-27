@@ -862,7 +862,9 @@ export default function AdminOrders() {
     if (pedido?.printed_at) {
       const quando = new Date(pedido.printed_at).toLocaleString("pt-BR");
       const seguir = window.confirm(
-        `O pedido ${pedido.order_number} JÁ FOI IMPRESSO em ${quando}.\n\n` +
+        `O pedido ${
+          pedido.erp_external_id || pedido.order_number
+        } JÁ FOI IMPRESSO em ${quando}.\n\n` +
           "Imprimir de novo só faz sentido se a folha não chegou na portaria " +
           "(atolou, sumiu, saiu ilegível) — a portaria não pode separar a " +
           "mercadoria duas vezes.\n\n" +
