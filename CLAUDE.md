@@ -164,6 +164,12 @@ Fora isso, o fluxo está fechado e rodando sozinho.
 
 ## Recarga mensal de crédito — a peça que ficou 4 meses morta (26/08/2026)
 
+> ⚠️ **Parcialmente superada em 27/08/2026** — ver a seção "DIREITO e SALDO
+> são colunas diferentes". A planilha não escreve mais no saldo: ela escreve
+> em `credito_direito_cents`, e a recarga mensal copia direito → saldo. O
+> resto desta seção (o cron que ficou 4 meses quebrado, a trava de
+> uma-vez-por-ciclo) continua valendo integralmente.
+
 **`credito_mensal_cents` é o SALDO CORRENTE, não um teto.** O checkout desconta
 dele; nada o devolve sozinho. Quem reabastece é a rodada MENSAL do
 `scripts/syncEmployeesFromSheet.mjs`, que reescreve o saldo de todo mundo com o
@@ -239,6 +245,192 @@ simulado no ciclo, o script rodado com `SYNC_CREDITO_MENSAL=1` (forçando a
 intenção) respondeu `🔒 Recarga mensal já aconteceu neste ciclo` e não tocou em
 saldo nenhum — a distribuição dos 247 saldos ficou idêntica antes e depois.
 Backup do teste em `~/backups/employees-20260826-antes-teste-trava.sql`.
+
+## DIREITO e SALDO são colunas diferentes (27/08/2026)
+
+**Esta é a mudança que fecha a raiz dos sustos de recarga.** Até aqui,
+`employees.credito_mensal_cents` acumulava dois papéis incompatíveis: o
+DIREITO mensal (o que a planilha diz que a pessoa ganha) e o SALDO CORRENTE (o
+que ainda resta). Como a planilha escrevia direto nessa coluna, toda rodada de
+sincronização era uma rodada que mexia em dinheiro de 256 pessoas.
+
+As duas travas de 26/08 (`SYNC_CREDITO_MENSAL=0` e `jaRecarregouNesteCiclo`)
+são cintos de segurança em volta desse buraco. Elas continuam valendo, mas
+agora existe a separação de verdade:
+
+| coluna | é | quem escreve |
+|---|---|---|
+| `credito_direito_cents` | direito do ciclo | **só** a sincronização da planilha |
+| `credito_mensal_cents` | saldo corrente | checkout (débito), estorno de cancelamento, recarga mensal |
+
+A recarga mensal deixou de ser "escreve a planilha no saldo" e passou a ser
+**"copia direito → saldo"**. E a rodada de cadastro (de 20 em 20 min) **não tem
+mais a chave `credito_mensal_cents` no payload** — não por causa de uma flag,
+mas porque o dado não está lá. Ver `montarLevasDeUpsert`
+(`scripts/syncEmployeesFromSheet.mjs`), exportada e coberta por 6 testes.
+
+⚠️ **As duas levas do upsert vão separadas de propósito.** O PostgREST recusa um
+array cujos objetos não tenham as mesmas chaves ("All object keys must match").
+Misturar quem leva saldo com quem não leva quebraria o CADASTRO por causa de uma
+regra de SALDO, no primeiro funcionário novo.
+
+### O backfill pegou uma janela exata
+
+Aplicado em 27/08 com a recarga já feita (03:00) e **zero pedidos no dia**, então
+`credito_mensal_cents` era, naquele instante, o valor da planilha para os 256 —
+`direito := saldo` foi exato. Conferido depois: 256/256 iguais, R$ 76.000 dos
+dois lados. Backup: `~/backups/employees-20260827-antes-separacao.sql`.
+
+### A bomba que estava armada no saldo exibido
+
+As quatro telas de carteira (Checkout, Index, Cart, employeeService) faziam:
+
+```
+disponível = credito_mensal_cents - employee_monthly_spend.spent_cents
+```
+
+Isso tratava o SALDO como se fosse teto. **Só dava o número certo por
+acidente:** `spent_cents` era sempre 0, porque nenhuma função viva escrevia em
+`employee_monthly_spend` — as 5 que escreviam estavam mortas. Bastava alguém
+chamar `admin_remove_order_item_v3` ou `_qty_v1` (mortas no app, mas **expostas
+pelo PostgREST** a qualquer usuário privilegiado) para `spent_cents` ser
+preenchido com o gasto real do ciclo, e o saldo visível cairia pelo gasto do mês
+inteiro **uma segunda vez**.
+
+Agora `src/lib/wallet.ts` (`deriveWallet`, 8 testes) é o único lugar que decide:
+
+- **disponível = saldo**, direto da coluna — a MESMA que
+  `place_order_with_wallet_v2` confere no servidor. A tela não tem mais como
+  prometer um valor que o checkout depois recusa.
+- **gasto = direito − saldo**, derivado. Número derivado não dessincroniza.
+
+`employee_monthly_spend` foi removida junto: sem escritor e sem leitor.
+
+## O entulho que saiu (27/08/2026)
+
+`scripts/2026-08-27-separa-direito-de-saldo.sql` e
+`scripts/2026-08-27-drops-que-escaparam.sql`. Cada item foi conferido sem
+chamador no app (grep em `src/`, `automation/`, `scripts/`) **e** sem chamador
+dentro do banco (varredura em `pg_get_functiondef` de todas as funções plpgsql).
+
+- `admin_remove_order_item_v3`, `admin_remove_order_item_qty_v1` — mortas e
+  perigosas (ver bomba acima).
+- `admin_recalc_employee_monthly_spend`, `gm_apply_balance_delta` — a segunda
+  descobria "onde fica o saldo" lendo `information_schema` e montando SQL
+  dinâmico. Adivinhação sobre dinheiro.
+- `admin_cancel_order` e `place_order_with_wallet` antigas (o app só chama as `_v2`).
+- `auth_check_cpf`, `set_updated_at_saibweb_jobs` — 0 chamadores.
+- `hr_users` (tabela vazia) e `isCurrentUserHR()` — a função consultava uma
+  tabela sempre vazia, então devolvia `false` para todo mundo, **inclusive para
+  o RH**. Quem manda em permissão é `employees.role`.
+- `employees_active`, `rh_spending_report` (views sem leitor; a segunda agregava
+  por mês de calendário, não pelo ciclo 27→26).
+- `employees.auth_user_id` — 0 de 256 preenchidas. O vínculo real é `user_id`.
+  A coluna morta já confundiu auditoria: os scripts de 12/08 conferiam admins
+  por `auth_user_id is null` e davam "todos nulos" independentemente da verdade.
+- `employee_monthly_spend` — 7 linhas, todas zeradas.
+
+**`status` deixou de ser nulo nos 256.** `is_active` é coluna GERADA a partir de
+`status`, e `status` era NULL em todos — então `is_active` era NULL em todo mundo.
+A tela de RH pinta um badge por status e desabilita ações quando
+`status = 'inactive'`; com tudo nulo o badge saía vazio e a regra nunca valia.
+
+⚠️ **ARMADILHA DO `DROP FUNCTION`:** ele casa por assinatura e responde
+"does not exist, skipping" em **NOTICE, não em erro**. Quatro drops passaram
+batido porque eu adivinhei a ORDEM dos parâmetros
+(`admin_remove_order_item_v3` recebe `(p_order_id, p_order_item_id, p_reason,
+p_actor_cpf)`, não `(p_actor_cpf, ...)`). **Sempre confira com
+`pg_get_function_identity_arguments` antes, e reconfira o que sobrou depois.**
+
+## O vigia alcança gente fora do servidor (27/08/2026)
+
+`runHealthCheck` gritava só em `console.error` — ou seja, em `pm2 logs webhook`.
+Isso repetia o defeito que ele foi criado para cobrir. Agora ele faz três coisas:
+
+1. **Grava** em `admin_operation_logs` (`action = 'health_check'`), inclusive o
+   silêncio (`success`, "tudo de pé"). Sem gravar o sucesso não dá para
+   distinguir "está tudo bem" de "o vigia parou" — que é exatamente a confusão
+   que custou os 4 meses da recarga morta.
+2. **Mostra** no `/admin`: `HealthAlertBanner` lê a última passada e pinta uma
+   faixa. Três estados — 🚨 achou problema, 💚 tudo de pé, ⚠️ **sem passada há
+   mais de 3h** (o vigia parado).
+3. **Envia** para `HEALTH_ALERT_WEBHOOK_URL`, se definida. POST JSON, sem
+   credencial no código. Grava ANTES de tocar a rede, então falha de envio não
+   perde o alerta.
+
+**(3) está desligada:** não há canal ligado hoje. O `whatsapp-sender` roda no
+mesmo servidor, mas o container `whatsapp-service` está parado e conectar o
+número exige alguém escanear um QR code. Quando houver canal, é só apontar a
+variável.
+
+**Checagem nova (a 5ª):** saldo maior que o direito. É impossível pelo caminho
+normal — é a checagem que confere se a separação continua valendo. Exceção
+legítima: RH reduzindo o direito no meio do ciclo; por isso o alerta lista nomes
+em vez de só contar.
+
+⚠️ Ao adicionar `action` nova, adicione **também** no CHECK de
+`admin_operation_logs.action` no banco. O CHECK recusa em silêncio — foi assim
+que `print_order` ficou sendo rejeitado sem ninguém ver, de 25 a 26/08.
+
+## Relatório de abatimentos (27/08/2026)
+
+O papel que o faturamento entregava ao RH toda sexta, agora puxado pelo próprio
+RH. Botão em `/rh` **e** em `/admin`, os dois indo para a MESMA tela
+(`/rh/relatorio-abatimentos`, `allow={["rh","admin"]}`) — duas versões do mesmo
+relatório seria a chance de RH e faturamento abaterem valores diferentes.
+
+**A semana vai de SÁBADO A SEXTA** (`semanaSabadoASexta`). O relatório sempre foi
+entregue na sexta cobrindo a semana que fechava naquele dia. Datas editáveis.
+
+### A conferência com o CIGAM é ao vivo, pedido a pedido
+
+`CigamClient.buscarPedido(codigo)` — `GET comercial/fa/Pedido/BuscarPedido`.
+
+⚠️ **Este endpoint responde FORA do envelope `{success, data}`** que o resto da
+API usa: o corpo já é o pedido. Código inexistente devolve `null` limpo, sem
+erro. Conferido ao vivo em 27/08 com os recibos 015046 e 011750, e com 999999 /
+000001 para o caso ausente.
+
+> O `RELATORIO-BUG-CIGAM.md` registra que em 13/07 um pedido criado pelo PORTAL
+> não aparecia aqui, levantando suspeita de contexto de empresa diferente. **Os
+> nossos são criados por REST (`Pedido/Salvar`) e aparecem normalmente** — a
+> ressalva não vale para o que a integração cria.
+
+Quatro checagens por pedido (`avaliarPedido`, 21 testes): existe no CIGAM; é do
+cliente `009752` (pedido de funcionário); está no controle `40` (efetivado); e o
+valor bate (tolerância de 1 centavo, porque o CIGAM devolve reais como float e
+`38.55 * 100` pode dar `3854.9999...`).
+
+Não basta ter `erp_external_id` gravado: **o recibo pode ter sido excluído no
+CIGAM depois** — é inclusive o procedimento para reenfileirar um pedido.
+
+### Por que o relatório tem DUAS listas
+
+O pedido original foi "os pedidos efetivados e impressos, desconsiderando os
+cancelados". Se ele parasse aí, **perderia dinheiro em silêncio**: existe pedido
+com o saldo do funcionário JÁ DEBITADO que nunca foi impresso (a impressão da
+portaria é manual desde 24/08 e depende de alguém lembrar). Sumir com esses
+faria o RH abater a menos — o funcionário levou a mercadoria e não teve
+desconto.
+
+- **ABATER** — passou em tudo. É o total que a folha usa.
+- **CONFERIR** — saldo debitado mas falhou em algum ponto (não impresso, sem
+  recibo, ausente do CIGAM, não efetivado, cliente errado, valor divergente,
+  erro de consulta). **Não entra no total**, mas aparece no papel com o motivo
+  escrito.
+
+Nada é descartado em silêncio.
+
+**Medido ao vivo em 27/08 na semana 22–28/08:** 5 pedidos, **só 1 impresso**. Os
+outros 4 estavam perfeitos no CIGAM (efetivados, valores batendo) e somavam
+**R$ 160,25** que teriam sumido do papel. O relatório abate o
+`wallet_used_cents`, não o `total_cents`: são iguais hoje (o checkout exige
+saldo cobrindo 100%), mas o histórico tem pedidos da era "pagamento na retirada",
+e abater o total ali cobraria do funcionário uma parte que ele já pagou na hora.
+
+Impressão é `window.print()` com `@media print` (`thead` repetindo por página).
+Não há PDF no servidor de propósito: o RH precisa ver antes de imprimir, e um
+PDF a mais seria um lugar a mais para o layout divergir.
 
 ## Checagem de saúde (26/08/2026)
 

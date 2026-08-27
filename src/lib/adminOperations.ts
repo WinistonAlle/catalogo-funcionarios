@@ -15,7 +15,9 @@ export type AdminOperationAction =
   | "sync_employees"
   | "restore_employee_balances"
   | "print_portaria"
-  | "print_order";
+  | "print_order"
+  /** Passada do vigia: `success` = tudo de pé, `failed` = achou problema. */
+  | "health_check";
 export type AdminOperationStatus = "running" | "success" | "failed" | "blocked";
 
 export type AdminOperationLog = {
@@ -307,11 +309,87 @@ export async function listAdminOperationHistory(opts?: {
   );
 }
 
+/* ===================== Relatório de abatimentos ===================== */
+
+export type MotivoPendencia =
+  | "nao_impresso"
+  | "sem_recibo"
+  | "ausente_no_cigam"
+  | "nao_efetivado"
+  | "cliente_diferente"
+  | "valor_divergente"
+  | "erro_na_consulta";
+
+export type LinhaRelatorioAbatimento = {
+  orderNumber: string;
+  employeeName: string;
+  employeeCpf: string;
+  criadoEm: string;
+  valorCents: number;
+  recibo: string | null;
+  impressoEm: string | null;
+  valorNoCigamCents: number | null;
+  motivos: MotivoPendencia[];
+  detalhe: string | null;
+};
+
+export type RelatorioAbatimentos = {
+  inicio: string;
+  fim: string;
+  geradoEm: string;
+  abater: LinhaRelatorioAbatimento[];
+  conferir: LinhaRelatorioAbatimento[];
+  totais: {
+    abaterCents: number;
+    conferirCents: number;
+    pedidosAbater: number;
+    pedidosConferir: number;
+    funcionarios: number;
+  };
+  porFuncionario: Array<{
+    employeeName: string;
+    employeeCpf: string;
+    pedidos: number;
+    totalCents: number;
+  }>;
+  cigamIndisponivel: boolean;
+};
+
+/**
+ * Puxa o relatório da semana. Sem datas, o servidor usa a semana de sábado a
+ * sexta corrente.
+ *
+ * ⚠️ Demora: cada pedido com recibo vira uma consulta ao CIGAM. Com o volume
+ * real são poucos segundos, mas a tela precisa mostrar que está trabalhando.
+ */
+export async function gerarRelatorioAbatimentos(opts?: { inicio?: string; fim?: string }) {
+  const params = new URLSearchParams();
+  if (opts?.inicio) params.set("inicio", opts.inicio);
+  if (opts?.fim) params.set("fim", opts.fim);
+
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return requestWithAuth<{ ok: boolean; relatorio: RelatorioAbatimentos }>(
+    [`/automation/relatorio-abatimentos${suffix}`, `/api/relatorio-abatimentos${suffix}`],
+    { method: "GET" }
+  );
+}
+
+export const ROTULO_MOTIVO: Record<MotivoPendencia, string> = {
+  nao_impresso: "Não impresso na portaria",
+  sem_recibo: "Sem recibo no CIGAM",
+  ausente_no_cigam: "Recibo não existe no CIGAM",
+  nao_efetivado: "Não efetivado (sem documento)",
+  cliente_diferente: "Recibo é de outro cliente",
+  valor_divergente: "Valor diferente do CIGAM",
+  erro_na_consulta: "Não deu para consultar o CIGAM",
+};
+
 export function formatOperationAction(action?: AdminOperationAction | null) {
   if (action === "sync_employees") return "Sincronização de funcionários";
   if (action === "restore_employee_balances") return "Restauração de saldo";
   if (action === "print_portaria") return "Impressão da lista da portaria";
   if (action === "print_order") return "Impressão avulsa de pedido";
+  if (action === "health_check") return "Checagem de saúde";
   return "Operação";
 }
 

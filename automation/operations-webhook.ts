@@ -16,6 +16,11 @@ import {
 } from "./print/portariaList";
 import { CigamClient } from "./cigam/client";
 import {
+  consultarComCliente,
+  montarRelatorio,
+  semanaSabadoASexta,
+} from "./relatorio-abatimentos";
+import {
   filtrarPayloadAviso,
   filtrarPayloadFuncionario,
   filtrarPayloadProduto,
@@ -278,33 +283,25 @@ app.post("/reset-employee-balances", async (req, res) => {
       });
     }
 
-    const { data: updatedRows, error: updateError } = await supabase
-      .from("employee_monthly_spend")
-      .update({
-        spent_cents: 0,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("month_key", monthKey)
-      .gt("spent_cents", 0)
-      .select("employee_id");
-
-    if (updateError) {
-      balanceRestoreRunning = false;
-      await updateOperationLog(supabase, runningLog?.id, {
-        status: "failed",
-        message: `credito_mensal_cents foi reabastecido, mas falhou ao zerar employee_monthly_spend do ciclo ${monthKey}.`,
-        metadata: { error: updateError.message },
-      }).catch(() => null);
-
-      return res.status(500).json({ ok: false, message: "Não foi possível restaurar o saldo atual." });
-    }
+    // 27/08/2026: aqui existia um segundo passo que zerava
+    // `employee_monthly_spend.spent_cents` do ciclo. Ele saiu junto com a
+    // tabela, que foi removida por não ter escritor nenhum no fluxo real de
+    // pedido (as 5 funções que escreviam nela estavam mortas). Com direito e
+    // saldo separados, o gasto do ciclo é DERIVADO — `direito - saldo` — então
+    // reabastecer o saldo já zera o gasto exibido, por construção. Não há mais
+    // um segundo lugar para ficar dessincronizado, nem um segundo passo que
+    // pudesse falhar deixando o reabastecimento pela metade.
+    const { count: restauradosCount } = await supabase
+      .from("employees")
+      .select("id", { count: "exact", head: true })
+      .gt("credito_mensal_cents", 0);
 
     balanceRestoreRunning = false;
     await updateOperationLog(supabase, runningLog?.id, {
       status: "success",
       message: "Saldo de todos os funcionários restaurado para o valor inicial da planilha.",
       metadata: {
-        updatedCount: updatedRows?.length ?? 0,
+        updatedCount: restauradosCount ?? 0,
         syncStdout: syncOutput.stdout.slice(0, 2000),
         syncStderr: syncOutput.stderr.slice(0, 2000),
       },
@@ -314,7 +311,7 @@ app.post("/reset-employee-balances", async (req, res) => {
       ok: true,
       message: "Saldo de todos os funcionários restaurado para o valor inicial da planilha.",
       monthKey,
-      updatedCount: updatedRows?.length ?? 0,
+      updatedCount: restauradosCount ?? 0,
       allowedWindow: window,
     });
   } catch (err: any) {
@@ -685,6 +682,94 @@ app.get("/operations/history", async (req, res) => {
     return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
   }
 });
+
+/**
+ * Relatório de abatimentos da folha — o papel que o faturamento entregava ao RH
+ * toda sexta (27/08/2026). Agora o próprio RH puxa.
+ *
+ * GET /relatorio-abatimentos?inicio=YYYY-MM-DD&fim=YYYY-MM-DD
+ *
+ * Sem datas, usa a semana de SÁBADO A SEXTA corrente.
+ *
+ * Cada pedido com recibo é perguntado ao CIGAM, um a um — é o único jeito de
+ * pegar recibo que o catálogo acha que existe e o ERP não conhece. Isso custa
+ * uma chamada por pedido; com o volume real (dezenas por semana) fica em poucos
+ * segundos, e a trava abaixo impede duas gerações simultâneas brigando pela
+ * sessão única do CIGAM.
+ */
+let relatorioAbatimentosRunning = false;
+
+app.get("/relatorio-abatimentos", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) {
+      return res.status(auth.status).json({ ok: false, message: auth.error });
+    }
+
+    if (relatorioAbatimentosRunning) {
+      return res.status(409).json({
+        ok: false,
+        message: "Já tem um relatório sendo gerado. Espere ele terminar e tente de novo.",
+      });
+    }
+
+    const padrao = semanaSabadoASexta();
+    const inicio = validarData(req.query.inicio) ?? padrao.inicio;
+    const fim = validarData(req.query.fim) ?? padrao.fim;
+
+    if (inicio > fim) {
+      return res.status(400).json({ ok: false, message: "A data inicial é depois da final." });
+    }
+
+    // O intervalo é em data de São Paulo; created_at é timestamptz. -03:00
+    // explícito para a sexta-feira inteira entrar (até 23:59:59 local).
+    const de = `${inicio}T00:00:00-03:00`;
+    const ate = `${fim}T23:59:59-03:00`;
+
+    const { data: pedidos, error } = await supabase
+      .from("orders")
+      .select(
+        "id, order_number, employee_name, employee_cpf, created_at, total_cents, " +
+          "wallet_used_cents, cancelled_at, printed_at, erp_external_id, erp_status"
+      )
+      // Cancelado nunca entra: o saldo foi estornado, não há o que abater.
+      .is("cancelled_at", null)
+      // Sem débito no saldo não há abatimento — pedido zerado ou só retirada.
+      .gt("wallet_used_cents", 0)
+      .gte("created_at", de)
+      .lte("created_at", ate)
+      .order("created_at", { ascending: true })
+      .limit(2000);
+
+    if (error) {
+      return res.status(500).json({ ok: false, message: error.message });
+    }
+
+    relatorioAbatimentosRunning = true;
+    try {
+      const relatorio = await montarRelatorio(
+        (pedidos ?? []) as any,
+        inicio,
+        fim,
+        consultarComCliente(cigamStockClient)
+      );
+      return res.status(200).json({ ok: true, relatorio });
+    } finally {
+      relatorioAbatimentosRunning = false;
+    }
+  } catch (err: any) {
+    relatorioAbatimentosRunning = false;
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
+/** Aceita só YYYY-MM-DD; qualquer outra coisa vira "use o padrão". */
+function validarData(valor: unknown): string | null {
+  const s = String(valor ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const d = new Date(`${s}T12:00:00-03:00`);
+  return Number.isNaN(d.getTime()) ? null : s;
+}
 
 /**
  * Painel de integração: pedidos que não chegaram ao CIGAM.
@@ -1438,6 +1523,75 @@ app.post("/print-order-now/:orderId", async (req, res) => {
  */
 const HEALTH_CHECK_INTERVAL_MS = Number(process.env.HEALTH_CHECK_INTERVAL_MS ?? 60 * 60 * 1000);
 
+/**
+ * Para onde o vigia grita além do log (27/08/2026).
+ *
+ * O vigia nasceu em 26/08 gritando só em `console.error`, o que quer dizer: em
+ * `pm2 logs webhook`, que alguém precisa lembrar de abrir. Isso repete o defeito
+ * que ele foi criado para cobrir — a recarga mensal passou 4 meses morta
+ * empilhando falha em `~/sheets.log` sem ninguém ver. Alerta que só existe num
+ * log é alerta que não existe.
+ *
+ * Agora ele faz três coisas com o que encontra:
+ *
+ *   1. GRAVA em `admin_operation_logs` (action `health_check`). Fica no banco,
+ *      consultável, com histórico — dá pra responder "desde quando isso está
+ *      quebrado?" sem ler log rotacionado.
+ *   2. MOSTRA no /admin: o painel lê a última linha e pinta uma faixa. Quem
+ *      abre o admin vê, sem precisar de acesso ao servidor.
+ *   3. ENVIA para `HEALTH_ALERT_WEBHOOK_URL`, se estiver definida. Um POST JSON
+ *      simples, sem credencial nenhuma no código.
+ *
+ * (3) está desligada por padrão porque hoje não há canal ligado: o
+ * `whatsapp-sender` roda no mesmo servidor, mas o container `whatsapp-service`
+ * está parado e conectar o número exige alguém escanear um QR code. Quando
+ * houver canal — WhatsApp, um webhook do Slack, o que for — é só apontar a
+ * variável; nada aqui muda.
+ *
+ * Falha de envio NUNCA derruba a checagem: o alerta já está no banco e no log
+ * antes de a rede ser tocada.
+ */
+const HEALTH_ALERT_WEBHOOK_URL = process.env.HEALTH_ALERT_WEBHOOK_URL ?? "";
+
+async function enviarAlertaExterno(alertas: string[]) {
+  if (!HEALTH_ALERT_WEBHOOK_URL) return;
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+
+    const resposta = await fetch(HEALTH_ALERT_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        origem: "catalogo-funcionarios",
+        severidade: "alerta",
+        quando: new Date().toISOString(),
+        // `texto` já vem pronto para cair num WhatsApp/Slack sem formatação.
+        texto:
+          `🚨 Catálogo de funcionários — ${alertas.length} problema(s):\n` +
+          alertas.map((a) => `• ${a}`).join("\n"),
+        alertas,
+      }),
+    });
+
+    clearTimeout(timeout);
+
+    if (!resposta.ok) {
+      console.error(
+        `⚠️ Vigia: HEALTH_ALERT_WEBHOOK_URL respondeu ${resposta.status}. ` +
+          "O alerta está gravado no banco e no log, mas não saiu daqui."
+      );
+    }
+  } catch (err: any) {
+    console.error(
+      `⚠️ Vigia: falha ao enviar alerta externo (${err?.message ?? err}). ` +
+        "O alerta está gravado no banco e no log, mas não saiu daqui."
+    );
+  }
+}
+
 async function runHealthCheck() {
   const alertas: string[] = [];
   const agora = new Date();
@@ -1571,13 +1725,82 @@ async function runHealthCheck() {
     alertas.push(`Não deu para checar a recarga mensal: ${err?.message ?? err}`);
   }
 
+  // 5. Saldo maior que o direito é impossível pelo caminho normal: o checkout
+  //    só desconta, o estorno nunca devolve mais do que tirou, e a recarga faz
+  //    saldo := direito. Se aparecer, alguma escrita passou por fora — foi
+  //    exatamente esse tipo de escrita (planilha caindo direto no saldo) que a
+  //    separação de 27/08/2026 fechou. É a checagem que confere se a separação
+  //    continua valendo.
+  //
+  //    Uma exceção legítima e esperada: se o RH REDUZIR o direito de alguém no
+  //    meio do ciclo, essa pessoa fica com saldo acima do direito novo até a
+  //    próxima recarga. Por isso o alerta lista os nomes em vez de só contar —
+  //    quem lê precisa distinguir "o RH mexeu na planilha" de "tem escrita
+  //    solta no saldo".
+  try {
+    const { data } = await supabase
+      .from("employees")
+      .select("full_name, credito_mensal_cents, credito_direito_cents")
+      .order("full_name")
+      .limit(500);
+
+    const acimaDoDireito = (data ?? []).filter(
+      (e: any) => Number(e.credito_mensal_cents ?? 0) > Number(e.credito_direito_cents ?? 0)
+    );
+
+    if (acimaDoDireito.length > 0) {
+      const amostra = acimaDoDireito
+        .slice(0, 5)
+        .map(
+          (e: any) =>
+            `${e.full_name} (saldo ${formatarReais(e.credito_mensal_cents)} > direito ${formatarReais(
+              e.credito_direito_cents
+            )})`
+        )
+        .join(", ");
+
+      alertas.push(
+        `${acimaDoDireito.length} funcionário(s) com SALDO maior que o DIREITO: ${amostra}` +
+          (acimaDoDireito.length > 5 ? ", …" : "") +
+          ". Se o direito foi reduzido na planilha no meio do ciclo, é esperado e se " +
+          "resolve na próxima recarga. Se não foi, alguma escrita está caindo direto no saldo."
+      );
+    }
+  } catch (err: any) {
+    alertas.push(`Não deu para checar saldo contra direito: ${err?.message ?? err}`);
+  }
+
   if (alertas.length === 0) {
     console.log("💚 Checagem de saúde: tudo de pé.");
+    // O silêncio também é gravado: sem isso não dá pra distinguir "está tudo
+    // bem" de "o vigia parou de rodar" — que é o mesmo engano que deixou a
+    // recarga morta por 4 meses.
+    await insertOperationLog(supabase, {
+      action: "health_check",
+      status: "success",
+      message: "Tudo de pé.",
+      metadata: { alertas: [], total: 0 },
+    }).catch(() => null);
     return;
   }
 
   console.error(`🚨 Checagem de saúde encontrou ${alertas.length} problema(s):`);
   for (const alerta of alertas) console.error(`   • ${alerta}`);
+
+  // Grava ANTES de tentar a rede: se o envio falhar, o alerta não se perde.
+  await insertOperationLog(supabase, {
+    action: "health_check",
+    status: "failed",
+    message: `${alertas.length} problema(s) encontrado(s).`,
+    metadata: { alertas, total: alertas.length },
+  }).catch(() => null);
+
+  await enviarAlertaExterno(alertas);
+}
+
+function formatarReais(cents: unknown): string {
+  const valor = Number(cents ?? 0) / 100;
+  return valor.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
 app.listen(PORT, () => {

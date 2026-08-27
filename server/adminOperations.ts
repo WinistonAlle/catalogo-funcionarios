@@ -22,7 +22,17 @@ export type AdminOperationAction =
   /** Impressão manual da lista de separação (botão em AdminOrders). */
   | "print_portaria"
   /** Impressão avulsa de um pedido específico (botão "Imprimir" por linha). */
-  | "print_order";
+  | "print_order"
+  /**
+   * Resultado de uma passada do vigia (`runHealthCheck`). `success` = tudo de
+   * pé, `failed` = achou problema, com a lista em `metadata.alertas`.
+   *
+   * ⚠️ Ao adicionar uma ação nova aqui, adicione TAMBÉM no CHECK de
+   * `admin_operation_logs.action` no banco. O CHECK recusa em silêncio o que
+   * não está na lista dele — foi assim que `print_order` ficou sendo rejeitado
+   * sem ninguém ver, de 25 a 26/08/2026.
+   */
+  | "health_check";
 export type AdminOperationStatus = "running" | "success" | "failed" | "blocked";
 
 export type AdminOperationLogRow = {
@@ -190,24 +200,29 @@ export async function insertOperationLog(
   payload: {
     action: AdminOperationAction;
     status: AdminOperationStatus;
-    actor: PrivilegedActor;
+    /**
+     * Quem pediu a operação. Opcional porque nem toda linha tem gente atrás:
+     * o vigia (`health_check`) roda sozinho, de hora em hora. Sem ator, as
+     * colunas `actor_*` ficam nulas e a linha é lida como "foi o sistema".
+     */
+    actor?: PrivilegedActor | null;
     targetMonthKey?: string | null;
     message?: string | null;
     metadata?: Record<string, any> | null;
   }
 ) {
-  const { action, status, actor, targetMonthKey = null, message = null, metadata = {} } = payload;
+  const { action, status, actor = null, targetMonthKey = null, message = null, metadata = {} } = payload;
 
   const { data, error } = await supabase
     .from(OPERATIONS_TABLE)
     .insert({
       action,
       status,
-      actor_user_id: actor.userId,
-      actor_employee_id: actor.employeeId,
-      actor_cpf: actor.cpf,
-      actor_name: actor.fullName,
-      actor_role: actor.role,
+      actor_user_id: actor?.userId ?? null,
+      actor_employee_id: actor?.employeeId ?? null,
+      actor_cpf: actor?.cpf ?? null,
+      actor_name: actor?.fullName ?? null,
+      actor_role: actor?.role ?? null,
       target_month_key: targetMonthKey,
       message,
       metadata,

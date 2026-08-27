@@ -1,5 +1,11 @@
 import { supabase } from "@/lib/supabase";
 import { atualizarFuncionario, inserirFuncionario } from "@/lib/adminWrites";
+import {
+  deriveWallet,
+  WALLET_VIEW_COLUMNS,
+  type WalletRow,
+  type WalletSnapshot,
+} from "@/lib/wallet";
 
 export type Employee = {
   id?: string;
@@ -81,53 +87,35 @@ export async function getEmployeesBalanceSnapshots(employees: Pick<Employee, "id
     throw new Error("Não foi possível identificar o ciclo atual do saldo.");
   }
 
+  // Saldo e direito saem da mesma linha da VIEW segura — uma consulta em vez
+  // de duas, e sem `employee_monthly_spend` no meio (tabela que nenhuma função
+  // viva alimentava; ver src/lib/wallet.ts).
   const cpfs = Array.from(new Set(normalized.map((employee) => employee.cpf)));
   const { data: walletRows, error: walletError } = await supabase
     .from("employee_wallet_view")
-    .select("employee_id, cpf, credito_mensal_cents")
+    .select(WALLET_VIEW_COLUMNS)
     .in("cpf", cpfs);
 
   if (walletError) throw walletError;
 
-  const walletByEmployeeId = new Map<string, { cpf: string; monthlyLimitCents: number }>();
+  const walletByEmployeeId = new Map<string, WalletSnapshot>();
   for (const row of walletRows ?? []) {
     const employeeId = String((row as any).employee_id || "").trim();
     if (!employeeId) continue;
-    walletByEmployeeId.set(employeeId, {
-      cpf: String((row as any).cpf || "").replace(/\D/g, ""),
-      monthlyLimitCents: Number((row as any).credito_mensal_cents ?? 0) || 0,
-    });
-  }
-
-  const employeeIds = Array.from(new Set(normalized.map((employee) => employee.employeeId)));
-  const { data: spendRows, error: spendError } = await supabase
-    .from("employee_monthly_spend")
-    .select("employee_id, spent_cents")
-    .in("employee_id", employeeIds)
-    .eq("month_key", monthKey);
-
-  if (spendError) throw spendError;
-
-  const spentByEmployeeId = new Map<string, number>();
-  for (const row of spendRows ?? []) {
-    const employeeId = String((row as any).employee_id || "").trim();
-    if (!employeeId) continue;
-    spentByEmployeeId.set(employeeId, Number((row as any).spent_cents ?? 0) || 0);
+    walletByEmployeeId.set(employeeId, deriveWallet(row as WalletRow));
   }
 
   const byEmployeeId: Record<string, EmployeeBalanceSnapshot> = {};
   for (const employee of normalized) {
-    const wallet = walletByEmployeeId.get(employee.employeeId);
-    const monthlyLimitCents = wallet?.monthlyLimitCents ?? 0;
-    const spentCents = spentByEmployeeId.get(employee.employeeId) ?? 0;
+    const wallet = walletByEmployeeId.get(employee.employeeId) ?? deriveWallet(null);
 
     byEmployeeId[employee.employeeId] = {
       employeeId: employee.employeeId,
       cpf: employee.cpf,
       monthKey,
-      monthlyLimitCents,
-      spentCents,
-      availableCents: Math.max(monthlyLimitCents - spentCents, 0),
+      monthlyLimitCents: wallet.monthlyLimitCents,
+      spentCents: wallet.spentCents,
+      availableCents: wallet.availableCents,
     };
   }
 
@@ -170,18 +158,8 @@ export async function getEmployeeById(id: string) {
   return data as Employee;
 }
 
-// checar se usuário logado é RH (tabela hr_users)
-export async function isCurrentUserHR(): Promise<boolean> {
-  const { data: auth } = await supabase.auth.getUser();
-  const uid = auth.user?.id;
-  if (!uid) return false;
-
-  const { data, error } = await supabase
-    .from("hr_users")
-    .select("user_id")
-    .eq("user_id", uid)
-    .maybeSingle();
-
-  if (error) throw error;
-  return !!data;
-}
+// `isCurrentUserHR()` foi removida em 27/08/2026 junto com a tabela `hr_users`.
+// A tabela estava VAZIA desde que existe, então a função devolvia `false` para
+// todo mundo — inclusive para o RH de verdade. Quem manda em permissão é
+// `employees.role` (via `is_privileged_user()` no banco e `RequireRole` no
+// app); esta era uma segunda fonte de verdade que nunca teve verdade nenhuma.

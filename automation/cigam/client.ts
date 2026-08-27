@@ -86,6 +86,24 @@ type HttpCustomResponse<T = unknown> = {
   hash?: string;
 };
 
+/**
+ * O recorte de um pedido do CIGAM que interessa para CONFERIR um recibo
+ * (ver `buscarPedido`). Só os campos que respondem "este recibo existe, é
+ * nosso, está efetivado e bate de valor?".
+ */
+export type CigamPedidoConferencia = {
+  codigo: string;
+  dataPedido: string | null;
+  /** "F" = faturado. */
+  situacao: string | null;
+  situacaoDescricao: string | null;
+  /** "40" = efetivado. "30" = parado no controle, sem documento gerado. */
+  codigoControle: string | null;
+  /** Deve ser o cliente exclusivo de pedido de funcionário (009752). */
+  codigoCliente: string | null;
+  totalPedido: number;
+};
+
 export type CondicaoPagamento = {
   Codigo: string;
   Descricao: string;
@@ -692,6 +710,47 @@ export class CigamClient {
     }
 
     return materiais;
+  }
+
+  /**
+   * Lê um pedido pelo número do recibo. Devolve `null` quando o CIGAM não
+   * conhece o código — é assim que se descobre que um recibo que o catálogo
+   * acha que existe, na verdade não existe (apagado no ERP, por exemplo).
+   *
+   * ⚠️ Este endpoint responde FORA do envelope `{success, data}` que o resto da
+   * API usa: o corpo já é o pedido. Conferido ao vivo em 27/08/2026 com os
+   * recibos 015046 e 011750; código inexistente (999999, 000001) devolve `null`
+   * limpo, sem erro.
+   *
+   * O `RELATORIO-BUG-CIGAM.md` registra que em 13/07/2026 um pedido criado pelo
+   * PORTAL não aparecia aqui, o que levantou a suspeita de contexto de empresa
+   * diferente. Os nossos são criados por REST (`Pedido/Salvar`) e aparecem
+   * normalmente — a ressalva do documento não vale para o que a integração
+   * cria.
+   */
+  async buscarPedido(codigoPedido: string): Promise<CigamPedidoConferencia | null> {
+    const codigo = String(codigoPedido ?? "").trim();
+    if (!codigo) return null;
+
+    const bruto = await this.withAuthRetry(() =>
+      this.apiFetch<unknown>("GET", "/comercial/fa/Pedido/BuscarPedido", {
+        query: { codigoPedido: codigo },
+      })
+    );
+
+    // `apiFetch` promete o envelope; aqui o corpo é o pedido cru (ver acima).
+    const p = bruto as unknown as Record<string, any> | null;
+    if (!p || typeof p !== "object" || !p.Codigo) return null;
+
+    return {
+      codigo: String(p.Codigo ?? "").trim(),
+      dataPedido: String(p.DataPedido ?? "").trim() || null,
+      situacao: String(p.Situacao ?? "").trim() || null,
+      situacaoDescricao: String(p.SituacaoDescricao ?? "").trim() || null,
+      codigoControle: String(p.CodigoControle ?? "").trim() || null,
+      codigoCliente: String(p.CodigoCliente ?? "").trim() || null,
+      totalPedido: Number(p.TotalPedido ?? 0),
+    };
   }
 
   /**

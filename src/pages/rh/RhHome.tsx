@@ -326,6 +326,14 @@ const RhHome: React.FC = () => {
               <Subtitle>Quanto cada funcionário gastou do saldo</Subtitle>
             </ReportBox>
 
+            <ReportBox onClick={() => navigate("/rh/relatorio-abatimentos")}>
+              <Title>Relatório de Abatimentos</Title>
+              <Subtitle>
+                Os pedidos da semana conferidos com o CIGAM, prontos para o desconto em folha.
+                É o papel que o faturamento entregava toda sexta.
+              </Subtitle>
+            </ReportBox>
+
 
             <CatalogBox onClick={() => navigate("/catalogo")}>
               <Title>Acessar Catálogo</Title>

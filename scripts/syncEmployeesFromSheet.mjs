@@ -205,6 +205,53 @@ function shouldSyncMonthlyCredit() {
  * Devolve o instante do dia 27 mais recente: se hoje é dia 27 ou depois, é o 27
  * deste mês; se é antes, é o 27 do mês passado.
  */
+/**
+ * Decide QUEM leva saldo nesta rodada — a função onde a separação de direito e
+ * saldo (27/08/2026) vira estrutural, e por isso está exportada e testada.
+ *
+ * A regra em uma frase: `credito_direito_cents` vai para todo mundo, sempre;
+ * `credito_mensal_cents` (o SALDO) só vai para quem tem motivo.
+ *
+ * ANTES, o saldo ia no payload de TODA rodada. Para não apagar o saldo de quem
+ * já tinha comprado, a rodada de cadastro — que roda de 20 em 20 minutos e não
+ * tem nada a ver com dinheiro — lia o saldo atual de cada um e o reescrevia
+ * igual. 256 valores de dinheiro trafegando a cada 20 min só para ficarem os
+ * mesmos, e um erro nessa leitura levava o saldo de todos junto.
+ *
+ * AGORA, na rodada de cadastro a chave `credito_mensal_cents` simplesmente não
+ * existe no objeto. A rodada não tem como encostar em dinheiro — não porque uma
+ * flag proíbe, mas porque o dado não está lá.
+ *
+ * ⚠️ As duas levas vão em upserts SEPARADOS de propósito: o PostgREST recusa um
+ * array cujos objetos não tenham exatamente as mesmas chaves ("All object keys
+ * must match"). Misturá-las quebraria a rodada inteira no primeiro funcionário
+ * novo — e, pior, quebraria o CADASTRO por causa de uma regra de SALDO.
+ */
+export function montarLevasDeUpsert({ sheetEmployees, cpfsInDbSet, syncCredit }) {
+  const comCadastroApenas = [];
+  const comSaldoTambem = [];
+
+  for (const e of sheetEmployees) {
+    const isNew = !cpfsInDbSet.has(e.cpf);
+
+    const cadastro = {
+      cpf: e.cpf,
+      full_name: e.full_name,
+      role: e.role,
+      credito_direito_cents: e.credito_direito_cents,
+    };
+
+    if (syncCredit || isNew) {
+      // Recarga do ciclo, ou funcionário novo começando: saldo := direito.
+      comSaldoTambem.push({ ...cadastro, credito_mensal_cents: e.credito_direito_cents });
+    } else {
+      comCadastroApenas.push(cadastro);
+    }
+  }
+
+  return { comCadastroApenas, comSaldoTambem };
+}
+
 export function inicioDoCicloAtual(agora = new Date()) {
   const partes = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Sao_Paulo",
@@ -340,14 +387,16 @@ async function readEmployeesFromSheet() {
       const roleRaw = iRole !== -1 ? (row[iRole] || "").toString().trim() : "";
       const role = normalizeRole(roleRaw, { cpf, full_name });
 
+      // A planilha diz o DIREITO do ciclo, nunca o saldo. O saldo é o que
+      // sobrou depois das compras, e disso a planilha não sabe nada.
       const creditoRaw = iCredit !== -1 ? row[iCredit] : "";
-      const credito_mensal_cents = parseMoneyToCentsBR(creditoRaw);
+      const credito_direito_cents = parseMoneyToCentsBR(creditoRaw);
 
       return {
         full_name,
         cpf,
         role,
-        credito_mensal_cents,
+        credito_direito_cents,
       };
     })
     .filter((e) => e.cpf.length === 11 && e.full_name);
@@ -374,7 +423,7 @@ async function syncEmployees() {
     console.log("🔎 Buscando funcionários atuais no Supabase...");
     const { data: dbEmployees, error: dbError } = await supabase
       .from("employees")
-      .select("id, cpf, credito_mensal_cents");
+      .select("id, cpf");
 
     if (dbError) {
       failSync("❌ Erro ao buscar employees no Supabase:", dbError);
@@ -385,24 +434,16 @@ async function syncEmployees() {
         id: e.id,
         cpf_raw: e.cpf,
         cpf_normalized: normalizeCpf(e.cpf),
-        credito_mensal_cents:
-          e.credito_mensal_cents === null || e.credito_mensal_cents === undefined
-            ? null
-            : Number(e.credito_mensal_cents),
       }))
       .filter((e) => e.cpf_normalized);
-
-    const existingCreditByCpf = new Map(
-      dbEmployeesNormalized.map((employee) => [employee.cpf_normalized, employee.credito_mensal_cents])
-    );
 
     const cpfsInDb = unique(dbEmployeesNormalized.map((e) => e.cpf_normalized));
     const cpfsInDbSet = new Set(cpfsInDb);
 
     // ✅ Regra:
-    // - Todo dia: só cadastra/atualiza dados “cadastro”
-    // - Dia 27: atualiza o credito_mensal_cents de todo mundo
-    // - Qualquer dia: se for funcionário novo (CPF não existe ainda), insere já com crédito
+    // - Todo dia: cadastro + credito_direito_cents (o direito, que é inofensivo)
+    // - Dia 27: além disso, copia o direito para credito_mensal_cents (o SALDO)
+    // - Qualquer dia: funcionário novo (CPF inédito) nasce com saldo = direito
     let syncCredit = shouldSyncMonthlyCredit();
     let creditGuardTripped = false;
 
@@ -413,12 +454,12 @@ async function syncEmployees() {
 
     console.log(
       syncCredit
-        ? "📅 Hoje é rodada MENSAL: vai sincronizar credito_mensal de todos."
-        : "🗓️ Rodada DIÁRIA: vai sincronizar cadastro; e crédito só para funcionários NOVOS."
+        ? "📅 Hoje é rodada MENSAL: vai recarregar o SALDO de todos (saldo := direito)."
+        : "🗓️ Rodada DIÁRIA: cadastro + direito; o SALDO só é tocado para funcionários NOVOS."
     );
 
-    // Trava de segurança pra rodada MENSAL: ela sobrescreve
-    // credito_mensal_cents de TODO MUNDO de uma vez (é o único mecanismo que
+    // Trava de segurança pra rodada MENSAL: ela sobrescreve o SALDO
+    // (credito_mensal_cents) de TODO MUNDO de uma vez (é o único mecanismo que
     // reabastece o saldo de verdade — ver "Restaurar saldo" no admin). Se a
     // coluna "credito_mensal" sumir da planilha, for renomeada, ou alguém
     // limpar as células por engano, todo mundo leria 0 e a rodada mensal
@@ -427,7 +468,10 @@ async function syncEmployees() {
     // preenchida — então trata como sinal de que algo está errado e aborta a
     // parte de crédito (cadastro ainda sincroniza normalmente).
     if (syncCredit) {
-      const totalCreditoNaPlanilha = sheetEmployees.reduce((sum, e) => sum + e.credito_mensal_cents, 0);
+      const totalCreditoNaPlanilha = sheetEmployees.reduce(
+        (sum, e) => sum + e.credito_direito_cents,
+        0
+      );
       if (totalCreditoNaPlanilha <= 0) {
         console.error(
           "🛑 Rodada MENSAL abortada: a soma de credito_mensal de todos os funcionários na planilha deu " +
@@ -440,33 +484,45 @@ async function syncEmployees() {
       }
     }
 
-    const payload = sheetEmployees.map((e) => {
-      const base = {
-        cpf: e.cpf,
-        full_name: e.full_name,
-        role: e.role,
-      };
-
-      const isNew = !cpfsInDbSet.has(e.cpf);
-      const currentCredit = existingCreditByCpf.get(e.cpf);
-      const credito_mensal_cents =
-        syncCredit || isNew || currentCredit === null || currentCredit === undefined
-          ? e.credito_mensal_cents
-          : currentCredit;
-
-      return {
-        ...base,
-        credito_mensal_cents,
-      };
+    // -------------------------------------------------------------------
+    // O payload é onde a separação de 27/08/2026 vira estrutural.
+    //
+    // ANTES, `credito_mensal_cents` (o SALDO) ia em TODA rodada: para não
+    // apagar o saldo de quem já tinha comprado, a rodada de cadastro lia o
+    // saldo atual de cada um e o reescrevia igual. Uma rodada de cadastro,
+    // que não tem nada a ver com dinheiro, mandava 256 valores de saldo ao
+    // banco de 20 em 20 minutos — e bastava um erro nessa leitura para o
+    // saldo de todo mundo ir junto.
+    //
+    // AGORA o saldo só entra no payload quando há motivo:
+    //   - rodada MENSAL: saldo := direito (a recarga do ciclo, uma vez só);
+    //   - funcionário NOVO: começa o ciclo com o direito cheio.
+    // Na rodada de cadastro a chave `credito_mensal_cents` simplesmente NÃO
+    // EXISTE no objeto, então o upsert não tem como encostar em dinheiro —
+    // não por causa de uma flag, mas porque o dado não está lá.
+    //
+    // `credito_direito_cents` vai sempre, e isso é seguro: direito não é
+    // dinheiro de ninguém, é o que a planilha manda.
+    // -------------------------------------------------------------------
+    const { comCadastroApenas, comSaldoTambem } = montarLevasDeUpsert({
+      sheetEmployees,
+      cpfsInDbSet,
+      syncCredit,
     });
 
-    console.log("⬆️ Fazendo upsert dos funcionários da planilha...");
-    const { error: upsertError } = await supabase.from("employees").upsert(payload, {
-      onConflict: "cpf",
-    });
+    console.log(
+      `⬆️ Fazendo upsert dos funcionários da planilha... ` +
+        `(${comCadastroApenas.length} só cadastro, ${comSaldoTambem.length} com saldo)`
+    );
 
-    if (upsertError) {
-      failSync("❌ Erro no upsert de employees:", upsertError);
+    for (const leva of [comCadastroApenas, comSaldoTambem]) {
+      if (leva.length === 0) continue;
+      const { error: upsertError } = await supabase.from("employees").upsert(leva, {
+        onConflict: "cpf",
+      });
+      if (upsertError) {
+        failSync("❌ Erro no upsert de employees:", upsertError);
+      }
     }
 
     const allowDelete = shouldDeleteMissingEmployees();

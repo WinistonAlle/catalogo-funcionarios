@@ -30,6 +30,7 @@ import AdminHome from "./pages/AdminHome";
 import RhHome from "./pages/rh/RhHome";
 import EmployeesPage from "./pages/rh/EmployeesPage";
 import RHSpendingReport from "./pages/rh/RHSpendingReport";
+import RelatorioAbatimentos from "./pages/RelatorioAbatimentos";
 import ReportsDashboard from "./pages/ReportsDashboard";
 import OperationsHistory from "./pages/OperationsHistory";
 
@@ -256,6 +257,21 @@ function App() {
                 element={
                   <RequireRole allow={["rh"]} redirectTo="/catalogo">
                     <RHSpendingReport />
+                  </RequireRole>
+                }
+              />
+
+              {/*
+                Relatório de abatimentos — o papel que o faturamento entregava
+                ao RH toda sexta. Admin entra na MESMA tela (há botão nos dois
+                menus): é um só relatório, e duas versões dele seria a chance de
+                o RH e o faturamento abaterem valores diferentes.
+              */}
+              <Route
+                path="/rh/relatorio-abatimentos"
+                element={
+                  <RequireRole allow={["rh", "admin"]} redirectTo="/catalogo">
+                    <RelatorioAbatimentos />
                   </RequireRole>
                 }
               />

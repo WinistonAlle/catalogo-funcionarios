@@ -31,13 +31,18 @@ export const COLUNAS_PRODUTO_PERMITIDAS = new Set([
 /**
  * Espelha o tipo `Employee` em `src/lib/employeeService.ts`.
  *
- * ⚠️ `credito_mensal_cents` está FORA de propósito — é o campo que decide quanto
- * o funcionário pode gastar, e nenhuma tela o edita. Quem escreve saldo é o RPC
- * de pagamento, a sincronização da planilha e o webhook de restauração. Deixá-lo
- * aqui reabriria, por outra porta, exatamente o buraco que estamos fechando.
+ * ⚠️ `credito_mensal_cents` (SALDO) e `credito_direito_cents` (DIREITO) estão
+ * FORA de propósito. O saldo é o que decide quanto o funcionário pode gastar, e
+ * nenhuma tela o edita: quem escreve é o RPC de pagamento, o estorno de
+ * cancelamento e a recarga mensal. O direito só a planilha escreve. Deixar
+ * qualquer um dos dois aqui reabriria, por outra porta, exatamente o buraco que
+ * estamos fechando.
  *
- * Também ficam de fora `user_id`/`auth_user_id` (vínculo de autenticação — quem
- * pode escrever isso decide quem é admin) e `cpf_hash` (derivado do cpf).
+ * Como a lista é allowlist (nega por padrão), coluna nova nasce bloqueada — foi
+ * o que aconteceu com `credito_direito_cents` em 27/08/2026.
+ *
+ * Também fica de fora `user_id` (vínculo de autenticação — quem pode escrever
+ * isso decide quem é admin) e `cpf_hash` (derivado do cpf).
  */
 export const COLUNAS_FUNCIONARIO_PERMITIDAS = new Set([
   "cpf",
@@ -47,7 +52,6 @@ export const COLUNAS_FUNCIONARIO_PERMITIDAS = new Set([
   "role",
   "notes",
   "status",
-  "is_active",
   "department",
   "job_title",
   "hired_at",

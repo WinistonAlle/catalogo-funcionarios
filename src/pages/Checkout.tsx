@@ -9,6 +9,7 @@ import { supabase } from "@/lib/supabase";
 import { getLineSubtotal, getUnitPrice } from "@/lib/pricing";
 import { checkStockLive } from "@/lib/stock";
 import { getSaoPauloPayCycleKey } from "@/lib/payCycle";
+import { deriveWallet, WALLET_VIEW_COLUMNS } from "@/lib/wallet";
 
 import logo from "../images/logoc.png";
 
@@ -80,8 +81,12 @@ const Checkout: React.FC = () => {
   const [walletError, setWalletError] = useState<string | null>(null);
 
   // ✅ importante: não comece “zerando” como verdade final, mas ok como default.
+  // `monthlyLimitCents` é o DIREITO do ciclo e `spentCents` é derivado dele —
+  // os dois existem só para o quadro "Direito / Usado / Disponível". Quem
+  // decide se o pedido passa é `availableCents`, que é o SALDO lido do banco.
   const [monthlyLimitCents, setMonthlyLimitCents] = useState(0);
   const [spentCents, setSpentCents] = useState(0);
+  const [availableCents, setAvailableCents] = useState(0);
 
   // ✅ employee_id resolvido (view > session)
   const [resolvedEmployeeId, setResolvedEmployeeId] = useState<string | null>(null);
@@ -93,10 +98,6 @@ const Checkout: React.FC = () => {
   const isWeekendOrder = useMemo(() => isWeekendInSaoPaulo(), []);
   const isLateOrder = useMemo(() => isAfterSeparationCutoff(), []);
 
-  const availableCents = useMemo(() => {
-    const avail = (monthlyLimitCents || 0) - (spentCents || 0);
-    return Math.max(avail, 0);
-  }, [monthlyLimitCents, spentCents]);
 
   // ✅ só permite pagar com saldo se cobrir 100% do total
   const canPayWithWallet = useMemo(() => {
@@ -191,44 +192,40 @@ const Checkout: React.FC = () => {
         return;
       }
 
-      // 1) limite mensal (VIEW segura)
+      // Saldo e direito numa consulta só, da VIEW segura. O que autoriza a
+      // compra é o SALDO — a MESMA coluna que place_order_with_wallet_v2
+      // confere no servidor —, então a tela não tem como prometer um valor que
+      // o checkout depois recusa. Ver src/lib/wallet.ts.
       const { data: walletRow, error: walletErr } = await supabase
         .from("employee_wallet_view")
-        .select("employee_id, credito_mensal_cents")
+        .select(WALLET_VIEW_COLUMNS)
         .eq("cpf", employeeCpf)
         .maybeSingle();
 
       if (walletErr) throw walletErr;
 
-      const limit = Number(walletRow?.credito_mensal_cents ?? 0) || 0;
+      const {
+        monthlyLimitCents: limit,
+        spentCents: spent,
+        availableCents: disponivel,
+      } = deriveWallet(walletRow);
 
       const resolvedId = (walletRow?.employee_id || employeeIdFromSession) as string | undefined;
 
       if (!resolvedId) {
         if (loadId !== loadIdRef.current) return;
-        // ✅ atualiza limite se veio, mas não inventa spent=0 como verdade final
+        // ✅ atualiza limite se veio, mas não deixa comprar sem saber quem é
         setMonthlyLimitCents(limit);
         setResolvedEmployeeId(null);
         setWalletError("Não foi possível identificar seu cadastro. Faça login novamente.");
         return;
       }
 
-      // 2) gasto do mês
-      const { data: spendRow, error: spendErr } = await supabase
-        .from("employee_monthly_spend")
-        .select("spent_cents")
-        .eq("employee_id", resolvedId)
-        .eq("month_key", monthKey)
-        .maybeSingle();
-
-      if (spendErr) throw spendErr;
-
-      const spent = Number(spendRow?.spent_cents ?? 0) || 0;
-
       if (loadId !== loadIdRef.current) return;
 
       setMonthlyLimitCents(limit);
       setSpentCents(spent);
+      setAvailableCents(disponivel);
       setResolvedEmployeeId(resolvedId);
       setWalletError(null);
     } catch (e: any) {
@@ -679,7 +676,7 @@ const Checkout: React.FC = () => {
               ) : (
                 <>
                   <p className="text-sm text-gray-600">
-                    Limite:{" "}
+                    Direito:{" "}
                     <span className="font-semibold">{formatBRLFromCents(monthlyLimitCents)}</span>
                   </p>
                   <p className="text-sm text-gray-600">

@@ -8,7 +8,7 @@ import { toast } from "./ui/sonner";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/lib/supabase";
 import { getLineSubtotal, getUnitPrice } from "@/lib/pricing";
-import { getSaoPauloPayCycleKey } from "@/lib/payCycle";
+import { deriveWallet, WALLET_VIEW_COLUMNS } from "@/lib/wallet";
 
 /* --------------------------------------------------------
    HELPERS
@@ -63,30 +63,19 @@ const Cart: React.FC = () => {
         const cpf = employee?.cpf;
         if (!cpf) return;
 
-        // 1) Limite mensal (VIEW segura)
+        // Saldo e direito vêm juntos da VIEW segura. O disponível é o SALDO,
+        // não uma subtração — ver src/lib/wallet.ts.
         const { data: walletRow } = await supabase
           .from("employee_wallet_view")
-          .select("employee_id, credito_mensal_cents")
+          .select(WALLET_VIEW_COLUMNS)
           .eq("cpf", cpf)
           .maybeSingle();
 
         if (!walletRow) return;
 
-        // 2) Gasto do mês
-        const { data: spendRow } = await supabase
-          .from("employee_monthly_spend")
-          .select("spent_cents")
-          .eq("employee_id", walletRow.employee_id)
-          .eq("month_key", getSaoPauloPayCycleKey())
-          .maybeSingle();
+        const { availableCents } = deriveWallet(walletRow);
 
-        const spent = Number(spendRow?.spent_cents ?? 0);
-        const available = Math.max(
-          Number(walletRow.credito_mensal_cents) - spent,
-          0
-        );
-
-        if (mounted) setWalletAvailableCents(available);
+        if (mounted) setWalletAvailableCents(availableCents);
       } finally {
         if (mounted) setWalletLoading(false);
       }

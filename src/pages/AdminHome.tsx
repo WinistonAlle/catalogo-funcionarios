@@ -17,6 +17,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import OperationsSummaryPanel from "@/components/operations/OperationsSummaryPanel";
+import { HealthAlertBanner } from "@/components/operations/HealthAlertBanner";
 
 const Wrapper = styled.div`
   position: relative;
@@ -326,6 +327,10 @@ export default function AdminHome() {
         </BackButton>
 
         <Shell>
+          {/* O vigia, antes preso no log do servidor. Fica ACIMA de tudo de
+              propósito: é a única coisa desta tela que pode estar gritando. */}
+          <HealthAlertBanner />
+
           <OperationsSummaryPanel
             loading={statusQuery.isLoading}
             status={statusQuery.data}
@@ -374,6 +379,14 @@ export default function AdminHome() {
               <Title>Integração CIGAM</Title>
               <Subtitle>
                 Pedidos que não chegaram ao ERP: presos na fila, órfãos e erros. Reenfileirar.
+              </Subtitle>
+            </Box>
+
+            <Box type="button" onClick={() => navigate("/rh/relatorio-abatimentos")}>
+              <Title>Relatório de Abatimentos</Title>
+              <Subtitle>
+                Os pedidos da semana conferidos um a um com o CIGAM, prontos para o desconto em
+                folha. Mesma tela que o RH usa.
               </Subtitle>
             </Box>
 
