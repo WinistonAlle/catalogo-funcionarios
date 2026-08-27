@@ -206,12 +206,13 @@ describe("marcarPortariaImpressa: o segundo passo", () => {
   });
 
   /**
-   * IMPRIMIR É ENTREGAR (27/08/2026) — o status é a única coisa que o
-   * faturamento vê na tela, então é ele que precisa mudar quando a folha sai.
-   * Sem isto o pedido ficava "aguardando separação" depois de impresso e nada
-   * na tela impedia imprimir a mesma folha de novo.
+   * IMPRIMIR É ENTRAR EM SEPARAÇÃO (27/08/2026) — o status é a única coisa que
+   * o faturamento vê na tela, então é ele que precisa mudar quando a folha
+   * sai. Sem isto o pedido ficava "aguardando separação" depois de impresso e
+   * nada na tela impedia imprimir a mesma folha de novo. Não é "entregue":
+   * entregue é a assinatura do funcionário na portaria, passo de humano.
    */
-  it("carimba printed_at E marca o pedido como entregue, no mesmo update", async () => {
+  it("carimba printed_at E marca o pedido como em_separacao, no mesmo update", async () => {
     const { supabase, chamadas } = fakeSupabaseUpdate([{ id: "id-1" }]);
 
     await marcarPortariaImpressa(supabase, ["id-1"]);
@@ -220,7 +221,7 @@ describe("marcarPortariaImpressa: o segundo passo", () => {
       printed_at: string;
       status: string;
     };
-    expect(payload.status).toBe("entregue");
+    expect(payload.status).toBe("em_separacao");
     expect(Number.isNaN(Date.parse(payload.printed_at))).toBe(false);
   });
 
@@ -242,7 +243,7 @@ describe("marcarPortariaImpressa: o segundo passo", () => {
  *
  * Passa por fora do corte e do dia útil de propósito (é escolha explícita de
  * um admin), mas segue a mesma regra do resto desde 27/08: quando carimba,
- * carimba as duas coisas — `printed_at` e `entregue`. E não recarimba pedido
+ * carimba as duas coisas — `printed_at` e `em_separacao`. E não recarimba pedido
  * que já saiu, pra reimpressão de folha atolada não apagar o horário original.
  */
 function fakeSupabasePedidoUnico(pedido: Record<string, unknown>) {
@@ -275,8 +276,8 @@ function pedidoAvulso(extra: Record<string, unknown> = {}) {
   };
 }
 
-describe("gerarPdfPedidoUnico: imprimir é entregar", () => {
-  it("marca printed_at e entregue quando o pedido ainda não tinha saído", async () => {
+describe("gerarPdfPedidoUnico: imprimir é entrar em separação", () => {
+  it("marca printed_at e em_separacao quando o pedido ainda não tinha saído", async () => {
     const { supabase, chamadas } = fakeSupabasePedidoUnico(pedidoAvulso());
 
     const r = await gerarPdfPedidoUnico({ supabase, orderId: "id-avulso" });
@@ -288,7 +289,7 @@ describe("gerarPdfPedidoUnico: imprimir é entregar", () => {
       printed_at: string;
       status: string;
     };
-    expect(payload.status).toBe("entregue");
+    expect(payload.status).toBe("em_separacao");
     expect(Number.isNaN(Date.parse(payload.printed_at))).toBe(false);
   });
 
@@ -304,7 +305,7 @@ describe("gerarPdfPedidoUnico: imprimir é entregar", () => {
     expect(chamadas.update).toBeUndefined();
   });
 
-  it("pedido cancelado não vira entregue por um clique em Imprimir", async () => {
+  it("pedido cancelado não entra em separação por um clique em Imprimir", async () => {
     const { supabase, chamadas } = fakeSupabasePedidoUnico(
       pedidoAvulso({ cancelled_at: "2026-08-27T12:00:00.000Z" })
     );
@@ -315,7 +316,7 @@ describe("gerarPdfPedidoUnico: imprimir é entregar", () => {
     expect(chamadas.update).toBeUndefined();
   });
 
-  it("pedido sem pagamento não vira entregue por um clique em Imprimir", async () => {
+  it("pedido sem pagamento não entra em separação por um clique em Imprimir", async () => {
     const { supabase, chamadas } = fakeSupabasePedidoUnico(
       pedidoAvulso({ wallet_debited: false, wallet_used_cents: 0, pay_on_pickup_cents: 0 })
     );

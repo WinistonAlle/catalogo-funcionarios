@@ -1425,14 +1425,14 @@ app.post("/print-portaria-confirm", async (req, res) => {
         action: "print_portaria",
         status: "success",
         actor: auth.actor,
-        message: `Impressão confirmada: ${marcados.length} de ${orderIds.length} pedido(s) marcados como impressos e entregues.`,
+        message: `Impressão confirmada: ${marcados.length} de ${orderIds.length} pedido(s) marcados como impressos e em separação.`,
         metadata: { pedidos: orderIds, marcados, confirmado: true },
       }).catch(() => null);
 
       return res.status(200).json({
         ok: true,
         marcados: marcados.length,
-        message: `${marcados.length} pedido(s) marcados como impressos e entregues.`,
+        message: `${marcados.length} pedido(s) marcados como impressos e em separação.`,
       });
     } catch (err: any) {
       await insertOperationLog(supabase, {

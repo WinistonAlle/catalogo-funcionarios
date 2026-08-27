@@ -824,7 +824,7 @@ export default function AdminOrders() {
       const confirmou = window.confirm(
         `A lista abriu numa aba nova com ${total} pedido(s).\n\n` +
           "Imprima as folhas e confira se saíram na impressora.\n\n" +
-          "OK = já saíram: tira da lista e marca os pedidos como ENTREGUES.\n" +
+          "OK = já saíram: tira da lista e marca os pedidos como EM SEPARAÇÃO.\n" +
           "Cancelar = deu algo errado, mantenha os pedidos na lista pra imprimir de novo."
       );
 
@@ -836,7 +836,7 @@ export default function AdminOrders() {
       const confirmacao = await confirmPortariaPrint(result.pedidos);
       alert(
         confirmacao?.message ||
-          `${total} pedido(s) marcados como impressos e entregues.`
+          `${total} pedido(s) marcados como impressos e em separação.`
       );
       await loadOrders();
     } catch (e: any) {
@@ -849,7 +849,7 @@ export default function AdminOrders() {
   async function handlePrintOrder(orderId: string) {
     if (printingOrderId) return;
 
-    // Imprimir marca o pedido como ENTREGUE (ver marcaDeImpressao em
+    // Imprimir marca o pedido como EM SEPARAÇÃO (ver marcaDeImpressao em
     // automation/print/portariaList.ts), então um pedido com printed_at é
     // folha que já circulou na portaria. Reimprimir continua permitido — é o
     // caminho de recuperação quando o papel atolou, sumiu ou saiu ilegível —

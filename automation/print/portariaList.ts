@@ -6,26 +6,29 @@ import { printOrderSheet } from "./printClient";
 
 /**
  * O que "imprimir" grava no pedido: o carimbo de que a folha saiu E o status
- * `entregue`.
+ * `em_separacao`.
  *
  * Por que os dois juntos (27/08/2026): `printed_at` não aparece em lugar
  * nenhum da tela — quem olha a lista de pedidos vê o STATUS. Com o pedido
  * continuando "aguardando separação" depois de a folha sair, a única defesa
  * contra imprimir a mesma folha duas vezes era a memória de quem clicou. Na
- * prática o pessoal já vinha marcando "entregue" na mão logo depois de
- * imprimir (5 pedidos assim entre 25 e 27/08, todos com printed_at nulo) —
- * agora a impressão marca sozinha, no mesmo instante, e o pedido sai da fila
- * da portaria e do quadro de separação de uma vez só.
+ * prática o pessoal já vinha marcando o pedido na mão logo depois de imprimir
+ * (5 pedidos entre 25 e 27/08 marcados "entregue" com printed_at nulo) — agora
+ * a impressão marca sozinha, no mesmo instante em que o pedido vira papel.
  *
- * `entregue` também tranca a edição de itens (isManageLocked em AdminOrders e
- * o guard das RPCs de item), e isso é o certo depois de a folha estar
- * circulando: mudar item de um pedido cuja lista de separação já foi pra
- * portaria é papel e banco discordando. CANCELAR continua liberado
- * (`admin_cancel_order_v2` não recusa pedido entregue) — essa é a saída de
- * verdade quando o pedido não pode mais acontecer, e ela estorna o saldo.
+ * Por que `em_separacao` e não `entregue`: imprimir a folha é o pedido ENTRAR
+ * em separação; entregue é quando o funcionário assina na portaria. Marcar
+ * entregue aqui apagaria o único estado que o quadro de separação existe pra
+ * mostrar, e diria ao funcionário que o pedido já foi retirado antes de ele
+ * sair da loja. A retirada continua sendo um passo de humano.
+ *
+ * `em_separacao` também NÃO tranca a edição de itens (só `cancelado` e
+ * `entregue` trancam, ver isManageLocked em AdminOrders) — o que é coerente:
+ * o pedido ainda está aberto e a mercadoria ainda está sendo juntada. Cancelar
+ * segue liberado em qualquer status, com estorno de saldo.
  */
 function marcaDeImpressao(agora: Date = new Date()) {
-  return { printed_at: agora.toISOString(), status: "entregue" };
+  return { printed_at: agora.toISOString(), status: "em_separacao" };
 }
 
 type ItemRow = {
@@ -123,7 +126,7 @@ export type PedidoUnicoResultado = {
  * recusado, porque não faz sentido separar mercadoria de um pedido que não
  * vale mais.
  *
- * Marca `printed_at` e o status `entregue` (ver `marcaDeImpressao`) só se
+ * Marca `printed_at` e o status `em_separacao` (ver `marcaDeImpressao`) só se
  * `printed_at` ainda estiver nulo — reimprimir um pedido que já tinha saído
  * não mexe no timestamp original nem duplica no relatório do disparo
  * automático.
@@ -187,7 +190,7 @@ export async function gerarPdfPedidoUnico(params: {
       .eq("id", orderId);
     if (updateError) {
       throw new Error(
-        `PDF gerado, mas falhou ao marcar o pedido como impresso/entregue: ${updateError.message}`
+        `PDF gerado, mas falhou ao marcar o pedido como impresso/em separação: ${updateError.message}`
       );
     }
   }
@@ -248,7 +251,7 @@ export async function gerarPdfPortaria(params: {
 }
 
 /**
- * Marca `printed_at` — e o status `entregue`, ver `marcaDeImpressao` — na leva
+ * Marca `printed_at` — e o status `em_separacao`, ver `marcaDeImpressao` — na leva
  * que o faturamento confirmou ter saído no papel: o segundo passo de
  * `gerarPdfPortaria` (ver o porquê lá em cima).
  *
@@ -273,7 +276,7 @@ export async function marcarPortariaImpressa(
     .is("printed_at", null)
     // Os ids vêm da tela, não da consulta da leva: se um pedido for cancelado
     // entre gerar o PDF e confirmar a impressão, ele não pode ressuscitar
-    // como "entregue" — o estorno já aconteceu e a mercadoria não sai.
+    // como "em separação" — o estorno já aconteceu e a mercadoria não sai.
     .is("cancelled_at", null)
     .select("id");
 
