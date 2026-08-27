@@ -3,6 +3,11 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { printPortariaNow, printOrderNow, confirmPortariaPrint } from "@/lib/adminOperations";
+import {
+  liberarPedidoParaHoje,
+  precisaDeLiberacao,
+  type PedidoParaLiberar,
+} from "@/lib/liberacaoDePedido";
 
 type OrderRow = {
   id: string;
@@ -26,6 +31,14 @@ type OrderRow = {
 
   /** Quando a folha de separação saiu. Nulo = nunca foi impresso. */
   printed_at: string | null;
+
+  /**
+   * Liberação do pedido tardio para sair HOJE (ver src/lib/liberacaoDePedido.ts).
+   * Nulo = segue a regra normal, sai no próximo dia útil.
+   */
+  released_for_today_at: string | null;
+  released_by_cpf: string | null;
+  released_authorized_by: string | null;
 
   cancelled_at: string | null;
   cancel_reason: string | null;
@@ -469,6 +482,7 @@ export default function AdminOrders() {
   const [canceling, setCanceling] = useState(false);
   const [printingPortaria, setPrintingPortaria] = useState(false);
   const [printingOrderId, setPrintingOrderId] = useState<string | null>(null);
+  const [liberandoId, setLiberandoId] = useState<string | null>(null);
 
   const [history, setHistory] = useState<AdminActionRow[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -622,6 +636,9 @@ export default function AdminOrders() {
           "status",
           "created_at",
           "printed_at",
+          "released_for_today_at",
+          "released_by_cpf",
+          "released_authorized_by",
           "cancelled_at",
           "cancel_reason",
         ].join(","),
@@ -712,6 +729,9 @@ export default function AdminOrders() {
           "status",
           "created_at",
           "printed_at",
+          "released_for_today_at",
+          "released_by_cpf",
+          "released_authorized_by",
           "cancelled_at",
           "cancel_reason",
         ].join(","),
@@ -884,6 +904,48 @@ export default function AdminOrders() {
       alert(e?.message || "Erro ao imprimir o pedido.");
     } finally {
       setPrintingOrderId(null);
+    }
+  }
+
+  /**
+   * LIBERAR UM PEDIDO TARDIO PARA HOJE, do lado do faturamento.
+   *
+   * O RH também libera pela tela dele (/rh/liberar-pedidos) — as duas mãos
+   * existem porque a autorização nem sempre chega pelo sistema: às vezes o RH
+   * avisa por telefone e quem está com a tela aberta é o faturamento. Por isso
+   * aqui pergunta QUEM autorizou: sem isso a liberação vira um clique sem
+   * dono, e liberar pedido é deixar mercadoria sair fora do fluxo.
+   */
+  async function handleLiberarParaHoje(order: OrderRow) {
+    const actorCpf = await getActorCpf();
+    if (!actorCpf) {
+      alert("Não encontrei seu CPF de login. Faça login novamente.");
+      return;
+    }
+
+    const autorizadoPor = window.prompt(
+      `Liberar o pedido de ${order.employee_name ?? "funcionário"} para separação HOJE.\n\n` +
+        "Quem do RH autorizou? (o nome fica registrado no pedido)"
+    );
+    if (autorizadoPor === null) return;
+    if (!autorizadoPor.trim()) {
+      alert("Precisa dizer quem autorizou.");
+      return;
+    }
+
+    setLiberandoId(order.id);
+    try {
+      const r = await liberarPedidoParaHoje({
+        orderId: order.id,
+        actorCpf,
+        autorizadoPor,
+      });
+      alert(r.message);
+      await loadOrders();
+    } catch (e: any) {
+      alert(e?.message || "Falha ao liberar o pedido.");
+    } finally {
+      setLiberandoId(null);
     }
   }
 
@@ -1173,6 +1235,39 @@ export default function AdminOrders() {
     setErr(null);
   }
 
+  /**
+   * A ponta solta que a faixa no topo cobre: o RH libera às 15h um pedido que
+   * a leva das 14h já não pegou. Sem alguém avisando, ele fica esperando
+   * memória humana — que é exatamente o que falhou com a lista da portaria em
+   * 26/08. `printed_at` nulo é o sinal honesto: enquanto o papel não sai, o
+   * pedido aparece aqui.
+   */
+  const liberadosAguardandoPapel = useMemo(
+    () =>
+      orders.filter(
+        (o) => !!o.released_for_today_at && !o.printed_at && !o.cancelled_at,
+      ),
+    [orders],
+  );
+
+  /** O pedido é tardio e ainda não tem autorização? Então dá pra liberar. */
+  const podeLiberar = (o: OrderRow) =>
+    !o.cancelled_at &&
+    precisaDeLiberacao({
+      id: o.id,
+      order_number: o.order_number,
+      erp_external_id: o.erp_external_id,
+      employee_name: o.employee_name,
+      employee_cpf: o.employee_cpf,
+      created_at: o.created_at,
+      total_cents: o.total_cents,
+      wallet_used_cents: o.wallet_used_cents,
+      printed_at: o.printed_at,
+      released_for_today_at: o.released_for_today_at,
+      released_by_cpf: o.released_by_cpf,
+      released_authorized_by: o.released_authorized_by,
+    } as PedidoParaLiberar);
+
   const isManageLocked = (o?: OrderRow | null) => {
     const st = o?.status || "";
     return st === "cancelado" || st === "entregue";
@@ -1318,6 +1413,47 @@ export default function AdminOrders() {
       </header>
 
       <main style={mainStyle}>
+        {/*
+          A FAIXA DOS LIBERADOS. O caso que ela cobre: o RH libera um pedido às
+          15h, a leva da portaria já saiu às 14h, e o pedido fica esperando
+          alguém lembrar dele. Aqui ele fica na cara de quem imprime, com o
+          botão de imprimir do lado.
+        */}
+        {liberadosAguardandoPapel.length > 0 && (
+          <div style={styles.releaseBanner}>
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <div style={{ fontWeight: 900 }}>
+                {liberadosAguardandoPapel.length === 1
+                  ? "1 pedido liberado para hoje, ainda não impresso"
+                  : `${liberadosAguardandoPapel.length} pedidos liberados para hoje, ainda não impressos`}
+              </div>
+              <div style={{ fontSize: 12, marginTop: 4, opacity: 0.9 }}>
+                {liberadosAguardandoPapel
+                  .map(
+                    (o) =>
+                      `${o.employee_name ?? "Funcionário"} (${
+                        o.erp_external_id || o.order_number || "—"
+                      })${o.released_authorized_by ? ` — autorizado por ${o.released_authorized_by}` : ""}`,
+                  )
+                  .join(" · ")}
+              </div>
+              <div style={{ fontSize: 12, marginTop: 4, opacity: 0.75 }}>
+                Eles entram na impressão da portaria mesmo fora do horário do corte.
+              </div>
+            </div>
+            <button
+              style={{
+                ...styles.printBtn,
+                ...(printingPortaria ? styles.disabledBtn : {}),
+              }}
+              onClick={handlePrintPortaria}
+              disabled={printingPortaria}
+            >
+              <IconPrinter />
+              {printingPortaria ? "Gerando PDF…" : "Imprimir agora"}
+            </button>
+          </div>
+        )}
         <section style={kpisWrapStyle}>
           <div style={kpiCardStyle}>
             <div style={styles.kpiLabel}>Total</div>
@@ -1630,6 +1766,14 @@ export default function AdminOrders() {
                               {!o.erp_external_id && o.order_number && (
                                 <div style={styles.tdMuted}>Aguardando CIGAM</div>
                               )}
+                              {o.released_for_today_at && !o.printed_at && (
+                                <div style={styles.releaseTag}>
+                                  LIBERADO PARA HOJE
+                                  {o.released_authorized_by
+                                    ? ` · ${o.released_authorized_by}`
+                                    : ""}
+                                </div>
+                              )}
                             </td>
 
                             <td style={styles.td}>
@@ -1745,6 +1889,21 @@ export default function AdminOrders() {
                                 >
                                   {printingOrderId === o.id ? "Gerando…" : "Imprimir"}
                                 </button>
+
+                                {podeLiberar(o) && (
+                                  <button
+                                    style={{
+                                      ...styles.smallBtn,
+                                      ...styles.releaseBtn,
+                                      ...(liberandoId === o.id ? styles.disabledBtn : {}),
+                                    }}
+                                    disabled={liberandoId === o.id}
+                                    onClick={() => handleLiberarParaHoje(o)}
+                                    title="Pedido feito depois do corte das 13:40 — liberar para o funcionário pegar hoje"
+                                  >
+                                    {liberandoId === o.id ? "Liberando…" : "Liberar p/ hoje"}
+                                  </button>
+                                )}
                                 <button
                                   style={{
                                     ...styles.smallBtn,
@@ -1914,6 +2073,23 @@ export default function AdminOrders() {
                           >
                             {printingOrderId === o.id ? "Gerando…" : "Imprimir este pedido"}
                           </button>
+
+                          {podeLiberar(o) && (
+                            <button
+                              style={{
+                                ...styles.secondaryBtn,
+                                ...styles.releaseBtn,
+                                padding: "10px 12px",
+                                height: 42,
+                                borderRadius: 14,
+                                ...(liberandoId === o.id ? styles.disabledBtn : {}),
+                              }}
+                              disabled={liberandoId === o.id}
+                              onClick={() => handleLiberarParaHoje(o)}
+                            >
+                              {liberandoId === o.id ? "Liberando…" : "Liberar para hoje"}
+                            </button>
+                          )}
 
                           <button
                             style={{
@@ -3065,6 +3241,36 @@ const styles: Record<string, CSSProperties> = {
     cursor: "pointer",
     fontWeight: 900,
   },
+
+  releaseBanner: {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 14,
+    padding: "12px 14px",
+    borderRadius: 14,
+    border: "1px solid #10b981",
+    background: "#ecfdf5",
+    color: "#065f46",
+  } as CSSProperties,
+
+  releaseTag: {
+    marginTop: 4,
+    display: "inline-block",
+    padding: "2px 6px",
+    borderRadius: 6,
+    background: "#d1fae5",
+    color: "#065f46",
+    fontSize: 10,
+    fontWeight: 900,
+    letterSpacing: 0.3,
+  } as CSSProperties,
+
+  releaseBtn: {
+    borderColor: "#10b981",
+    color: "#065f46",
+  } as CSSProperties,
 
   printBtn: {
     height: 42,

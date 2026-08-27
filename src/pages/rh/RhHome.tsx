@@ -321,6 +321,14 @@ const RhHome: React.FC = () => {
             </ResetBox>
 
 
+            <ReportBox onClick={() => navigate("/rh/liberar-pedidos")}>
+              <Title>Liberar Pedido para Hoje</Title>
+              <Subtitle>
+                Pedido feito depois das 13:40 sai só no próximo dia útil. Aqui você autoriza
+                o funcionário a pegar hoje — o pedido entra na próxima impressão da portaria.
+              </Subtitle>
+            </ReportBox>
+
             <ReportBox onClick={() => navigate("/rh/relatorio-gastos")}>
               <Title>Relatório de Gastos</Title>
               <Subtitle>Quanto cada funcionário gastou do saldo</Subtitle>

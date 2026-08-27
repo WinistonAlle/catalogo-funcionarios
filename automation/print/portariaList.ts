@@ -47,6 +47,7 @@ type OrderRow = {
   order_number: string;
   employee_name: string | null;
   erp_external_id: string | null;
+  released_for_today_at: string | null;
   order_items: ItemRow[];
 };
 
@@ -57,19 +58,42 @@ export type PortariaPrintResult = {
   error?: string;
 };
 
+/**
+ * Os pedidos que entram numa impressão da portaria.
+ *
+ * São DUAS origens, e a diferença importa:
+ *
+ * 1. **A leva do dia** — tudo que foi feito antes do corte das 13:40 de hoje.
+ *    É o fluxo normal, e só existe em dia útil depois do corte.
+ * 2. **Os liberados pelo RH** (`released_for_today_at`) — pedidos feitos DEPOIS
+ *    do corte que alguém autorizou a sair no mesmo dia. Entram sempre, inclusive
+ *    quando a leva normal não roda: se o RH libera um pedido às 15h e a leva já
+ *    saiu às 14h, ou se libera num sábado, o pedido PRECISA aparecer. Um botão
+ *    que responde "nenhum pedido pendente" com o pedido liberado na tela é
+ *    exatamente o modo de falhar que custou caro em 26/08.
+ *
+ * `incluirLevaNormal` é falso quando os guardas de dia útil/corte barram o
+ * fluxo 1 — aí a consulta traz só os liberados.
+ */
 async function buscarPedidosParaImprimir(
   supabase: SupabaseClient,
   corte: Date,
-  limit: number
+  limit: number,
+  incluirLevaNormal: boolean
 ): Promise<OrderRow[]> {
-  const { data, error } = await supabase
+  let q = supabase
     .from("orders")
     .select(
-      "id, order_number, employee_name, erp_external_id, order_items(product_name, quantity, unit_price, products(cigam_code, cigam_unit, weight))"
+      "id, order_number, employee_name, erp_external_id, released_for_today_at, order_items(product_name, quantity, unit_price, products(cigam_code, cigam_unit, weight))"
     )
     .is("printed_at", null)
-    .is("cancelled_at", null)
-    .lt("created_at", corte.toISOString())
+    .is("cancelled_at", null);
+
+  q = incluirLevaNormal
+    ? q.or(`created_at.lt.${corte.toISOString()},released_for_today_at.not.is.null`)
+    : q.not("released_for_today_at", "is", null);
+
+  const { data, error } = await q
     // Mesmo critério de "foi pago" que automation/cigam/process-pending-orders.ts —
     // wallet_debited não é escrito de forma confiável (ver comentário lá), então
     // os três sinais juntos são a rede de segurança.
@@ -140,7 +164,7 @@ export async function gerarPdfPedidoUnico(params: {
   const { data, error } = await supabase
     .from("orders")
     .select(
-      "id, order_number, employee_name, erp_external_id, cancelled_at, printed_at, wallet_debited, wallet_used_cents, pay_on_pickup_cents, order_items(product_name, quantity, unit_price, products(cigam_code, cigam_unit, weight))"
+      "id, order_number, employee_name, erp_external_id, released_for_today_at, cancelled_at, printed_at, wallet_debited, wallet_used_cents, pay_on_pickup_cents, order_items(product_name, quantity, unit_price, products(cigam_code, cigam_unit, weight))"
     )
     .eq("id", orderId)
     .maybeSingle();
@@ -227,11 +251,14 @@ export async function gerarPdfPortaria(params: {
 }): Promise<PortariaPdfResultado> {
   const { supabase, now = new Date(), limit = 200, ignoreCutoffGuard = false } = params;
 
-  if (!isBusinessDayInSaoPaulo(now)) return { pdf: Buffer.alloc(0), pedidos: [] };
-  if (!ignoreCutoffGuard && !isAfterCutoffInSaoPaulo(now)) return { pdf: Buffer.alloc(0), pedidos: [] };
+  // Os guardas não abortam mais a função: eles decidem só se a LEVA NORMAL
+  // entra. Pedido liberado pelo RH sai fora de hora e fora de dia útil — é
+  // justamente pra isso que a liberação existe.
+  const incluirLevaNormal =
+    isBusinessDayInSaoPaulo(now) && (ignoreCutoffGuard || isAfterCutoffInSaoPaulo(now));
 
   const corte = cutoffInstantForToday(now);
-  const pedidos = await buscarPedidosParaImprimir(supabase, corte, limit);
+  const pedidos = await buscarPedidosParaImprimir(supabase, corte, limit, incluirLevaNormal);
 
   if (pedidos.length === 0) return { pdf: Buffer.alloc(0), pedidos: [] };
 
@@ -315,11 +342,11 @@ export async function printPortariaList(params: {
 }): Promise<PortariaPrintResult[]> {
   const { supabase, printerHost, now = new Date(), limit = 200, ignoreCutoffGuard = false } = params;
 
-  if (!isBusinessDayInSaoPaulo(now)) return [];
-  if (!ignoreCutoffGuard && !isAfterCutoffInSaoPaulo(now)) return [];
+  const incluirLevaNormal =
+    isBusinessDayInSaoPaulo(now) && (ignoreCutoffGuard || isAfterCutoffInSaoPaulo(now));
 
   const corte = cutoffInstantForToday(now);
-  const pedidos = await buscarPedidosParaImprimir(supabase, corte, limit);
+  const pedidos = await buscarPedidosParaImprimir(supabase, corte, limit, incluirLevaNormal);
 
   const resultados: PortariaPrintResult[] = [];
 

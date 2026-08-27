@@ -187,4 +187,32 @@ describe("isEligibleForCigamEntry", () => {
     expect(isEligibleForCigamEntry(sabadoCedo, segunda)).toBe(true);
     expect(isEligibleForCigamEntry(sabadoTarde, segunda)).toBe(true);
   });
+
+  /**
+   * A LIBERAÇÃO DO RH (27/08/2026) atravessa a regra inteira.
+   *
+   * O atraso existe porque a separação física do pedido tardio só acontece no
+   * dia útil seguinte. Quando o RH autoriza o funcionário a pegar hoje, a
+   * separação é hoje — e o motivo do atraso deixa de existir. Se o lançamento
+   * continuasse esperando, a mercadoria desceria pra portaria hoje com o
+   * recibo nascendo amanhã, e o relatório de abatimentos da semana acusaria o
+   * pedido como "nunca recebeu número de recibo".
+   */
+  it("pedido liberado pelo RH entra na hora, mesmo tardio ou de fim de semana", () => {
+    const tardioDeHoje = new Date("2026-08-25T15:00:00-03:00"); // terça, depois do corte
+    const agora = new Date("2026-08-25T15:05:00-03:00");
+    expect(isEligibleForCigamEntry(tardioDeHoje, agora)).toBe(false);
+    expect(isEligibleForCigamEntry(tardioDeHoje, agora, true)).toBe(true);
+
+    const sabado = new Date("2026-08-22T15:00:00-03:00");
+    const sabadoDepois = new Date("2026-08-22T16:00:00-03:00");
+    expect(isEligibleForCigamEntry(sabado, sabadoDepois)).toBe(false);
+    expect(isEligibleForCigamEntry(sabado, sabadoDepois, true)).toBe(true);
+  });
+
+  it("sem liberação, nada muda — o padrão continua sendo esperar", () => {
+    const tardio = new Date("2026-08-25T15:00:00-03:00");
+    const agora = new Date("2026-08-25T15:05:00-03:00");
+    expect(isEligibleForCigamEntry(tardio, agora, false)).toBe(false);
+  });
 });

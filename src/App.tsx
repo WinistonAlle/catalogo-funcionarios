@@ -31,6 +31,7 @@ import RhHome from "./pages/rh/RhHome";
 import EmployeesPage from "./pages/rh/EmployeesPage";
 import RHSpendingReport from "./pages/rh/RHSpendingReport";
 import RelatorioAbatimentos from "./pages/RelatorioAbatimentos";
+import LiberarPedidos from "./pages/rh/LiberarPedidos";
 import ReportsDashboard from "./pages/ReportsDashboard";
 import OperationsHistory from "./pages/OperationsHistory";
 
@@ -272,6 +273,22 @@ function App() {
                 element={
                   <RequireRole allow={["rh", "admin"]} redirectTo="/catalogo">
                     <RelatorioAbatimentos />
+                  </RequireRole>
+                }
+              />
+
+              {/*
+                Liberar pedido para hoje — a exceção que o RH abre pro pedido
+                feito depois do corte das 13:40 sair no mesmo dia. Admin entra
+                na mesma tela: quem libera pode ser o RH direto ou o
+                faturamento a pedido dele, e as duas mãos precisam enxergar a
+                mesma fila.
+              */}
+              <Route
+                path="/rh/liberar-pedidos"
+                element={
+                  <RequireRole allow={["rh", "admin"]} redirectTo="/catalogo">
+                    <LiberarPedidos />
                   </RequireRole>
                 }
               />

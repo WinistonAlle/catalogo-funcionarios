@@ -21,7 +21,7 @@ function fakeSupabase(linhas: unknown[] = []) {
   const chamadas: Record<string, unknown[]> = {};
   const query: Record<string, unknown> = {};
 
-  for (const metodo of ["select", "is", "lt", "or", "order"]) {
+  for (const metodo of ["select", "is", "lt", "or", "not", "order"]) {
     query[metodo] = (...args: unknown[]) => {
       chamadas[metodo] = [...(chamadas[metodo] ?? []), ...args];
       return query;
@@ -42,12 +42,27 @@ function fakeSupabase(linhas: unknown[] = []) {
   };
 }
 
-/** O instante que a consulta usou como corte, como Date. */
+/**
+ * O instante que a consulta usou como corte, como Date — ou null quando a
+ * consulta não olhou o corte (caso dos liberados pelo RH, que entram sem ele).
+ *
+ * Desde 27/08/2026 o corte não vai mais num `.lt()` solto: ele é um dos lados
+ * do `.or(created_at.lt.<corte>,released_for_today_at.not.is.null)`.
+ */
+function corteUsadoOuNull(chamadas: Record<string, unknown[]>): Date | null {
+  for (const arg of chamadas.or ?? []) {
+    const texto = String(arg);
+    const m = texto.match(/created_at\.lt\.([^,]+)/);
+    if (m) return new Date(m[1]);
+  }
+  return null;
+}
+
+/** Idem, exigindo que o corte esteja lá. */
 function corteUsado(chamadas: Record<string, unknown[]>): Date {
-  const args = chamadas.lt ?? [];
-  const i = args.indexOf("created_at");
-  expect(i).toBeGreaterThanOrEqual(0);
-  return new Date(String(args[i + 1]));
+  const corte = corteUsadoOuNull(chamadas);
+  expect(corte).not.toBeNull();
+  return corte as Date;
 }
 
 describe("gerarPdfPortaria: qual leva o pedido cai", () => {
@@ -82,7 +97,7 @@ describe("gerarPdfPortaria: qual leva o pedido cai", () => {
       now: new Date("2026-08-25T09:00:00-03:00"),
     });
     expect(semBotao.pedidos).toEqual([]);
-    expect(cedo.chamadas.lt).toBeUndefined(); // nem consultou
+    expect(corteUsadoOuNull(cedo.chamadas)).toBeNull(); // não montou a leva do dia
 
     // Mesma hora, com o botão: consulta — e ainda com o corte de hoje.
     const comBotao = fakeSupabase([]);
@@ -94,7 +109,7 @@ describe("gerarPdfPortaria: qual leva o pedido cai", () => {
     expect(corteUsado(comBotao.chamadas).toISOString()).toBe("2026-08-25T16:40:00.000Z");
   });
 
-  it("não imprime em dia não útil — nem com o botão manual", async () => {
+  it("em dia não útil a leva normal não roda — a consulta só procura liberado", async () => {
     const sabado = fakeSupabase([]);
     const r = await gerarPdfPortaria({
       supabase: sabado.supabase,
@@ -103,7 +118,40 @@ describe("gerarPdfPortaria: qual leva o pedido cai", () => {
     });
 
     expect(r.pedidos).toEqual([]);
-    expect(sabado.chamadas.lt).toBeUndefined();
+    // Nenhum pedido do sábado entra por hora de criação...
+    expect(corteUsadoOuNull(sabado.chamadas)).toBeNull();
+    // ...mas o que o RH liberou entra, senão a faixa da tela apontaria pra um
+    // botão que responde "nenhum pedido pendente".
+    expect(sabado.chamadas.not).toEqual(["released_for_today_at", "is", null]);
+  });
+
+  /**
+   * LIBERADO PELO RH (27/08/2026) — o pedido tardio que alguém autorizou a
+   * sair no mesmo dia. Ele não passa pelo corte: entra pelo outro lado do
+   * `.or`, e entra inclusive quando a leva normal nem roda (antes das 13:40,
+   * ou em dia não útil). Se dependesse do corte, a tela mostraria "1 pedido
+   * liberado" e o botão responderia "nenhum pedido pendente" — a lista
+   * teimosamente vazia que já custou caro aqui.
+   */
+  it("a leva do dia aceita quem passou do corte OU quem foi liberado", async () => {
+    const { supabase, chamadas } = fakeSupabase([]);
+    await gerarPdfPortaria({ supabase, now: new Date("2026-08-25T15:10:00-03:00") });
+
+    const clausula = (chamadas.or ?? []).map(String).find((t) => t.includes("created_at.lt."));
+    expect(clausula).toContain("released_for_today_at.not.is.null");
+  });
+
+  it("pedido liberado sai antes do corte, sem esperar as 13:40", async () => {
+    const cedo = fakeSupabase([pedidoDeMentira("id-liberado", "GM-20260825-7777")]);
+
+    const r = await gerarPdfPortaria({
+      supabase: cedo.supabase,
+      now: new Date("2026-08-25T09:00:00-03:00"), // terça, antes do corte
+    });
+
+    expect(r.pedidos.map((p) => p.orderNumber)).toEqual(["GM-20260825-7777"]);
+    expect(cedo.chamadas.not).toEqual(["released_for_today_at", "is", null]);
+    expect(r.pdf.length).toBeGreaterThan(0);
   });
 
   it("só busca pedido ainda não impresso e não cancelado", async () => {

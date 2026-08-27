@@ -35,6 +35,8 @@ type OrderRow = {
   employee_name: string | null;
   erp_external_id: string | null;
   created_at: string;
+  /** Preenchido quando o RH autorizou o pedido tardio a sair no mesmo dia. */
+  released_for_today_at: string | null;
   order_items: ItemRow[];
 };
 
@@ -58,8 +60,16 @@ type OrderRow = {
  */
 export function isEligibleForCigamEntry(
   createdAt: Date,
-  agora: Date = new Date()
+  agora: Date = new Date(),
+  liberadoParaHoje = false
 ): boolean {
+  // O RH autorizou o pedido a sair HOJE (27/08/2026): a separação física
+  // acontece hoje, então o motivo inteiro de segurar o lançamento some. Se
+  // esperasse o dia útil seguinte, a mercadoria desceria pra portaria hoje e o
+  // recibo só nasceria amanhã — e o relatório de abatimentos da semana
+  // acusaria o pedido como "nunca recebeu número de recibo".
+  if (liberadoParaHoje) return true;
+
   const corteDoDiaDoPedido = cutoffInstantForToday(createdAt);
   if (isBusinessDayInSaoPaulo(createdAt) && createdAt < corteDoDiaDoPedido) return true;
   return agora >= nextBusinessDayStart(createdAt);
@@ -215,7 +225,7 @@ export async function processPendingOrders(options: {
   const { data: orders, error } = await supabase
     .from("orders")
     .select(
-      "id, order_number, employee_name, erp_external_id, created_at, order_items(product_name, quantity, unit_price, products(cigam_code, cigam_unit, weight))"
+      "id, order_number, employee_name, erp_external_id, created_at, released_for_today_at, order_items(product_name, quantity, unit_price, products(cigam_code, cigam_unit, weight))"
     )
     .eq("erp_status", "PENDING")
     .is("cancelled_at", null)
@@ -245,7 +255,11 @@ export async function processPendingOrders(options: {
   const todosPendentes = (orders ?? []) as unknown as OrderRow[];
   const agora = new Date();
   const rows = todosPendentes.filter((order) =>
-    isEligibleForCigamEntry(new Date(order.created_at), agora)
+    isEligibleForCigamEntry(
+      new Date(order.created_at),
+      agora,
+      !!order.released_for_today_at
+    )
   );
   // Pedido feito depois do corte fica pra trás sem tocar em nada — não vira
   // ERROR nem ganha erp_error, só não entra nesta rodada. A próxima varredura
