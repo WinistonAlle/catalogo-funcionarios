@@ -1,7 +1,18 @@
 import { SupabaseClient } from "@supabase/supabase-js";
 import { isBusinessDayInSaoPaulo } from "../holidays";
-import { cutoffInstantForToday, isAfterCutoffInSaoPaulo } from "./cutoff";
-import { buildOrderSheetPdf, buildOrderSheetsPdf, VIAS_PADRAO, type OrderSheetData } from "./pdfBuilder";
+import {
+  cutoffInstantForToday,
+  diaEmSaoPaulo,
+  isAfterCutoffInSaoPaulo,
+  janelaDoDiaEmSaoPaulo,
+} from "./cutoff";
+import {
+  buildControleDeRetiradaPdf,
+  buildOrderSheetPdf,
+  buildOrderSheetsPdf,
+  VIAS_PADRAO,
+  type OrderSheetData,
+} from "./pdfBuilder";
 import { printOrderSheet } from "./printClient";
 
 /**
@@ -87,7 +98,32 @@ async function buscarPedidosParaImprimir(
       "id, order_number, employee_name, erp_external_id, released_for_today_at, order_items(product_name, quantity, unit_price, products(cigam_code, cigam_unit, weight))"
     )
     .is("printed_at", null)
-    .is("cancelled_at", null);
+    .is("cancelled_at", null)
+    // Pedido ENTREGUE nunca mais entra na leva (31/08/2026). `printed_at` nulo
+    // deveria significar "a folha ainda não saiu", mas na prática ele também
+    // fica nulo quando a folha SAIU e ninguém confirmou na tela — o passo de
+    // confirmação é opcional de propósito (cancelar é seguro, ver
+    // `gerarPdfPortaria`), então quem imprime, entrega a mercadoria na mão e
+    // fecha a aba deixa o pedido pendente para sempre.
+    //
+    // Sem limite inferior de data na consulta, esses pedidos voltavam em TODA
+    // impressão, indefinidamente: em 31/08 eram 6 pedidos já entregues de 25 a
+    // 27/08 (GM-20260825-3235, GM-20260826-5795, GM-20260826-6865,
+    // GM-20260827-4061, GM-20260827-1798, GM-20260827-6656) saindo junto com o
+    // único pendente de verdade. Dois deles vieram do script que devolveu a
+    // leva carimbada sem imprimir em 26/08 — que avisava "não devolva pedido já
+    // entregue" e devolveu.
+    //
+    // O status é o critério certo porque é o único fato de fluxo que "já
+    // acabou": a mercadoria saiu com o funcionário e ele assinou. Folha de
+    // separação de pedido entregue é papel jogado fora — a mesma regra que o
+    // CLAUDE.md já dava para desfazer carimbo indevido.
+    //
+    // Uma JANELA DE DATA foi considerada e recusada: esconderia calado um
+    // pedido pago de verdade que ninguém separou, que é o modo de falhar caro
+    // deste sistema. Straggler antigo continua aparecendo — e o vigia já
+    // alerta "pago e não impresso há mais de 24h".
+    .neq("status", "entregue");
 
   q = incluirLevaNormal
     ? q.or(`created_at.lt.${corte.toISOString()},released_for_today_at.not.is.null`)
@@ -270,6 +306,175 @@ export async function gerarPdfPortaria(params: {
   const pdf = await buildOrderSheetsPdf(pedidos.map(paraOrderSheetData), VIAS_PADRAO, {
     controleDeRetirada: true,
   });
+
+  return {
+    pdf,
+    pedidos: pedidos.map((p) => ({ orderId: p.id, orderNumber: p.order_number })),
+  };
+}
+
+// ======================================================================
+// Canhoteira avulsa: escolher os pedidos e tirar só a folha de controle
+// ======================================================================
+
+/**
+ * Os campos que a tela precisa pra montar a lista de seleção da canhoteira.
+ * `pedido` já vem resolvido (CIGAM quando existe, interno quando ainda não)
+ * porque é EXATAMENTE o número que vai sair no papel — a tela não deve
+ * escolher isso por conta, senão a folha e a tela discordam.
+ */
+export type PedidoDaCanhoteira = {
+  orderId: string;
+  pedido: string;
+  orderNumber: string;
+  erpExternalId: string | null;
+  employeeName: string;
+  itens: number;
+  totalCents: number;
+  status: string;
+  printedAt: string | null;
+  releasedForTodayAt: string | null;
+  createdAt: string;
+};
+
+/** Só pedido pago entra em qualquer papel da portaria — mesmos três sinais
+ *  de `buscarPedidosParaImprimir` (wallet_debited não é confiável sozinho). */
+function foiPago(pedido: {
+  wallet_debited?: boolean | null;
+  wallet_used_cents?: number | null;
+  pay_on_pickup_cents?: number | null;
+}): boolean {
+  return (
+    pedido.wallet_debited === true ||
+    Number(pedido.wallet_used_cents ?? 0) > 0 ||
+    Number(pedido.pay_on_pickup_cents ?? 0) > 0
+  );
+}
+
+function totalEmCents(itens: readonly ItemRow[]): number {
+  return itens.reduce((soma, item) => soma + Math.round(item.unit_price * 100) * item.quantity, 0);
+}
+
+/**
+ * Os pedidos que a tela oferece pra marcar na canhoteira: os de UM DIA, pagos,
+ * não cancelados e AINDA NÃO ENTREGUES.
+ *
+ * Por que ainda não entregues, e não "ainda não impressos" (31/08/2026): a
+ * canhoteira não é papel de separação, é o papel onde o funcionário assina ao
+ * RETIRAR. Um pedido em separação — folha já impressa, mercadoria sendo
+ * juntada — é justamente quem vai retirar hoje e PRECISA de uma linha na
+ * folha; filtrar por `printed_at` deixaria de fora a maioria da lista. Já o
+ * entregue não entra porque a assinatura dele já aconteceu, e repetir a linha
+ * convida a coletar duas assinaturas do mesmo pedido.
+ *
+ * O dia é o de São Paulo, não o do servidor, e a janela é [00:00, 00:00 do dia
+ * seguinte) — ver `janelaDoDiaEmSaoPaulo`.
+ */
+export async function listarPedidosDaCanhoteira(params: {
+  supabase: SupabaseClient;
+  dia?: string;
+  limit?: number;
+}): Promise<{ dia: string; pedidos: PedidoDaCanhoteira[] }> {
+  const { supabase, limit = 300 } = params;
+  const dia = params.dia?.trim() || diaEmSaoPaulo();
+  const { inicio, fim } = janelaDoDiaEmSaoPaulo(dia);
+
+  const { data, error } = await supabase
+    .from("orders")
+    .select(
+      "id, order_number, employee_name, erp_external_id, status, printed_at, released_for_today_at, created_at, wallet_debited, wallet_used_cents, pay_on_pickup_cents, order_items(product_name, quantity, unit_price, products(cigam_code, cigam_unit, weight))"
+    )
+    .is("cancelled_at", null)
+    .neq("status", "entregue")
+    .gte("created_at", inicio.toISOString())
+    .lt("created_at", fim.toISOString())
+    .order("created_at", { ascending: true })
+    .limit(limit);
+
+  if (error) {
+    throw new Error(`Falha ao buscar os pedidos da canhoteira: ${error.message}`);
+  }
+
+  const pedidos = ((data ?? []) as any[])
+    .filter(foiPago)
+    .map((linha) => ({
+      orderId: linha.id as string,
+      pedido: (linha.erp_external_id ?? linha.order_number) as string,
+      orderNumber: linha.order_number as string,
+      erpExternalId: (linha.erp_external_id ?? null) as string | null,
+      employeeName: (linha.employee_name ?? "Funcionário") as string,
+      itens: (linha.order_items ?? []).length,
+      totalCents: totalEmCents(linha.order_items ?? []),
+      status: (linha.status ?? "") as string,
+      printedAt: (linha.printed_at ?? null) as string | null,
+      releasedForTodayAt: (linha.released_for_today_at ?? null) as string | null,
+      createdAt: linha.created_at as string,
+    }));
+
+  return { dia, pedidos };
+}
+
+/**
+ * A folha de controle SOZINHA, com os pedidos que alguém marcou na tela.
+ *
+ * **Não escreve nada no banco, de propósito.** A canhoteira é papel de
+ * conferência: quem manda no `printed_at` é a leva de separação (dois passos,
+ * com confirmação — ver `gerarPdfPortaria`), e um segundo caminho carimbando
+ * o mesmo campo seria um segundo jeito de perder pedido. Tirar a canhoteira
+ * duas vezes custa uma folha e não muda estado nenhum.
+ *
+ * Os ids vêm da tela, então a consulta refaz as checagens que importam em vez
+ * de confiar: cancelado fica de fora (mercadoria não sai, e listá-lo pra
+ * assinatura seria pedir assinatura de coisa que não existe) e não-pago
+ * também. Entregue passa: se o pedido foi retirado entre abrir o modal e
+ * clicar, a linha a mais na folha é inofensiva.
+ *
+ * A ORDEM das linhas é a da criação do pedido, não a que a tela mandou — o
+ * papel tem que sair na mesma ordem toda vez pra portaria achar a linha.
+ */
+export async function gerarPdfCanhoteira(params: {
+  supabase: SupabaseClient;
+  orderIds: string[];
+  /** Dia dos pedidos (YYYY-MM-DD em São Paulo) — vira a DATA do cabeçalho. */
+  dia?: string;
+}): Promise<{ pdf: Buffer; pedidos: { orderId: string; orderNumber: string }[] }> {
+  const { supabase } = params;
+
+  const ids = Array.from(
+    new Set((params.orderIds ?? []).filter((id) => typeof id === "string" && id.trim() !== ""))
+  );
+  if (ids.length === 0) {
+    throw new Error("Escolha pelo menos um pedido para a canhoteira.");
+  }
+
+  const { data, error } = await supabase
+    .from("orders")
+    .select(
+      "id, order_number, employee_name, erp_external_id, cancelled_at, created_at, wallet_debited, wallet_used_cents, pay_on_pickup_cents, order_items(product_name, quantity, unit_price, products(cigam_code, cigam_unit, weight))"
+    )
+    .in("id", ids)
+    .is("cancelled_at", null)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw new Error(`Falha ao buscar os pedidos da canhoteira: ${error.message}`);
+  }
+
+  const pedidos = ((data ?? []) as any[]).filter(foiPago) as unknown as OrderRow[];
+
+  if (pedidos.length === 0) {
+    throw new Error(
+      "Nenhum dos pedidos escolhidos pode entrar na canhoteira — foram cancelados ou não constam como pagos."
+    );
+  }
+
+  // Meio-dia do dia escolhido, não 00:00: `drawControleDeRetirada` formata a
+  // data com o fuso do processo, e a meia-noite de São Paulo cai no dia
+  // anterior em qualquer fuso a oeste — a folha sairia com a data errada.
+  const dia = params.dia?.trim() || diaEmSaoPaulo();
+  const dataDoCabecalho = new Date(janelaDoDiaEmSaoPaulo(dia).inicio.getTime() + 12 * 60 * 60 * 1000);
+
+  const pdf = await buildControleDeRetiradaPdf(pedidos.map(paraOrderSheetData), dataDoCabecalho);
 
   return {
     pdf,

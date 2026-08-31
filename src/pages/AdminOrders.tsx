@@ -2,7 +2,14 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
-import { printPortariaNow, printOrderNow, confirmPortariaPrint } from "@/lib/adminOperations";
+import {
+  printPortariaNow,
+  printOrderNow,
+  confirmPortariaPrint,
+  listarPedidosDaCanhoteira,
+  printCanhoteira,
+  type PedidoDaCanhoteira,
+} from "@/lib/adminOperations";
 import {
   liberarPedidoParaHoje,
   precisaDeLiberacao,
@@ -488,6 +495,28 @@ export default function AdminOrders() {
   const [historyLoading, setHistoryLoading] = useState(false);
 
   const [cancelHistOpen, setCancelHistOpen] = useState(false);
+
+  // ----------------------------------------------------------------
+  // Canhoteira: modal de seleção (31/08/2026)
+  //
+  // A folha de controle de retirada já existia, mas só grudada no fim do PDF
+  // da leva de separação — quem precisasse dela sozinha (segunda via, retirada
+  // que virou o dia, pedido que entrou depois) tinha que reimprimir a leva
+  // inteira e levar junto um bolo de folha de separação repetida.
+  //
+  // A seleção mora aqui, e não em `orders`, porque a lista do modal é OUTRA
+  // consulta: `orders` obedece aos filtros da tela (que podem estar em
+  // qualquer período, com qualquer status), e a canhoteira é sempre um DIA
+  // fechado, de pedidos não entregues. Reaproveitar a tabela da tela faria a
+  // folha depender de onde o filtro por acaso estava.
+  // ----------------------------------------------------------------
+  const [canhoteiraOpen, setCanhoteiraOpen] = useState(false);
+  const [canhoteiraDia, setCanhoteiraDia] = useState(() => getTodayDateInput());
+  const [canhoteiraPedidos, setCanhoteiraPedidos] = useState<PedidoDaCanhoteira[]>([]);
+  const [canhoteiraSelecionados, setCanhoteiraSelecionados] = useState<string[]>([]);
+  const [canhoteiraLoading, setCanhoteiraLoading] = useState(false);
+  const [canhoteiraErr, setCanhoteiraErr] = useState<string | null>(null);
+  const [canhoteiraGerando, setCanhoteiraGerando] = useState(false);
   const [cancelLogs, setCancelLogs] = useState<CancellationLogRow[]>([]);
   const [cancelLogsLoading, setCancelLogsLoading] = useState(false);
   const [cancelLogsErr, setCancelLogsErr] = useState<string | null>(null);
@@ -863,6 +892,92 @@ export default function AdminOrders() {
       alert(e?.message || "Erro ao imprimir a lista da portaria.");
     } finally {
       setPrintingPortaria(false);
+    }
+  }
+
+  /**
+   * Abre o modal da canhoteira já carregando o dia corrente. Abrir não tem
+   * efeito nenhum no banco — é só leitura.
+   */
+  function abrirCanhoteira() {
+    const hoje = getTodayDateInput();
+    setCanhoteiraOpen(true);
+    setCanhoteiraDia(hoje);
+    void carregarCanhoteira(hoje);
+  }
+
+  /**
+   * Carrega os pedidos de um dia pro modal.
+   *
+   * Vem TUDO marcado por padrão: o caso normal é a portaria querer a folha do
+   * dia inteiro, e obrigar a marcar 15 caixinhas pra chegar no caso comum é
+   * pedir pra alguém esquecer uma linha. Desmarcar o que não vai é o trabalho
+   * menor, e o erro que sobra (uma linha a mais na folha) é bem mais barato
+   * que o outro (funcionário retira sem assinar).
+   */
+  async function carregarCanhoteira(dia: string) {
+    setCanhoteiraLoading(true);
+    setCanhoteiraErr(null);
+    try {
+      const resposta = await listarPedidosDaCanhoteira(dia);
+      const pedidos = resposta?.pedidos ?? [];
+      setCanhoteiraPedidos(pedidos);
+      setCanhoteiraSelecionados(pedidos.map((p) => p.orderId));
+    } catch (e: any) {
+      setCanhoteiraPedidos([]);
+      setCanhoteiraSelecionados([]);
+      setCanhoteiraErr(e?.message || "Não foi possível carregar os pedidos do dia.");
+    } finally {
+      setCanhoteiraLoading(false);
+    }
+  }
+
+  function alternarPedidoCanhoteira(orderId: string) {
+    setCanhoteiraSelecionados((atual) =>
+      atual.includes(orderId) ? atual.filter((id) => id !== orderId) : [...atual, orderId]
+    );
+  }
+
+  /** Um botão só que alterna: marca todos quando falta alguém, desmarca todos
+   *  quando já está tudo marcado — é o gesto que a pessoa espera do mesmo
+   *  lugar, sem dois botões quase iguais lado a lado. */
+  function alternarTodosCanhoteira() {
+    setCanhoteiraSelecionados((atual) =>
+      atual.length === canhoteiraPedidos.length ? [] : canhoteiraPedidos.map((p) => p.orderId)
+    );
+  }
+
+  /**
+   * Gera a folha e abre numa aba nova. Não marca nada no banco (ver
+   * `printCanhoteira`), então não tem passo de confirmação: fechar a aba sem
+   * imprimir não custa nada além de clicar de novo.
+   *
+   * O modal FICA ABERTO depois de gerar — na portaria é comum tirar a folha,
+   * ver que faltou alguém e tirar de novo; fechar sozinho obrigaria a refazer
+   * a seleção inteira.
+   */
+  async function handlePrintCanhoteira() {
+    if (canhoteiraGerando) return;
+    if (canhoteiraSelecionados.length === 0) {
+      alert("Marque pelo menos um pedido para a canhoteira.");
+      return;
+    }
+
+    setCanhoteiraGerando(true);
+    // Aberta AGORA, dentro do clique — mesma armadilha de pop-up dos outros
+    // botões de impressão desta tela.
+    const aba = window.open("", "_blank");
+    try {
+      const resultado = await printCanhoteira(canhoteiraSelecionados, canhoteiraDia, aba);
+      if (resultado?.message) {
+        // Sem alert: a aba com o PDF já é a resposta visível, e um alert por
+        // cima dela só atrasa o Ctrl+P.
+        console.info(resultado.message);
+      }
+    } catch (e: any) {
+      alert(e?.message || "Erro ao gerar a canhoteira.");
+    } finally {
+      setCanhoteiraGerando(false);
     }
   }
 
@@ -1387,6 +1502,25 @@ export default function AdminOrders() {
             >
               <IconPrinter />
               {printingPortaria ? "Gerando PDF…" : "Imprimir pedidos de hoje"}
+            </button>
+
+            {/* Botão separado do de cima de propósito: são papéis de momentos
+                diferentes. A folha de SEPARAÇÃO sai uma vez, quando a
+                mercadoria é juntada; a canhoteira é o papel que fica na
+                portaria colhendo assinatura enquanto o pessoal retira — e
+                costuma precisar sair de novo. */}
+            <button
+              style={{
+                ...styles.secondaryBtn,
+                ...(isMobile
+                  ? { width: "100%", height: 42, borderRadius: 14 }
+                  : {}),
+              }}
+              onClick={abrirCanhoteira}
+              title="Escolhe os pedidos do dia e imprime só a folha de controle de retirada — a que o funcionário assina na portaria"
+            >
+              <IconPrinter />
+              Canhoteira
             </button>
 
             <button
@@ -2684,6 +2818,214 @@ export default function AdminOrders() {
       )}
 
       {/* Modal: histórico de cancelamentos */}
+      {canhoteiraOpen && (
+        <div style={styles.overlay} role="dialog" aria-modal="true">
+          <div
+            style={{
+              ...styles.modal,
+              width: isMobile ? "100%" : "min(980px, 100%)",
+              height: isMobile ? "min(100vh - 24px, 900px)" : "min(88vh, 880px)",
+              maxHeight: isMobile ? "calc(100vh - 24px)" : "88vh",
+              borderRadius: isMobile ? 18 : styles.modal.borderRadius,
+            }}
+          >
+            <div style={styles.modalTop}>
+              <div>
+                <div style={styles.modalTitle}>Canhoteira — controle de retirada</div>
+                <div style={styles.modalSub}>
+                  Marque quem entra na folha que a portaria usa pra colher assinatura
+                </div>
+              </div>
+
+              <button
+                style={styles.iconBtn}
+                onClick={() => setCanhoteiraOpen(false)}
+                aria-label="Fechar"
+                title="Fechar"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div
+              style={{
+                ...styles.modalBody,
+                ...(isMobile ? { padding: 12, overflow: "auto" } : {}),
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  alignItems: "flex-end",
+                  gap: 12,
+                  marginBottom: 14,
+                }}
+              >
+                <div style={styles.field}>
+                  <label style={styles.label}>Dia dos pedidos</label>
+                  <input
+                    type="date"
+                    style={styles.input}
+                    value={canhoteiraDia}
+                    onChange={(e) => {
+                      const dia = e.target.value;
+                      setCanhoteiraDia(dia);
+                      if (dia) void carregarCanhoteira(dia);
+                    }}
+                  />
+                </div>
+
+                <button
+                  style={styles.ghostBtn}
+                  onClick={() => void carregarCanhoteira(canhoteiraDia)}
+                  disabled={canhoteiraLoading}
+                  title="Recarrega a lista — use depois de um pedido novo entrar"
+                >
+                  Atualizar
+                </button>
+
+                <button
+                  style={styles.ghostBtn}
+                  onClick={alternarTodosCanhoteira}
+                  disabled={canhoteiraLoading || canhoteiraPedidos.length === 0}
+                >
+                  {canhoteiraSelecionados.length === canhoteiraPedidos.length &&
+                  canhoteiraPedidos.length > 0
+                    ? "Desmarcar todos"
+                    : "Selecionar todos"}
+                </button>
+
+                <div style={{ ...styles.stateText, marginLeft: "auto" }}>
+                  <b>{canhoteiraSelecionados.length}</b> de {canhoteiraPedidos.length} pedido(s)
+                  marcado(s)
+                </div>
+              </div>
+
+              {canhoteiraLoading && (
+                <div style={styles.stateBox}>
+                  <div style={styles.spinner} />
+                  <div>
+                    <div style={styles.stateTitle}>Carregando…</div>
+                    <div style={styles.stateText}>Buscando os pedidos do dia.</div>
+                  </div>
+                </div>
+              )}
+
+              {canhoteiraErr && !canhoteiraLoading && (
+                <div style={{ ...styles.stateBox, borderColor: "rgba(239,68,68,0.35)" }}>
+                  <div style={styles.errorDot} />
+                  <div>
+                    <div style={{ ...styles.stateTitle, color: "#991B1B" }}>Erro</div>
+                    <div style={styles.stateText}>{canhoteiraErr}</div>
+                  </div>
+                </div>
+              )}
+
+              {!canhoteiraLoading && !canhoteiraErr && canhoteiraPedidos.length === 0 && (
+                <div style={styles.emptyBox}>
+                  <div style={styles.emptyTitle}>Nenhum pedido para retirada neste dia</div>
+                  <div style={styles.emptyText}>
+                    A lista traz os pedidos pagos do dia que ainda não foram entregues. Pedido
+                    já entregue não entra — a assinatura dele já aconteceu.
+                  </div>
+                </div>
+              )}
+
+              {!canhoteiraLoading && !canhoteiraErr && canhoteiraPedidos.length > 0 && (
+                <div style={styles.tableCard}>
+                  <div style={styles.tableHeader}>
+                    <div style={styles.tableTitle}>Pedidos do dia</div>
+                    <div style={styles.tableSub}>
+                      A folha sai na ordem em que os pedidos foram feitos
+                    </div>
+                  </div>
+
+                  <div style={styles.tableScroll}>
+                    <table style={styles.table}>
+                      <thead>
+                        <tr>
+                          <th style={{ ...styles.th, width: 44 }}>
+                            <input
+                              type="checkbox"
+                              checked={
+                                canhoteiraSelecionados.length === canhoteiraPedidos.length &&
+                                canhoteiraPedidos.length > 0
+                              }
+                              onChange={alternarTodosCanhoteira}
+                              aria-label="Selecionar todos"
+                            />
+                          </th>
+                          <th style={styles.th}>Pedido</th>
+                          <th style={styles.th}>Funcionário</th>
+                          <th style={styles.th}>Itens</th>
+                          <th style={styles.th}>Total</th>
+                          <th style={styles.th}>Situação</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {canhoteiraPedidos.map((pedido) => {
+                          const marcado = canhoteiraSelecionados.includes(pedido.orderId);
+                          return (
+                            <tr
+                              key={pedido.orderId}
+                              style={{ ...styles.tr, cursor: "pointer" }}
+                              onClick={() => alternarPedidoCanhoteira(pedido.orderId)}
+                            >
+                              <td style={styles.td}>
+                                <input
+                                  type="checkbox"
+                                  checked={marcado}
+                                  onChange={() => alternarPedidoCanhoteira(pedido.orderId)}
+                                  onClick={(e) => e.stopPropagation()}
+                                  aria-label={`Incluir o pedido ${pedido.pedido}`}
+                                />
+                              </td>
+                              {/* O número é o do CIGAM quando já sincronizou —
+                                  é o que está grampeado no maço de mercadoria,
+                                  e o servidor já resolve isso. */}
+                              <td style={styles.tdStrong}>{pedido.pedido}</td>
+                              <td style={styles.td}>{pedido.employeeName}</td>
+                              <td style={styles.td}>{pedido.itens}</td>
+                              <td style={styles.td}>{brlFromCents(pedido.totalCents)}</td>
+                              <td style={styles.tdMuted}>
+                                {STATUS_LABEL[pedido.status] || pedido.status}
+                                {pedido.printedAt ? " · folha já saiu" : ""}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div style={styles.actions}>
+              <button style={styles.ghostBtn} onClick={() => setCanhoteiraOpen(false)}>
+                Fechar
+              </button>
+
+              <button
+                style={{
+                  ...styles.primaryBtn,
+                  ...(canhoteiraGerando || canhoteiraSelecionados.length === 0
+                    ? styles.disabledBtn
+                    : {}),
+                }}
+                onClick={handlePrintCanhoteira}
+                disabled={canhoteiraGerando || canhoteiraSelecionados.length === 0}
+              >
+                {canhoteiraGerando
+                  ? "Gerando…"
+                  : `Imprimir canhoteira (${canhoteiraSelecionados.length})`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {cancelHistOpen && (
         <div style={styles.overlay} role="dialog" aria-modal="true">
           <div

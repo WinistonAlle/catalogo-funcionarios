@@ -1248,6 +1248,92 @@ desligado) continua saindo em **via única marcada `VIA PORTARIA`** — lá não
 existe ninguém no meio pra entregar a segunda via, ela só ficaria esquecida na
 bandeja.
 
+### Pedido ENTREGUE não volta mais pra leva (31/08/2026)
+
+O sintoma: clicar em "Imprimir pedidos de hoje" trazia junto pedidos antigos
+**que já tinham sido impressos e entregues**. Em 31/08 eram 6 pedidos de 25 a
+27/08 (GM-20260825-3235, GM-20260826-5795, GM-20260826-6865, GM-20260827-4061,
+GM-20260827-1798, GM-20260827-6656) saindo toda vez junto com o único pendente
+de verdade (GM-20260828-4356).
+
+**Por que acontecia:** `printed_at` nulo não significa só "a folha não saiu".
+Ele também fica nulo quando a folha SAIU e ninguém clicou em OK na confirmação
+— e cancelar ali é seguro de propósito (ver "O botão marca como impresso SÓ
+depois da confirmação"). Como `buscarPedidosParaImprimir` não tinha limite
+inferior de data nem olhava o status, todo pedido que escapou do carimbo ficava
+na fila **para sempre**. Dois dos seis vieram do script de 26/08 que devolveu a
+leva carimbada sem imprimir — o mesmo que avisa "não devolva pedido já
+entregue", e devolveu.
+
+**O conserto:** `.neq("status", "entregue")` na consulta da leva. Entregue é o
+único fato de fluxo que já acabou — a mercadoria saiu com o funcionário e ele
+assinou; folha de separação de pedido entregue é papel jogado fora.
+
+⚠️ **Uma JANELA DE DATA foi considerada e recusada, de propósito.** Limitar a
+consulta aos últimos N dias esconderia calado um pedido pago de verdade que
+ninguém separou — que é o modo de falhar caro deste sistema. Straggler antigo
+continua aparecendo na lista, e o vigia já grita "pago e não impresso há mais de
+24h". Quem for mexer nisso: o filtro certo é o STATUS, não a data.
+
+Os 6 pedidos de então foram carimbados retroativamente por
+`scripts/2026-08-31-carimba-entregues-sem-printed-at.sql` (entregue implica que
+a folha saiu — a portaria não separa mercadoria sem papel). O carimbo é o `now()`
+da correção, não a hora real da impressão, que ninguém registrou.
+
+Testes: "a leva não repesca pedido já entregue", em
+`automation/print/portariaList.test.ts` — inclusive no caminho de sábado, em que
+a leva normal não roda e a consulta traz só os liberados pelo RH.
+
+### O botão "Canhoteira": escolher os pedidos e tirar só a folha (31/08/2026)
+
+A canhoteira continua saindo no fim do PDF da leva, como sempre. O que mudou é
+que agora ela também sai **sozinha**, por um botão próprio no topo do Admin
+Pedidos, ao lado de "Imprimir pedidos de hoje".
+
+**Por que separado:** são papéis de momentos diferentes. A folha de SEPARAÇÃO
+sai uma vez, quando a mercadoria é juntada. A canhoteira é o papel que fica na
+portaria colhendo assinatura enquanto o pessoal vai retirando — e costuma
+precisar sair de novo (folha molhada, pedido que entrou depois, retirada que
+virou o dia). Antes, a única saída era reimprimir a leva inteira e levar junto
+um bolo de folha de separação repetida.
+
+O botão abre um modal com os pedidos **de um dia**, um checkbox por linha,
+seletor de data (abre em hoje) e um "Selecionar todos" que alterna. Vem **tudo
+marcado por padrão**: o caso normal é querer a folha do dia inteiro, e obrigar a
+marcar 15 caixinhas pra chegar no caso comum é pedir pra alguém esquecer uma
+linha. O erro que sobra (linha a mais na folha) é bem mais barato que o outro
+(funcionário retira sem assinar).
+
+**Quais pedidos entram:** os do dia, pagos, não cancelados e **ainda não
+entregues**. Pedido em separação — folha já impressa, mercadoria sendo juntada —
+é justamente quem vai retirar e PRECISA da linha; filtrar por `printed_at`
+deixaria de fora a maioria da lista. Entregue não entra porque a assinatura dele
+já aconteceu, e repetir a linha convida a colher duas assinaturas do mesmo
+pedido.
+
+⚠️ **Não escreve NADA no banco, e é assim de propósito.** Quem manda em
+`printed_at` é a leva de separação, com os dois passos e a confirmação. Um
+segundo caminho carimbando o mesmo campo seria um segundo jeito de perder
+pedido. Tirar a canhoteira duas vezes custa uma folha e não muda estado nenhum —
+por isso também não tem passo de confirmação, e o modal fica aberto depois de
+gerar (é comum ver que faltou alguém e tirar de novo).
+
+A DATA do cabeçalho é a **do dia dos pedidos**, não a de quem clicou: senão a
+folha arquivada mentiria sobre quando aquela retirada aconteceu.
+
+| onde | o quê |
+|---|---|
+| `GET /canhoteira/pedidos?dia=YYYY-MM-DD` | a lista do modal (só leitura, sem log) |
+| `POST /canhoteira/pdf` | a folha com os ids marcados; loga `print_canhoteira` |
+| `buildControleDeRetiradaPdf` (`pdfBuilder.ts`) | a canhoteira sem as folhas de pedido |
+| `listarPedidosDaCanhoteira` / `gerarPdfCanhoteira` (`portariaList.ts`) | a seleção |
+
+`print_canhoteira` precisou de migration: o CHECK de `action` em
+`admin_operation_logs` é lista fixa e as chamadas de log terminam em
+`.catch(() => null)`, então ação nova sem migration não dá erro — só não deixa
+rastro. É a mesma armadilha de 26/08. Ver
+`scripts/2026-08-31-admin-logs-aceita-print-canhoteira.sql`.
+
 ### A canhoteira: folha de controle de retirada (25/08/2026)
 
 A **última folha** do PDF da leva é a canhoteira — `CONTROLE DE RETIRADA —

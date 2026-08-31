@@ -9,8 +9,10 @@ import { createClient } from "@supabase/supabase-js";
 import { processPendingOrders, isEligibleForCigamEntry } from "./cigam/process-pending-orders";
 import { syncEstoque } from "./cigam/sync-estoque";
 import {
+  gerarPdfCanhoteira,
   gerarPdfPortaria,
   gerarPdfPedidoUnico,
+  listarPedidosDaCanhoteira,
   marcarPortariaImpressa,
   printPortariaList,
 } from "./print/portariaList";
@@ -1453,6 +1455,98 @@ app.post("/print-portaria-confirm", async (req, res) => {
 });
 
 /**
+ * A LISTA que o modal da canhoteira mostra pra marcar: pedidos de um dia,
+ * pagos, não cancelados e ainda não entregues (ver `listarPedidosDaCanhoteira`
+ * para o porquê de "não entregues" e não "não impressos").
+ *
+ * `?dia=YYYY-MM-DD` opcional — sem ele, o dia corrente em São Paulo. É GET e
+ * não escreve nada: abrir o modal não pode ter efeito colateral nenhum, e por
+ * isso também não vai pro log de operações (encheria o histórico de ruído sem
+ * dizer nada sobre papel que saiu).
+ */
+app.get("/canhoteira/pedidos", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) {
+      return res.status(auth.status).json({ ok: false, message: auth.error });
+    }
+
+    const dia = typeof req.query?.dia === "string" ? req.query.dia.trim() : undefined;
+
+    try {
+      const { dia: diaUsado, pedidos } = await listarPedidosDaCanhoteira({ supabase, dia });
+      return res.status(200).json({ ok: true, dia: diaUsado, pedidos });
+    } catch (err: any) {
+      return res
+        .status(400)
+        .json({ ok: false, message: err?.message || "Falha ao listar os pedidos da canhoteira." });
+    }
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
+/**
+ * A FOLHA de controle dos pedidos marcados no modal — devolve o PDF direto,
+ * como as outras rotas de impressão.
+ *
+ * Não tem passo de confirmação e não carimba nada: a canhoteira não muda o
+ * estado de pedido nenhum (ver `gerarPdfCanhoteira`). O log fica só como
+ * rastro de quem tirou a folha e com quantos pedidos — útil quando aparecem
+ * duas folhas de controle do mesmo dia com listas diferentes.
+ */
+app.post("/canhoteira/pdf", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) {
+      return res.status(auth.status).json({ ok: false, message: auth.error });
+    }
+
+    const orderIds = Array.isArray(req.body?.orderIds) ? req.body.orderIds.map(String) : [];
+    const dia = typeof req.body?.dia === "string" ? req.body.dia.trim() : undefined;
+
+    if (orderIds.length === 0) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "Escolha pelo menos um pedido para a canhoteira." });
+    }
+
+    try {
+      const { pdf, pedidos } = await gerarPdfCanhoteira({ supabase, orderIds, dia });
+
+      await insertOperationLog(supabase, {
+        action: "print_canhoteira",
+        status: "success",
+        actor: auth.actor,
+        message: `Canhoteira gerada com ${pedidos.length} pedido(s).`,
+        metadata: { dia: dia ?? null, pedidos, solicitados: orderIds.length },
+      }).catch(() => null);
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="canhoteira-${dia ?? new Date().toISOString().slice(0, 10)}.pdf"`
+      );
+      return res.status(200).send(pdf);
+    } catch (err: any) {
+      await insertOperationLog(supabase, {
+        action: "print_canhoteira",
+        status: "failed",
+        actor: auth.actor,
+        message: "Falha ao gerar a canhoteira.",
+        metadata: { dia: dia ?? null, solicitados: orderIds.length, error: err?.message ?? String(err) },
+      }).catch(() => null);
+
+      return res
+        .status(400)
+        .json({ ok: false, message: err?.message || "Falha ao gerar a canhoteira." });
+    }
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
+/**
  * Impressão avulsa de UM pedido — botão "Imprimir" por linha em AdminOrders,
  * pra reimprimir ou imprimir na hora um pedido específico sem esperar o
  * disparo automático ou baixar a lista inteira ("vai que acontece algo").
@@ -1778,6 +1872,53 @@ async function runHealthCheck() {
     }
   } catch (err: any) {
     alertas.push(`Não deu para checar saldo contra direito: ${err?.message ?? err}`);
+  }
+
+  // 6. Funcionário com o DIREITO zerado. Foi assim que LUAN DE JESUS SILVA
+  //    passou de 16/04 a 28/08/2026 sem nunca ter saldo: a célula
+  //    `credito_mensal` dele estava VAZIA na planilha, `parseMoneyToCentsBR("")`
+  //    devolve 0 sem reclamar, e a recarga do dia 27 copia esse 0 para o saldo.
+  //    Nenhuma das outras checagens pega isso — a 5ª compara saldo com direito,
+  //    e 0 > 0 é falso. É o mesmo feitio dos 4 meses de recarga morta: o número
+  //    errado não dói, só fica quieto.
+  //
+  //    Só `role = 'employee'` entra. As contas de serviço (admin, rh, separacao)
+  //    têm direito 0 de propósito — são exatamente as outras linhas com a célula
+  //    em branco na planilha, e listá-las todo dia treinaria quem lê a ignorar
+  //    o alerta.
+  //
+  //    Status nulo conta como ativo: `status` só foi preenchido no backfill de
+  //    27/08, e quem a planilha cria depois nasce com ele nulo. Exigir
+  //    `status = 'active'` esconderia justamente o funcionário novo, que é o
+  //    mais provável de ter vindo com a célula em branco.
+  try {
+    const { data } = await supabase
+      .from("employees")
+      .select("full_name, status, credito_direito_cents")
+      .eq("role", "employee")
+      .order("full_name")
+      .limit(500);
+
+    const semDireito = (data ?? []).filter(
+      (e: any) => e.status !== "inactive" && Number(e.credito_direito_cents ?? 0) === 0
+    );
+
+    if (semDireito.length > 0) {
+      const amostra = semDireito
+        .slice(0, 5)
+        .map((e: any) => e.full_name)
+        .join(", ");
+
+      alertas.push(
+        `${semDireito.length} funcionário(s) ativo(s) com DIREITO zerado: ${amostra}` +
+          (semDireito.length > 5 ? ", …" : "") +
+          ". Quase sempre é a coluna 'credito_mensal' em branco na planilha. O conserto " +
+          "é lá: mexer só no banco não adianta, porque o sync de cadastro reescreve o " +
+          "direito de 20 em 20 min. O SALDO só acompanha na recarga do dia 27."
+      );
+    }
+  } catch (err: any) {
+    alertas.push(`Não deu para checar direito zerado: ${err?.message ?? err}`);
   }
 
   if (alertas.length === 0) {

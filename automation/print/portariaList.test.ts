@@ -1,6 +1,12 @@
 // automation/print/portariaList.test.ts
 import { describe, expect, it, vi } from "vitest";
-import { gerarPdfPedidoUnico, gerarPdfPortaria, marcarPortariaImpressa } from "./portariaList";
+import {
+  gerarPdfCanhoteira,
+  gerarPdfPedidoUnico,
+  gerarPdfPortaria,
+  listarPedidosDaCanhoteira,
+  marcarPortariaImpressa,
+} from "./portariaList";
 
 /**
  * O CORTE DO LADO DA IMPRESSÃO — a metade que não tinha teste.
@@ -21,7 +27,7 @@ function fakeSupabase(linhas: unknown[] = []) {
   const chamadas: Record<string, unknown[]> = {};
   const query: Record<string, unknown> = {};
 
-  for (const metodo of ["select", "is", "lt", "or", "not", "order"]) {
+  for (const metodo of ["select", "is", "lt", "gte", "neq", "or", "not", "in", "order"]) {
     query[metodo] = (...args: unknown[]) => {
       chamadas[metodo] = [...(chamadas[metodo] ?? []), ...args];
       return query;
@@ -31,6 +37,12 @@ function fakeSupabase(linhas: unknown[] = []) {
     chamadas.limit = args;
     return Promise.resolve({ data: linhas, error: null });
   };
+  // Thenable: a consulta da canhoteira termina em `.order()` e é aguardada
+  // direto, sem `.limit()` no fim como a da leva. Sem isto o `await` devolvia
+  // o próprio objeto de mentira e o erro saía como "in is not a function",
+  // que não diz nada sobre o que o teste queria checar.
+  query.then = (resolve: (valor: { data: unknown[]; error: null }) => unknown) =>
+    resolve({ data: linhas, error: null });
   query.update = (...args: unknown[]) => {
     chamadas.update = args;
     return { in: () => Promise.resolve({ error: null }) };
@@ -373,5 +385,145 @@ describe("gerarPdfPedidoUnico: imprimir é entrar em separação", () => {
       /não consta como pago/i
     );
     expect(chamadas.update).toBeUndefined();
+  });
+});
+
+/**
+ * PEDIDO ENTREGUE NUNCA MAIS VOLTA PRA LEVA (31/08/2026).
+ *
+ * O bug que isto tranca: `printed_at` nulo não significa só "a folha não
+ * saiu" — ele também fica nulo quando a folha SAIU e ninguém confirmou na
+ * tela. Como a consulta não tem limite inferior de data, esses pedidos
+ * voltavam em toda impressão, para sempre. Em 31/08 eram 6 pedidos já
+ * entregues de 25 a 27/08 saindo junto com o único pendente de verdade.
+ */
+describe("a leva não repesca pedido já entregue", () => {
+  it("a consulta exclui status entregue", async () => {
+    const { supabase, chamadas } = fakeSupabase([]);
+
+    await gerarPdfPortaria({ supabase, now: new Date("2026-08-25T15:10:00-03:00") });
+
+    expect(chamadas.neq).toEqual(["status", "entregue"]);
+  });
+
+  it("exclui entregue também quando a leva normal não roda (só os liberados pelo RH)", async () => {
+    // Sábado: `incluirLevaNormal` é falso, a consulta traz só os liberados —
+    // e o filtro de entregue tem que continuar de pé nesse caminho também.
+    const { supabase, chamadas } = fakeSupabase([]);
+
+    await gerarPdfPortaria({ supabase, now: new Date("2026-08-29T15:10:00-03:00") });
+
+    expect(corteUsadoOuNull(chamadas)).toBeNull();
+    expect(chamadas.neq).toEqual(["status", "entregue"]);
+  });
+});
+
+/**
+ * A CANHOTEIRA AVULSA — a folha de controle de retirada tirada sozinha, pelos
+ * pedidos que alguém marcou no modal.
+ *
+ * O conteúdo do papel é verificado em `pdfBuilder.test.ts` (`linhasDoControle`),
+ * porque o texto não existe legível dentro do PDF gerado. O que se verifica
+ * aqui é a SELEÇÃO: qual dia, quais pedidos, e — o mais importante — que
+ * nada é escrito no banco.
+ */
+describe("canhoteira avulsa", () => {
+  it("lista o dia pedido em São Paulo, sem entregue e sem cancelado", async () => {
+    const { supabase, chamadas } = fakeSupabase([]);
+
+    await listarPedidosDaCanhoteira({ supabase, dia: "2026-08-28" });
+
+    expect(chamadas.gte).toEqual(["created_at", "2026-08-28T03:00:00.000Z"]);
+    expect(chamadas.lt).toEqual(["created_at", "2026-08-29T03:00:00.000Z"]);
+    expect(chamadas.neq).toEqual(["status", "entregue"]);
+    expect(chamadas.is).toEqual(["cancelled_at", null]);
+  });
+
+  it("mantém o pedido cuja folha JÁ saiu — em separação é quem vai retirar", async () => {
+    const { supabase } = fakeSupabase([
+      {
+        id: "a",
+        order_number: "GM-1",
+        erp_external_id: "015393",
+        employee_name: "FULANO",
+        status: "em_separacao",
+        printed_at: "2026-08-28T18:00:00Z",
+        released_for_today_at: null,
+        created_at: "2026-08-28T12:00:00Z",
+        wallet_debited: true,
+        order_items: [{ product_name: "PAO", quantity: 2, unit_price: 10, products: null }],
+      },
+    ]);
+
+    const { pedidos } = await listarPedidosDaCanhoteira({ supabase, dia: "2026-08-28" });
+
+    expect(pedidos).toHaveLength(1);
+    // O número que sai no papel é o do CIGAM, não o interno — tem que bater
+    // com a folha grampeada no maço de mercadoria.
+    expect(pedidos[0].pedido).toBe("015393");
+    expect(pedidos[0].totalCents).toBe(2000);
+  });
+
+  it("deixa de fora o pedido que não consta como pago", async () => {
+    const { supabase } = fakeSupabase([
+      {
+        id: "a",
+        order_number: "GM-1",
+        employee_name: "FULANO",
+        status: "pedido_feito",
+        created_at: "2026-08-28T12:00:00Z",
+        wallet_debited: false,
+        wallet_used_cents: 0,
+        pay_on_pickup_cents: 0,
+        order_items: [],
+      },
+    ]);
+
+    const { pedidos } = await listarPedidosDaCanhoteira({ supabase, dia: "2026-08-28" });
+
+    expect(pedidos).toEqual([]);
+  });
+
+  it("gerar a canhoteira NÃO escreve no banco", async () => {
+    const { supabase, chamadas } = fakeSupabase([
+      {
+        id: "a",
+        order_number: "GM-1",
+        erp_external_id: "015393",
+        employee_name: "FULANO",
+        cancelled_at: null,
+        created_at: "2026-08-28T12:00:00Z",
+        wallet_debited: true,
+        order_items: [{ product_name: "PAO", quantity: 1, unit_price: 10, products: null }],
+      },
+    ]);
+
+    const { pdf, pedidos } = await gerarPdfCanhoteira({
+      supabase,
+      orderIds: ["a"],
+      dia: "2026-08-28",
+    });
+
+    expect(pdf.length).toBeGreaterThan(0);
+    expect(pedidos).toEqual([{ orderId: "a", orderNumber: "GM-1" }]);
+    // O carimbo é só da leva de separação, com confirmação. Um segundo
+    // caminho mexendo em printed_at seria um segundo jeito de perder pedido.
+    expect(chamadas.update).toBeUndefined();
+  });
+
+  it("recusa lista vazia em vez de gerar folha em branco", async () => {
+    const { supabase } = fakeSupabase([]);
+
+    await expect(gerarPdfCanhoteira({ supabase, orderIds: [] })).rejects.toThrow(
+      /pelo menos um pedido/i
+    );
+  });
+
+  it("recusa quando nenhum dos escolhidos pode entrar (cancelado ou não pago)", async () => {
+    const { supabase } = fakeSupabase([]);
+
+    await expect(
+      gerarPdfCanhoteira({ supabase, orderIds: ["a"], dia: "2026-08-28" })
+    ).rejects.toThrow(/cancelados ou não constam como pagos/i);
   });
 });

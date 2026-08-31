@@ -16,6 +16,8 @@ export type AdminOperationAction =
   | "restore_employee_balances"
   | "print_portaria"
   | "print_order"
+  /** Folha de controle de retirada tirada avulsa, pelo modal do Admin Pedidos. */
+  | "print_canhoteira"
   /** Passada do vigia: `success` = tudo de pé, `failed` = achou problema. */
   | "health_check";
 export type AdminOperationStatus = "running" | "success" | "failed" | "blocked";
@@ -281,6 +283,82 @@ export async function printOrderNow(
   const payload = await response.json().catch(() => ({}));
   targetWindow?.close();
   throw new Error(payload?.message || "Não foi possível gerar o PDF do pedido.");
+}
+
+export type PedidoDaCanhoteira = {
+  orderId: string;
+  /** O número que vai sair no papel: CIGAM quando já sincronizou, interno
+   *  quando ainda não. Vem pronto do servidor de propósito — se a tela
+   *  escolhesse por conta, a lista e a folha poderiam discordar. */
+  pedido: string;
+  orderNumber: string;
+  erpExternalId: string | null;
+  employeeName: string;
+  itens: number;
+  totalCents: number;
+  status: string;
+  printedAt: string | null;
+  releasedForTodayAt: string | null;
+  createdAt: string;
+};
+
+/**
+ * Os pedidos que o modal da canhoteira oferece pra marcar: os de um dia,
+ * pagos, não cancelados e ainda NÃO ENTREGUES — pedido em separação é
+ * justamente quem vai retirar e precisa da linha pra assinar; entregue já
+ * assinou.
+ *
+ * `dia` no formato YYYY-MM-DD (fuso de São Paulo). Sem ele, o dia corrente.
+ */
+export async function listarPedidosDaCanhoteira(dia?: string) {
+  const params = new URLSearchParams();
+  if (dia) params.set("dia", dia);
+  const query = params.toString();
+
+  return requestWithAuth<{ ok: boolean; dia: string; pedidos: PedidoDaCanhoteira[] }>([
+    `/automation/canhoteira/pedidos${query ? `?${query}` : ""}`,
+  ]);
+}
+
+/**
+ * Abre a folha de controle de retirada com os pedidos marcados, numa aba nova
+ * (mesmo padrão e mesma armadilha de pop-up de `printPortariaNow`: a aba tem
+ * que ser aberta no clique, antes do await).
+ *
+ * ⚠️ Não muda o estado de pedido nenhum, e é assim de propósito: a canhoteira
+ * é papel de conferência. Quem mexe em `printed_at` é só a leva de separação,
+ * com o passo de confirmação. Tirar a folha duas vezes custa uma folha.
+ */
+export async function printCanhoteira(
+  orderIds: string[],
+  dia: string | undefined,
+  targetWindow?: Window | null
+): Promise<{ message: string }> {
+  const accessToken = await getAccessToken();
+  const response = await fetch("/automation/canhoteira/pdf", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ orderIds, dia }),
+  });
+
+  const contentType = response.headers.get("content-type") || "";
+
+  if (contentType.includes("application/pdf")) {
+    const blob = await response.blob();
+    abrirOuBaixarPdf(
+      blob,
+      nomeDoArquivo(response, `canhoteira-${dia ?? new Date().toISOString().slice(0, 10)}.pdf`),
+      targetWindow
+    );
+    return { message: "Canhoteira aberta numa aba nova — use o botão de imprimir do navegador." };
+  }
+
+  const payload = await response.json().catch(() => ({}));
+  targetWindow?.close();
+  throw new Error(payload?.message || "Não foi possível gerar a canhoteira.");
 }
 
 export async function getAdminOperationsStatus() {

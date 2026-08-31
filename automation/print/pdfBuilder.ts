@@ -522,6 +522,46 @@ export function buildOrderSheetsPdf(
 }
 
 /**
+ * A canhoteira SOZINHA, sem as folhas de pedido — o botão "Canhoteira" do
+ * Admin Pedidos (31/08/2026).
+ *
+ * Antes ela só existia grudada no fim do PDF da leva, o que amarrava duas
+ * coisas que na portaria acontecem em horas diferentes: a folha de SEPARAÇÃO
+ * sai uma vez, quando a mercadoria é juntada; a folha de CONTROLE é o papel
+ * que fica na portaria colhendo assinatura enquanto o pessoal vai retirando.
+ * Quem precisava de uma segunda via do controle — folha molhada, pedido que
+ * entrou depois, retirada que virou o dia — só tinha a saída de reimprimir a
+ * leva inteira, e aí ou levava um bolo de folha de separação repetida junto,
+ * ou não levava nada.
+ *
+ * `hoje` é a data que sai na caixa do cabeçalho: quando a tela pede a
+ * canhoteira de um dia passado, é o dia DOS PEDIDOS que tem que aparecer no
+ * papel, não a data em que alguém clicou — senão a folha arquivada mente
+ * sobre quando aquela retirada aconteceu.
+ */
+export function buildControleDeRetiradaPdf(
+  pedidos: OrderSheetData[],
+  hoje: Date = new Date()
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: "A4", margin: PAGE_MARGIN });
+    const chunks: Buffer[] = [];
+    doc.on("data", (chunk) => chunks.push(chunk));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+
+    // Sem pedido nenhum não sai PDF — mesma regra de `buildOrderSheetsPdf`:
+    // folha de controle em branco é papel jogado fora. Quem chama trata a
+    // lista vazia antes de chegar aqui; isto é só a rede.
+    if (pedidos.length > 0) {
+      drawControleDeRetirada(doc, pedidos, hoje);
+    }
+
+    doc.end();
+  });
+}
+
+/**
  * A ordem das folhas do PDF da leva: em BLOCOS por via — todos os pedidos
  * da primeira via, depois todos da segunda.
  *
