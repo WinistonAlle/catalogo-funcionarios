@@ -125,6 +125,53 @@ pm2 logs webhook --lines 30 --nostream | grep -E "auto-sync|Estoque sync"
 
 ---
 
+## Trava de pedido duplicado (31/08/2026)
+
+Em 28/08 o LUCAS teve **dois pedidos idênticos com 21 segundos de diferença**
+(`GM-20260828-4356` e `GM-20260828-5736`) — mesmos 3 itens, mesmas quantidades,
+mesmo total. Os dois debitaram R$ 82,90: **ele pagou R$ 165,80 por uma compra
+só**, e os dois entraram no CIGAM (016615 e 016260).
+
+**Por que a trava está no banco e não na tela.** O botão do Checkout já tinha
+`disabled={isSubmitting}`, então duplo clique rápido já era barrado — e ainda
+assim aconteceu. O modo de falhar que sobra é outro: o
+`place_order_with_wallet_v2` conclui, a **resposta se perde no caminho**, o
+cliente cai no `catch`, o carrinho não é limpo e a pessoa manda de novo achando
+que não foi. Nenhuma trava no front cobre isso, porque do ponto de vista do
+front a primeira tentativa falhou. Como o pedido é inserido direto pelo cliente
+(`src/services/orders.ts`), o único lugar que enxerga as duas tentativas é o
+Postgres.
+
+`bloqueia_pedido_duplicado` é um `BEFORE INSERT` em `orders` que recusa pedido
+do mesmo `employee_cpf` com o mesmo `total_value` e o mesmo `total_items` feito
+há menos de **5 minutos**. Os `BEFORE INSERT` disparam em ordem alfabética, e
+`trg_orders_bloqueia_duplicado` vem antes de `trg_orders_wallet_ins` — a trava
+roda antes de qualquer coisa tocar em saldo, que é o que se quer.
+
+**A janela de 5 minutos não é chute.** No histórico inteiro existem 11 pares de
+pedidos idênticos do mesmo funcionário em até 5 min: **nove** são de 24/03/2026,
+Winiston e Mateus testando antes da produção; **um** é de 06/05 e terminou com
+um dos dois cancelado na mão (ou seja, era duplicata mesmo); o último é o do
+LUCAS. **Em uso real, nenhum par idêntico foi intencional.** Os intervalos
+observados foram 20s e ~3min, então 5 minutos cobre com folga.
+
+Pedido **cancelado não conta**: se a pessoa cancelou e quer refazer, o caminho
+está livre. `SECURITY DEFINER` porque a RLS só deixa o funcionário ver os
+próprios pedidos, e a checagem precisa enxergar a linha anterior mesmo assim.
+
+Verificado ao vivo com cinco casos, em transação desfeita: duplicata bloqueada;
+total diferente passa; outro funcionário com o mesmo total passa; repetição de
+pedido cancelado passa.
+
+Do lado da tela, o Checkout **não trata isso como erro** — o pedido da pessoa
+está registrado. Sai um aviso "Esse pedido já foi registrado" com um botão para
+"Meus pedidos". Chamar de "Erro ao finalizar" mandaria ela tentar de novo, que é
+exatamente o que se quer evitar.
+
+⚠️ **O caso do LUCAS continua em aberto** e precisa de decisão humana: estorno do
+pedido `GM-20260828-4356` e exclusão do `016615` no CIGAM. A trava impede o
+próximo, não desfaz o que já aconteceu.
+
 ## ⚡ O que ainda falta
 
 1. **Avisar os 7 admins/RH para fazerem o primeiro acesso**, e acompanhar até

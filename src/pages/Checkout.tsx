@@ -390,6 +390,29 @@ const Checkout: React.FC = () => {
       navigate("/catalogo");
     } catch (err: any) {
       console.error("Erro ao finalizar pedido:", err);
+
+      // A trava de duplicata do banco (trigger bloqueia_pedido_duplicado,
+      // scripts/2026-08-31-trava-pedido-duplicado.sql) não é um erro do ponto
+      // de vista de quem clicou: o pedido dela ESTÁ registrado. Tratar como
+      // "Erro ao finalizar" mandaria a pessoa tentar de novo, que é
+      // exatamente o que se quer evitar — o LUCAS pagou duas vezes assim, em
+      // 28/08. Aqui a mensagem diz o que aconteceu e leva pra onde o pedido
+      // dela está.
+      const mensagem = String(err?.message ?? "");
+      if (mensagem.includes("Pedido duplicado")) {
+        toast.warning("Esse pedido já foi registrado", {
+          description:
+            err?.hint ||
+            'Confira em "Meus pedidos" — ele provavelmente já entrou.',
+          action: {
+            label: "Ver meus pedidos",
+            onClick: () => navigate("/meus-pedidos"),
+          },
+          duration: 10000,
+        });
+        return;
+      }
+
       toast.error("Erro ao finalizar pedido", {
         description:
           err?.message ||
