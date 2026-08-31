@@ -125,6 +125,64 @@ pm2 logs webhook --lines 30 --nostream | grep -E "auto-sync|Estoque sync"
 
 ---
 
+## ⚠️ Cancelar pedido antigo: quando NÃO se pode estornar (31/08/2026)
+
+**A regra, em uma linha: pedido anterior à recarga mensal do dia 27 não pode
+ser estornado — o dinheiro já voltou por lá.**
+
+`credito_mensal_cents` é o SALDO CORRENTE, e a recarga do dia 27 **substitui**
+esse valor pelo da planilha (não desconta o que foi gasto, ver "Recarga mensal").
+Então todo débito anterior à recarga já foi desfeito por ela. Estornar de novo é
+dar crédito de graça.
+
+O gatilho `handle_wallet_on_orders` **não sabe disso**: ele devolve
+`old.wallet_used_cents` ao saldo assim que o status vira `cancelado`, sem olhar
+data nenhuma. Quem cancela pedido antigo na mão precisa saber disso, porque a
+tela não avisa.
+
+Em 31/08 fechamos 14 pedidos órfãos (13 de julho, feitos com o sistema fora do
+ar, mais um de teste). Se tivessem sido cancelados pelo caminho normal, o
+estorno teria estourado o direito de R$ 300,00 de quase todos:
+
+| funcionário | saldo real | se estornasse |
+|---|---|---|
+| VESPARZIANO | R$ 300,00 | **R$ 500,90** |
+| WENDERSON | R$ 300,00 | **R$ 418,00** |
+| IAN | R$ 300,00 | **R$ 369,00** |
+
+Onze dos catorze estavam com saldo **exatamente igual ao direito** — que é a
+prova de que a recarga já tinha restituído tudo.
+
+**Como cancelar sem estornar.** O gatilho só devolve se
+`old.wallet_refunded = false`, e ele é um trigger POR COLUNA
+(`BEFORE UPDATE OF status, total_cents, pay_on_pickup_cents, employee_id,
+employee_cpf`) — mexer só em `wallet_refunded` **não o dispara**. Daí os dois
+passos, nesta ordem:
+
+```sql
+update public.orders set wallet_refunded = true where id in (...);   -- não dispara
+update public.orders set status = 'cancelado', cancelled_at = now()  -- dispara, e não estorna
+ where id in (...);
+```
+
+Modelo pronto, com asserção que desfaz tudo se algum saldo mudar:
+`scripts/2026-08-31-cancela-pedidos-orfaos-sem-estorno.sql`.
+
+**O caso oposto**, para comparar: `GM-20260828-4356` (duplicata do LUCAS) foi
+feito em 28/08, **depois** da recarga — ali o débito estava vivo e o estorno era
+devido. Cancelado pelo caminho normal, deixando o gatilho trabalhar:
+R$ 134,20 → R$ 217,10, abaixo do direito.
+Ver `scripts/2026-08-31-estorna-pedido-duplicado-lucas.sql`.
+
+**Sempre confira o teto depois de qualquer estorno:**
+
+```sql
+select count(*) from public.employees
+ where coalesce(credito_mensal_cents,0) > coalesce(credito_direito_cents,0);
+```
+
+Tem que voltar zero. O banco não tem CHECK para isso — só para não-negativo.
+
 ## Trava de pedido duplicado (31/08/2026)
 
 Em 28/08 o LUCAS teve **dois pedidos idênticos com 21 segundos de diferença**
