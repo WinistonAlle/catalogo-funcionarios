@@ -125,6 +125,57 @@ pm2 logs webhook --lines 30 --nostream | grep -E "auto-sync|Estoque sync"
 
 ---
 
+## Backup do banco — diário, verificado e vigiado (31/08/2026)
+
+Até 31/08 **não havia backup nenhum agendado**. Os arquivos em `~/backups` eram
+todos manuais, tirados antes de operações de risco, e parciais — ou só
+`employees`, ou só `orders` + `order_items`. Nunca o banco inteiro. Um sistema
+com saldo de funcionário, pedidos e integração com o CIGAM dentro de um volume
+Docker tinha como ponto de retorno "o que alguém lembrou de dumpar na mão".
+
+`scripts/backup-banco.sh`, no cron às **02:00**. O horário é de propósito: uma
+hora antes da rodada mensal das 03:00, que no dia 27 **reescreve**
+`credito_mensal_cents` de todo mundo. Assim existe sempre uma cópia do estado
+pré-recarga.
+
+**O que o script faz de diferente de um `pg_dump` solto:**
+
+- Formato `custom` (`-Fc`): comprimido, restaurável tabela a tabela e
+  verificável sem restaurar.
+- Escreve em `.parcial` e só renomeia no fim — dump interrompido no meio
+  (disco cheio, container reiniciando) não pode ficar parecendo backup bom.
+- **Verifica o que gravou** com `pg_restore -l`. Menos de 50 objetos listados =
+  falha, sem rotacionar por cima de um backup bom.
+- Rotação de 30 dias preservando o dia 01 de cada mês.
+- Guarda também `pg_dumpall --globals-only` (papéis), sem o que um restore em
+  máquina nova esbarra em dono de objeto inexistente.
+
+**Restore PROVADO em 31/08**, não presumido: o dump foi restaurado num banco
+descartável e comparado com a produção — 298 pedidos, 372 funcionários, 850
+itens e R$ 109.904,05 de saldo total, idênticos dos dois lados.
+
+⚠️ Dois objetos internos do Supabase não restauram como `postgres` num banco
+cru: `log_min_messages` e a tabela `secrets` do Vault, que exigem os papéis
+próprios do Supabase. Nenhum dado do schema `public` é afetado. Num desastre
+real o restore é numa stack Supabase nova, onde esses papéis existem.
+
+### A oitava checagem do vigia fecha o circuito
+
+Backup que falha calado é a mesma doença que este servidor já teve duas vezes
+(a recarga mensal 4 meses morta empilhando erro em `~/sheets.log`; o vigia
+nascendo gritando só em `console.error`). E backup em que ninguém confere é
+pior que nenhum, porque dá sensação de cobertura.
+
+O script grava `ultimo-sucesso.txt` **depois** de verificar o dump — então o
+arquivo não diz "o script rodou", diz "o script produziu um backup legível". O
+vigia lê a idade dele e grita acima de **36h** (folga para uma execução falhar
+e a seguinte consertar; dois dias sem backup gritam).
+
+**O alarme foi testado disparando de verdade:** o carimbo foi envelhecido para
+3 dias e o vigia acusou "O último backup bem-sucedido do banco foi há 72h",
+voltando a "Tudo de pé" com o carimbo real. Alarme não testado é alarme que não
+existe.
+
 ## ⚠️ Cancelar pedido antigo: quando NÃO se pode estornar (31/08/2026)
 
 **A regra, em uma linha: pedido anterior à recarga mensal do dia 27 não pode

@@ -38,6 +38,7 @@ import {
   resolveCurrentCycleKey,
   updateOperationLog,
 } from "../server/adminOperations";
+import { readFile } from "node:fs/promises";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1983,6 +1984,58 @@ async function runHealthCheck() {
     }
   } catch (err: any) {
     alertas.push(`Não deu para checar pedido impresso e não entregue: ${err?.message ?? err}`);
+  }
+
+  // 8. O BACKUP ENVELHECEU. Fecha o circuito do backup diário criado em
+  //    31/08/2026 (scripts/backup-banco.sh, cron às 02:00).
+  //
+  //    Sem esta checagem o backup teria exatamente a doença que este servidor
+  //    já teve duas vezes: a recarga mensal ficou 4 MESES morta empilhando
+  //    "npm: not found" em ~/sheets.log, e o vigia nasceu gritando só em
+  //    console.error. Rotina que falha calada é rotina que ninguém sabe que
+  //    parou — e um backup em que ninguém confere é pior que nenhum, porque dá
+  //    a sensação de estar coberto.
+  //
+  //    O script só escreve `ultimo-sucesso.txt` DEPOIS de verificar o dump com
+  //    `pg_restore -l`. Então este arquivo não diz "o script rodou": diz "o
+  //    script produziu um backup legível". É a diferença que importa.
+  //
+  //    36 horas: com cron diário, dá folga para uma execução falhar e a
+  //    seguinte consertar sem acordar ninguém, mas dois dias sem backup gritam.
+  try {
+    const caminho = "/home/xulio/backups/catalogo-funcionarios/ultimo-sucesso.txt";
+    const LIMITE_HORAS = 36;
+
+    let carimbo: string | null = null;
+    try {
+      carimbo = (await readFile(caminho, "utf8")).trim();
+    } catch {
+      carimbo = null;
+    }
+
+    if (!carimbo) {
+      alertas.push(
+        "Nunca houve backup bem-sucedido do banco (ou o arquivo de controle sumiu): " +
+          `${caminho} não pôde ser lido. O backup diário roda às 02:00 — confira ` +
+          "~/backups/backup.log."
+      );
+    } else {
+      const quando = new Date(carimbo);
+      const horas = (Date.now() - quando.getTime()) / 36e5;
+
+      if (Number.isNaN(horas)) {
+        alertas.push(`O arquivo de controle do backup tem conteúdo inválido: "${carimbo}".`);
+      } else if (horas > LIMITE_HORAS) {
+        alertas.push(
+          `O último backup bem-sucedido do banco foi há ${Math.floor(horas)}h ` +
+            `(${quando.toLocaleString("pt-BR")}). O backup diário das 02:00 não está ` +
+            "fechando — veja ~/backups/backup.log. Sem ele, o ponto de retorno do " +
+            "sistema é o que alguém lembrou de dumpar na mão."
+        );
+      }
+    }
+  } catch (err: any) {
+    alertas.push(`Não deu para checar a idade do backup: ${err?.message ?? err}`);
   }
 
   if (alertas.length === 0) {
