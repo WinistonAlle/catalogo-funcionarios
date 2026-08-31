@@ -1471,7 +1471,7 @@ export default function AdminOrders() {
               style={{
                 ...styles.backBtn,
                 ...(isMobile
-                  ? { width: "auto", height: 38, borderRadius: 12 }
+                  ? { width: "auto" }
                   : {}),
               }}
               onClick={() => navigate(CATALOG_ROUTE)}
@@ -1616,7 +1616,6 @@ export default function AdminOrders() {
               ...(isMobile
                 ? {
                     minWidth: 140,
-                    height: 46,
                     flex: "0 0 auto",
                     scrollSnapAlign: "start",
                   }
@@ -2166,8 +2165,6 @@ export default function AdminOrders() {
                           <button
                             style={{
                               ...styles.secondaryBtn,
-                              padding: "0 12px",
-                              borderRadius: 14,
                               ...(isStatusManageLocked(o) ||
                               statusUpdatingIds.includes(o.id)
                                 ? styles.disabledBtn
@@ -2194,8 +2191,6 @@ export default function AdminOrders() {
                           <button
                             style={{
                               ...styles.secondaryBtn,
-                              padding: "0 12px",
-                              borderRadius: 14,
                               ...(isCanceled || printingOrderId === o.id
                                 ? styles.disabledBtn
                                 : {}),
@@ -2211,8 +2206,6 @@ export default function AdminOrders() {
                               style={{
                                 ...styles.secondaryBtn,
                                 ...styles.releaseBtn,
-                                padding: "0 12px",
-                                borderRadius: 14,
                                 ...(liberandoId === o.id ? styles.disabledBtn : {}),
                               }}
                               disabled={liberandoId === o.id}
@@ -2225,8 +2218,6 @@ export default function AdminOrders() {
                           <button
                             style={{
                               ...styles.primaryBtn,
-                              padding: "0 12px",
-                              borderRadius: 14,
                               ...(isCanceled ? styles.disabledBtn : {}),
                             }}
                             disabled={isCanceled}
@@ -2545,9 +2536,6 @@ export default function AdminOrders() {
                                       <button
                                         style={{
                                           ...styles.dangerBtn,
-                                          height: 36,
-                                          padding: "0 12px",
-                                          borderRadius: 12,
                                           ...(locked ? styles.disabledBtn : {}),
                                         }}
                                         disabled={locked}
@@ -2626,9 +2614,6 @@ export default function AdminOrders() {
                                 <button
                                   style={{
                                     ...styles.dangerBtn,
-                                    height: 40,
-                                    padding: "0 12px",
-                                    borderRadius: 14,
                                     ...(locked ? styles.disabledBtn : {}),
                                   }}
                                   disabled={locked}
@@ -3339,8 +3324,6 @@ export default function AdminOrders() {
                                 <button
                                   style={{
                                     ...styles.secondaryBtn,
-                                    padding: "0 12px",
-                                    borderRadius: 14,
                                   }}
                                   onClick={() => {
                                     const found = orders.find(
@@ -3442,6 +3425,13 @@ export default function AdminOrders() {
  */
 const CONTROL_H = 44;
 
+/**
+ * Raio de canto de todo controle. Os cards e modais desta tela usam 18;
+ * botao com raio de card destoa da linha de campos ao lado. O `refreshBtn`
+ * estava em 18 e o "voltar" do mobile em 12 — os dois unicos fora.
+ */
+const CONTROL_R = 14;
+
 const styles: Record<string, CSSProperties> = {
   page: { minHeight: "100vh", background: "#F6F7FB", color: "#111827" },
 
@@ -3471,7 +3461,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 8,
     height: CONTROL_H,
     padding: "0 14px",
-    borderRadius: 14,
+    borderRadius: CONTROL_R,
     border: "1px solid rgba(0,0,0,0.08)",
     background: "#fff",
     cursor: "pointer",
@@ -3525,7 +3515,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 8,
     height: CONTROL_H,
     padding: "0 14px",
-    borderRadius: 18,
+    borderRadius: CONTROL_R,
     border: "1px solid rgba(0,0,0,0.08)",
     background: "#111827",
     color: "#fff",
@@ -3562,9 +3552,8 @@ const styles: Record<string, CSSProperties> = {
 
   input: {
     height: CONTROL_H,
-    borderRadius: 14,
+    borderRadius: CONTROL_R,
     border: "1px solid rgba(0,0,0,0.10)",
-    padding: "0 12px",
     outline: "none",
     background: "#fff",
     fontWeight: 800,
@@ -3572,9 +3561,8 @@ const styles: Record<string, CSSProperties> = {
 
   select: {
     height: CONTROL_H,
-    borderRadius: 14,
+    borderRadius: CONTROL_R,
     border: "1px solid rgba(0,0,0,0.10)",
-    padding: "0 12px",
     outline: "none",
     background: "#fff",
     fontWeight: 800,
@@ -3587,7 +3575,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 8,
     height: CONTROL_H,
     padding: "0 14px",
-    borderRadius: 14,
+    borderRadius: CONTROL_R,
     border: "1px solid rgba(0,0,0,0.10)",
     background: "#111827",
     color: "#fff",
@@ -3603,7 +3591,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 8,
     height: CONTROL_H,
     padding: "0 14px",
-    borderRadius: 14,
+    borderRadius: CONTROL_R,
     border: "1px solid rgba(0,0,0,0.08)",
     background: "rgba(255,255,255,0.70)",
     cursor: "pointer",
@@ -3643,7 +3631,7 @@ const styles: Record<string, CSSProperties> = {
   printBtn: {
     height: CONTROL_H,
     padding: "0 16px",
-    borderRadius: 14,
+    borderRadius: CONTROL_R,
     border: "1px solid rgba(180,83,9,0.30)",
     background: "linear-gradient(180deg, #F59E0B, #D97706)",
     color: "#fff",
@@ -3663,7 +3651,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 8,
     height: CONTROL_H,
     padding: "0 14px",
-    borderRadius: 14,
+    borderRadius: CONTROL_R,
     border: "1px solid rgba(0,0,0,0.10)",
     background: "#fff",
     cursor: "pointer",
@@ -3677,7 +3665,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 8,
     height: CONTROL_H,
     padding: "0 14px",
-    borderRadius: 14,
+    borderRadius: CONTROL_R,
     border: "1px solid rgba(239,68,68,0.30)",
     background: "rgba(239,68,68,0.12)",
     color: "#991B1B",
@@ -3812,7 +3800,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 8,
     height: CONTROL_H,
     padding: "0 14px",
-    borderRadius: 14,
+    borderRadius: CONTROL_R,
     border: "1px solid rgba(0,0,0,0.10)",
     background: "#fff",
     cursor: "pointer",
@@ -3969,10 +3957,9 @@ const styles: Record<string, CSSProperties> = {
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
-    width: 38,
-    height: 38,
-    borderRadius: 14,
+    width: CONTROL_H,
+    height: CONTROL_H,
+    borderRadius: CONTROL_R,
     border: "1px solid rgba(0,0,0,0.10)",
     background: "#fff",
     cursor: "pointer",
