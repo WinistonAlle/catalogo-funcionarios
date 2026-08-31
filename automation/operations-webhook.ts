@@ -1647,6 +1647,20 @@ const HEALTH_CHECK_INTERVAL_MS = Number(process.env.HEALTH_CHECK_INTERVAL_MS ?? 
  */
 const HEALTH_ALERT_WEBHOOK_URL = process.env.HEALTH_ALERT_WEBHOOK_URL ?? "";
 
+/**
+ * O instante que 293 pedidos levaram de uma vez num backfill em 19/08/2026.
+ *
+ * `printed_at` significa "a folha saiu" em todo lugar do código — menos nesses
+ * 293, onde significa só "alguém rodou um UPDATE". Nenhuma checagem que use
+ * `printed_at` como prova de impressão pode acreditar neste valor: são 41 os
+ * que ainda estão sem entrega, e incluí-los faria o vigia gritar sobre pedido
+ * de março a cada hora até o fim dos tempos.
+ *
+ * Não dá pra distinguir de outro jeito: o backfill não deixou marca própria.
+ * Se um dia esses 41 forem resolvidos na mão, esta constante pode sair.
+ */
+const PRINTED_AT_DO_BACKFILL = "2026-08-19T13:06:42.424657+00:00";
+
 async function enviarAlertaExterno(alertas: string[]) {
   if (!HEALTH_ALERT_WEBHOOK_URL) return;
 
@@ -1919,6 +1933,56 @@ async function runHealthCheck() {
     }
   } catch (err: any) {
     alertas.push(`Não deu para checar direito zerado: ${err?.message ?? err}`);
+  }
+
+  // 7. Pedido que virou PAPEL e nunca virou entrega. O buraco que faltava
+  //    (31/08/2026): a checagem 4 pega o pedido pago que ninguém imprimiu, mas
+  //    depois que a folha sai o pedido some do radar — se a mercadoria não for
+  //    separada, ou for entregue sem ninguém marcar na tela, nada mais grita.
+  //    Foi assim que GM-20260811-4844 (IAN, R$ 69,00) ficou 20 dias em
+  //    `pedido_feito`: saldo debitado, sem ninguém saber se recebeu.
+  //
+  //    ⚠️ O BACKFILL PRECISA FICAR DE FORA, e este é o detalhe que decide se o
+  //    alerta serve pra alguma coisa. Em 19/08/2026 um backfill carimbou 293
+  //    pedidos com o MESMO `printed_at` — nenhum deles foi impresso de verdade.
+  //    Sem excluir esse instante, esta checagem acusaria 41 pedidos antigos a
+  //    cada rodada, de hora em hora, para sempre. Alerta que grita sempre é
+  //    alerta que ninguém lê — é o mesmo modo de falhar que este vigia existe
+  //    para cobrir, só que auto-infligido.
+  //
+  //    Os 41 legados continuam existindo e precisam de decisão humana (limpar
+  //    ou marcar); o que esta checagem cobre é o que acontecer daqui pra frente.
+  try {
+    const limite = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+
+    const { data } = await supabase
+      .from("orders")
+      .select("order_number, erp_external_id, employee_name, status, printed_at")
+      .not("printed_at", "is", null)
+      .neq("printed_at", PRINTED_AT_DO_BACKFILL)
+      .lt("printed_at", limite)
+      .is("cancelled_at", null)
+      .not("status", "in", '("entregue","cancelado")')
+      .order("printed_at")
+      .limit(50);
+
+    const parados = data ?? [];
+
+    if (parados.length > 0) {
+      const amostra = parados
+        .slice(0, 5)
+        .map((o: any) => `${o.erp_external_id || o.order_number} (${o.employee_name})`)
+        .join(", ");
+
+      alertas.push(
+        `${parados.length} pedido(s) com a folha impressa há mais de 3 dias e ainda não ` +
+          `entregues: ${amostra}${parados.length > 5 ? ", …" : ""}. ` +
+          "Ou a mercadoria não foi separada, ou foi entregue e ninguém marcou na tela — " +
+          "as duas coisas precisam de alguém olhando, porque o saldo já foi debitado."
+      );
+    }
+  } catch (err: any) {
+    alertas.push(`Não deu para checar pedido impresso e não entregue: ${err?.message ?? err}`);
   }
 
   if (alertas.length === 0) {

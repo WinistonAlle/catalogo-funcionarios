@@ -1,4 +1,5 @@
 // src/App.tsx
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -21,26 +22,40 @@ import NotFound from "./pages/NotFound";
 // ✅ Favoritos
 import FavoritesPage from "./pages/Favorites";
 
-// ✅ Destaques (Admin)
-import Destaques from "./pages/Destaques";
+// ✅ Destaques também é tela de gestão — entra no grupo de baixo.
 
-// Admin / RH / Relatórios
-import Admin from "./pages/Admin";
-import AdminHome from "./pages/AdminHome";
-import RhHome from "./pages/rh/RhHome";
-import EmployeesPage from "./pages/rh/EmployeesPage";
-import RHSpendingReport from "./pages/rh/RHSpendingReport";
-import RelatorioAbatimentos from "./pages/RelatorioAbatimentos";
-import LiberarPedidos from "./pages/rh/LiberarPedidos";
-import ReportsDashboard from "./pages/ReportsDashboard";
-import OperationsHistory from "./pages/OperationsHistory";
+/**
+ * ADMIN / RH / RELATÓRIOS SÃO CARREGADOS SOB DEMANDA (31/08/2026).
+ *
+ * Antes tudo isto era `import` estático, então o bundle era um arquivo só de
+ * 2,7 MB: o funcionário que abre o catálogo no celular pra pedir pão de queijo
+ * baixava junto a tela de pedidos do admin (4.000 linhas), os relatórios, o
+ * painel do CIGAM e o html2canvas (190 KB, usado só pra exportar relatório).
+ * Ele nunca abre nenhuma dessas telas — não tem permissão.
+ *
+ * O corte é por QUEM USA, não por tamanho: o fluxo do funcionário (escolha,
+ * login, catálogo, checkout, meus pedidos, favoritos, avisos) continua com
+ * import estático, porque é o caminho quente e uma ida à rede no meio dele
+ * seria trocar um problema por outro. Tudo que exige papel de admin ou RH vira
+ * `lazy` — quem abre essas telas está no desktop da loja, não no 3G.
+ *
+ * O `Suspense` que segura a espera está em volta do `<Routes>`, com o mesmo
+ * fundo das telas pra não piscar branco entre uma rota e outra.
+ */
+const Admin = lazy(() => import("./pages/Admin"));
+const AdminHome = lazy(() => import("./pages/AdminHome"));
+const RhHome = lazy(() => import("./pages/rh/RhHome"));
+const EmployeesPage = lazy(() => import("./pages/rh/EmployeesPage"));
+const RHSpendingReport = lazy(() => import("./pages/rh/RHSpendingReport"));
+const RelatorioAbatimentos = lazy(() => import("./pages/RelatorioAbatimentos"));
+const LiberarPedidos = lazy(() => import("./pages/rh/LiberarPedidos"));
+const ReportsDashboard = lazy(() => import("./pages/ReportsDashboard"));
+const OperationsHistory = lazy(() => import("./pages/OperationsHistory"));
+const AdminOrders = lazy(() => import("./pages/AdminOrders"));
+const IntegracaoCigam = lazy(() => import("./pages/IntegracaoCigam"));
+const Destaques = lazy(() => import("./pages/Destaques"));
 
-// ✅ NOVO: AdminOrders
-import AdminOrders from "./pages/AdminOrders";
-import IntegracaoCigam from "./pages/IntegracaoCigam";
-import { isSuperAdminSession } from "./lib/superAdmin"; 
-// Se o seu arquivo estiver em: src/pages/admin/AdminOrders.tsx, use:
-// import AdminOrders from "./pages/admin/AdminOrders";
+import { isSuperAdminSession } from "./lib/superAdmin";
 
 const queryClient = new QueryClient();
 const MAINTENANCE_MODE = false;
@@ -125,6 +140,26 @@ function App() {
             <Maintenance />
           ) : (
           <BrowserRouter>
+            {/* Segura a espera das telas carregadas sob demanda. O fundo é o
+                mesmo `#F6F7FB` das telas de gestão de propósito: sem isso a
+                troca de rota pisca branco no meio do caminho. */}
+            <Suspense
+              fallback={
+                <div
+                  style={{
+                    minHeight: "100vh",
+                    background: "#F6F7FB",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "#111827",
+                    fontWeight: 900,
+                  }}
+                >
+                  Carregando…
+                </div>
+              }
+            >
             <Routes>
               {/* Home (escolha / entrada) */}
               <Route path="/" element={<EscolhaUsuario />} />
@@ -316,6 +351,7 @@ function App() {
               {/* 404 */}
               <Route path="*" element={<NotFound />} />
             </Routes>
+            </Suspense>
           </BrowserRouter>
           )}
         </CartProvider>
