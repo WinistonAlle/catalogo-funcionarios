@@ -1451,8 +1451,8 @@ export default function AdminOrders() {
     if (!isMobile) return { display: "flex", alignItems: "center", gap: 10 };
     return {
       display: "grid",
-      gridTemplateColumns: "1fr 90px",
-      gap: 10,
+      gridTemplateColumns: "1fr 1fr",
+      gap: 8,
       alignItems: "center",
     };
   }, [isMobile]);
@@ -1492,7 +1492,7 @@ export default function AdminOrders() {
               style={{
                 ...styles.printBtn,
                 ...(isMobile
-                  ? { width: "100%", height: 42, borderRadius: 14 }
+                  ? { width: "100%", gridColumn: "1 / -1" }
                   : {}),
                 ...(printingPortaria ? styles.disabledBtn : {}),
               }}
@@ -1513,7 +1513,7 @@ export default function AdminOrders() {
               style={{
                 ...styles.secondaryBtn,
                 ...(isMobile
-                  ? { width: "100%", height: 42, borderRadius: 14 }
+                  ? { width: "100%" }
                   : {}),
               }}
               onClick={abrirCanhoteira}
@@ -1527,7 +1527,7 @@ export default function AdminOrders() {
               style={{
                 ...styles.ghostBtn,
                 ...(isMobile
-                  ? { width: "100%", height: 42, borderRadius: 14 }
+                  ? { width: "100%" }
                   : {}),
               }}
               onClick={() => {
@@ -2166,8 +2166,7 @@ export default function AdminOrders() {
                           <button
                             style={{
                               ...styles.secondaryBtn,
-                              padding: "10px 12px",
-                              height: 42,
+                              padding: "0 12px",
                               borderRadius: 14,
                               ...(isStatusManageLocked(o) ||
                               statusUpdatingIds.includes(o.id)
@@ -2195,8 +2194,7 @@ export default function AdminOrders() {
                           <button
                             style={{
                               ...styles.secondaryBtn,
-                              padding: "10px 12px",
-                              height: 42,
+                              padding: "0 12px",
                               borderRadius: 14,
                               ...(isCanceled || printingOrderId === o.id
                                 ? styles.disabledBtn
@@ -2213,8 +2211,7 @@ export default function AdminOrders() {
                               style={{
                                 ...styles.secondaryBtn,
                                 ...styles.releaseBtn,
-                                padding: "10px 12px",
-                                height: 42,
+                                padding: "0 12px",
                                 borderRadius: 14,
                                 ...(liberandoId === o.id ? styles.disabledBtn : {}),
                               }}
@@ -2228,8 +2225,7 @@ export default function AdminOrders() {
                           <button
                             style={{
                               ...styles.primaryBtn,
-                              padding: "10px 12px",
-                              height: 42,
+                              padding: "0 12px",
                               borderRadius: 14,
                               ...(isCanceled ? styles.disabledBtn : {}),
                             }}
@@ -2375,7 +2371,6 @@ export default function AdminOrders() {
                           <button
                             style={{
                               ...styles.primaryBtn,
-                              height: 44,
                               ...(isStatusManageLocked(selected) ||
                               statusUpdatingIds.includes(selected.id)
                                 ? styles.disabledBtn
@@ -3344,8 +3339,7 @@ export default function AdminOrders() {
                                 <button
                                   style={{
                                     ...styles.secondaryBtn,
-                                    padding: "10px 12px",
-                                    height: 42,
+                                    padding: "0 12px",
                                     borderRadius: 14,
                                   }}
                                   onClick={() => {
@@ -3434,6 +3428,20 @@ export default function AdminOrders() {
 }
 
 /* ----------------------------- styles ----------------------------- */
+/**
+ * Altura de TODO controle da tela — botão, input e select.
+ *
+ * Existia como número solto e tinha virado dois: 44 nos campos e nos
+ * botões de formulário, 42 nos do cabeçalho (voltar, imprimir, histórico)
+ * e nos de ação da linha. Dois pixels não se percebem isolados, mas lado a
+ * lado num mesmo eixo é exatamente o "fora de esquadro" — botão e campo
+ * vizinhos com bases diferentes.
+ *
+ * Se um dia precisar de um controle menor (o de remover item da lista, por
+ * exemplo), é override explícito no lugar, não um segundo padrão.
+ */
+const CONTROL_H = 44;
+
 const styles: Record<string, CSSProperties> = {
   page: { minHeight: "100vh", background: "#F6F7FB", color: "#111827" },
 
@@ -3457,7 +3465,11 @@ const styles: Record<string, CSSProperties> = {
   },
 
   backBtn: {
-    height: 42,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    height: CONTROL_H,
     padding: "0 14px",
     borderRadius: 14,
     border: "1px solid rgba(0,0,0,0.08)",
@@ -3507,6 +3519,12 @@ const styles: Record<string, CSSProperties> = {
   kpiValue: { marginTop: 8, fontSize: 22, fontWeight: 1000 },
 
   refreshBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    height: CONTROL_H,
+    padding: "0 14px",
     borderRadius: 18,
     border: "1px solid rgba(0,0,0,0.08)",
     background: "#111827",
@@ -3543,7 +3561,7 @@ const styles: Record<string, CSSProperties> = {
   label: { fontSize: 12, fontWeight: 900, opacity: 0.7 },
 
   input: {
-    height: 44,
+    height: CONTROL_H,
     borderRadius: 14,
     border: "1px solid rgba(0,0,0,0.10)",
     padding: "0 12px",
@@ -3553,7 +3571,7 @@ const styles: Record<string, CSSProperties> = {
   },
 
   select: {
-    height: 44,
+    height: CONTROL_H,
     borderRadius: 14,
     border: "1px solid rgba(0,0,0,0.10)",
     padding: "0 12px",
@@ -3563,7 +3581,11 @@ const styles: Record<string, CSSProperties> = {
   },
 
   primaryBtn: {
-    height: 44,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    height: CONTROL_H,
     padding: "0 14px",
     borderRadius: 14,
     border: "1px solid rgba(0,0,0,0.10)",
@@ -3575,7 +3597,11 @@ const styles: Record<string, CSSProperties> = {
   },
 
   ghostBtn: {
-    height: 42,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    height: CONTROL_H,
     padding: "0 14px",
     borderRadius: 14,
     border: "1px solid rgba(0,0,0,0.08)",
@@ -3615,7 +3641,7 @@ const styles: Record<string, CSSProperties> = {
   } as CSSProperties,
 
   printBtn: {
-    height: 42,
+    height: CONTROL_H,
     padding: "0 16px",
     borderRadius: 14,
     border: "1px solid rgba(180,83,9,0.30)",
@@ -3625,12 +3651,17 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 950,
     display: "inline-flex",
     alignItems: "center",
+    justifyContent: "center",
     gap: 8,
     boxShadow: "0 14px 30px rgba(217,119,6,0.28)",
   },
 
   secondaryBtn: {
-    height: 44,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    height: CONTROL_H,
     padding: "0 14px",
     borderRadius: 14,
     border: "1px solid rgba(0,0,0,0.10)",
@@ -3640,7 +3671,11 @@ const styles: Record<string, CSSProperties> = {
   },
 
   dangerBtn: {
-    height: 44,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    height: CONTROL_H,
     padding: "0 14px",
     borderRadius: 14,
     border: "1px solid rgba(239,68,68,0.30)",
@@ -3771,7 +3806,11 @@ const styles: Record<string, CSSProperties> = {
   },
 
   smallBtn: {
-    height: 44,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    height: CONTROL_H,
     padding: "0 14px",
     borderRadius: 14,
     border: "1px solid rgba(0,0,0,0.10)",
@@ -3927,6 +3966,10 @@ const styles: Record<string, CSSProperties> = {
   modalSub: { marginTop: 4, fontSize: 12, opacity: 0.75 },
 
   iconBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
     width: 38,
     height: 38,
     borderRadius: 14,
