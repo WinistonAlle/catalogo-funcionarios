@@ -24,6 +24,15 @@ export type AdminOperationAction =
   /** Impressão avulsa de um pedido específico (botão "Imprimir" por linha). */
   | "print_order"
   /**
+   * Folha de controle de retirada tirada avulsa, pelo modal do Admin Pedidos.
+   *
+   * Faltava aqui até 31/08/2026, embora a rota /admin/canhoteira já gravasse
+   * log com esta ação e o CHECK do banco já a aceitasse. Como `automation/`
+   * não entra em nenhum tsconfig (ver "Testes" no CLAUDE.md), o `tsc` da raiz
+   * nunca reclamou e o erro de tipo ficou invisível.
+   */
+  | "print_canhoteira"
+  /**
    * Resultado de uma passada do vigia (`runHealthCheck`). `success` = tudo de
    * pé, `failed` = achou problema, com a lista em `metadata.alertas`.
    *
@@ -306,6 +315,17 @@ export async function listOperationHistory(
 
   if (opts?.action && opts.action !== "all") {
     query = query.eq("action", opts.action);
+  } else {
+    // "Todas as ações" quer dizer todas as ações QUE ALGUÉM FEZ — o batimento
+    // do vigia fica de fora. Ele roda de hora em hora e só se anota para dizer
+    // "estou vivo": em 31/08/2026 eram 115 linhas de `health_check` contra 4 de
+    // `first_access`, e como a tela lê no máximo 100 de uma vez, ordenadas da
+    // mais recente para a mais antiga, o ruído automático consumia a página
+    // inteira e enterrava o que é raro — justamente o que se vai auditar.
+    //
+    // Continua acessível: quem quiser as passadas do vigia escolhe
+    // "Checagem de saúde" no filtro, e aí o `eq` acima manda nesta consulta.
+    query = query.neq("action", "health_check");
   }
 
   const { data, error } = await query;

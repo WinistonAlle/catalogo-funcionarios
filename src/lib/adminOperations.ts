@@ -11,15 +11,32 @@ export type ResetEmployeeBalancesResponse = {
   };
 };
 
-export type AdminOperationAction =
-  | "sync_employees"
-  | "restore_employee_balances"
-  | "print_portaria"
-  | "print_order"
+/**
+ * ⚠️ Esta lista tem DUAS outras cópias que precisam casar: o mesmo tipo em
+ * `server/adminOperations.ts` (usado pelo webhook) e o CHECK de
+ * `admin_operation_logs.action` no banco. O CHECK recusa em silêncio o que não
+ * está nele — foi assim que `print_order` ficou sendo rejeitado sem ninguém
+ * ver, de 25 a 26/08/2026. Em 31/08/2026 as três estavam divergentes de novo,
+ * cada uma faltando uma ação diferente: faltava `first_access` aqui e
+ * `print_canhoteira` no servidor, enquanto o banco já tinha as sete.
+ */
+export const ADMIN_OPERATION_ACTIONS = [
+  "sync_employees",
+  "restore_employee_balances",
+  /** Criação de senha no primeiro acesso de admin/RH (ver rota /primeiro-acesso). */
+  "first_access",
+  "print_portaria",
+  "print_order",
   /** Folha de controle de retirada tirada avulsa, pelo modal do Admin Pedidos. */
-  | "print_canhoteira"
+  "print_canhoteira",
   /** Passada do vigia: `success` = tudo de pé, `failed` = achou problema. */
-  | "health_check";
+  "health_check",
+] as const;
+
+// Derivado da lista, e não escrito à mão ao lado dela: é o que faz o teste de
+// `formatOperationAction` conseguir varrer TODAS as ações. Com o union escrito
+// separado, nada obrigava os dois a andarem juntos — e não andaram.
+export type AdminOperationAction = (typeof ADMIN_OPERATION_ACTIONS)[number];
 export type AdminOperationStatus = "running" | "success" | "failed" | "blocked";
 
 export type AdminOperationLog = {
@@ -462,11 +479,20 @@ export const ROTULO_MOTIVO: Record<MotivoPendencia, string> = {
   erro_na_consulta: "Não deu para consultar o CIGAM",
 };
 
+/**
+ * Rótulo de cada ação na tela de histórico. Precisa cobrir as SETE do tipo:
+ * o que cai no `return` genérico aparece para o admin como "Operação", sem
+ * dizer o que foi. Até 31/08/2026 faltavam duas — `first_access` e
+ * `print_canhoteira` —, e a primeira é justamente a que o CLAUDE.md manda
+ * auditar (quem criou senha, de qual IP).
+ */
 export function formatOperationAction(action?: AdminOperationAction | null) {
   if (action === "sync_employees") return "Sincronização de funcionários";
   if (action === "restore_employee_balances") return "Restauração de saldo";
+  if (action === "first_access") return "Primeiro acesso (criação de senha)";
   if (action === "print_portaria") return "Impressão da lista da portaria";
   if (action === "print_order") return "Impressão avulsa de pedido";
+  if (action === "print_canhoteira") return "Impressão da folha de retirada";
   if (action === "health_check") return "Checagem de saúde";
   return "Operação";
 }

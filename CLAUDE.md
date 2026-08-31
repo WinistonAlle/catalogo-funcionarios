@@ -1036,15 +1036,23 @@ de funcionário sem ninguém perceber.
 O projeto irmão (PDV) tem 24 arquivos de teste e é a referência de para onde
 isto deve crescer — lá cada armadilha do CIGAM virou teste.
 
-**`automation/` não é coberto por nenhum tsconfig.** O `tsconfig.app` cobre
-`src/`, o `tsconfig.node` só o `vite.config.ts`. Rodar `npx tsc --noEmit` na raiz
-**não checa nada** desse diretório. Para checar de verdade:
+**`automation/` agora TEM tsconfig** (`tsconfig.automation.json`, criado em
+31/08/2026), e o comando é:
 
 ```bash
-npx tsc --noEmit --strict --target ES2022 --lib ES2023,DOM --module ESNext \
-  --moduleResolution bundler --skipLibCheck --types node \
-  automation/cigam/*.ts automation/operations-webhook.ts
+npm run typecheck:automation
 ```
+
+Ele cobre `automation/**` e `server/**` (o webhook importa de lá) com `strict`.
+Estava em **zero erros** em 31/08/2026 — se aparecer erro, é regressão.
+
+Antes disso o diretório não entrava em tsconfig nenhum: `tsconfig.app` cobre
+`src/`, `tsconfig.node` só o `vite.config.ts`, e `npx tsc --noEmit` na raiz não
+checava uma linha do que grava pedido no ERP. O preço foram **5 erros de tipo
+invisíveis**, achados só quando alguém rodou o comando solto que ficava aqui —
+entre eles a ação `print_canhoteira` faltando no union de
+`server/adminOperations.ts` enquanto a rota `/admin/canhoteira` já gravava log
+com ela.
 
 O frontend (`npx tsc --noEmit -p tsconfig.app.json`) tem **144 erros
 pré-existentes**, todos em `src/data/products.ts` e `src/data/shipping.ts`

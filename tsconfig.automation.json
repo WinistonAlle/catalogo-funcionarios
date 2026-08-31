@@ -1,0 +1,36 @@
+{
+  /*
+   * O tsconfig que faltava. Até 31/08/2026 `automation/` — o webhook, a
+   * integração CIGAM e a impressão, ou seja, tudo que grava pedido no ERP e
+   * mexe em saldo — não entrava em tsconfig NENHUM: `tsconfig.app` cobre
+   * `src/`, `tsconfig.node` cobre só o `vite.config.ts`. Rodar `tsc --noEmit`
+   * na raiz não checava uma linha desse diretório, e o CLAUDE.md documentava
+   * um comando solto de 5 linhas como contorno.
+   *
+   * O preço disso foi concreto: cinco erros de tipo passaram despercebidos,
+   * entre eles a ação `print_canhoteira` faltando no union do servidor
+   * enquanto a rota já gravava log com ela.
+   *
+   * Inclui `server/` porque o webhook importa de lá, e o `.d.ts` do `ipp`,
+   * que precisa entrar na compilação para valer.
+   */
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "types": ["node"],
+
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["automation/**/*.ts", "server/**/*.ts"]
+}

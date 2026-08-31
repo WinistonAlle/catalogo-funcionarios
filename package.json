@@ -8,6 +8,7 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
+    "typecheck:automation": "tsc -p tsconfig.automation.json",
     "preview": "vite preview --port=4174",
     "sync:employees": "node scripts/syncEmployeesFromSheet.mjs",
     "automation:webhook": "tsx automation/operations-webhook.ts",

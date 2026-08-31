@@ -273,9 +273,26 @@ export default function OperationsHistory() {
 
           <Toolbar>
             <Select value={actionFilter} onChange={(event) => setActionFilter(event.target.value as any)}>
-              <option value="all">Todas as ações</option>
+              {/* As SETE ações do tipo, não duas. Faltando as outras cinco, o
+                  histórico só podia ser lido no "Todas as ações" — onde
+                  `sync_employees` (404 registros, de 20 em 20 min) e
+                  `health_check` (115, de hora em hora) ocupam as 50 linhas
+                  da página e enterram o que é raro. Os 4 registros de
+                  `first_access`, que o CLAUDE.md manda auditar (quem criou
+                  senha, de qual IP), eram literalmente inalcançáveis pela
+                  tela em 31/08/2026. */}
+              {/* Não inclui a checagem de saúde, de propósito — ver o `neq` em
+                  listOperationHistory (server/adminOperations.ts). O rótulo diz
+                  isso em vez de mentir "todas": o vigia continua a um clique,
+                  na opção própria lá embaixo. */}
+              <option value="all">Todas as ações (exceto checagem de saúde)</option>
               <option value="sync_employees">Sincronização de funcionários</option>
               <option value="restore_employee_balances">Restauração de saldo</option>
+              <option value="first_access">Primeiro acesso (criação de senha)</option>
+              <option value="print_portaria">Impressão da lista da portaria</option>
+              <option value="print_order">Impressão avulsa de pedido</option>
+              <option value="print_canhoteira">Impressão da folha de retirada</option>
+              <option value="health_check">Checagem de saúde</option>
             </Select>
             <Badge tone="success">Sucesso: {counters.success}</Badge>
             <Badge tone="danger">Falhas: {counters.failed}</Badge>

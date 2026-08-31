@@ -162,7 +162,12 @@ function cellText(
   col: Column,
   rowY: number,
   rowHeight: number,
-  options: { align?: "left" | "right"; padding?: number } = {}
+  // "center" faz parte: o PDFKit sempre aceitou (o valor é repassado cru para
+  // doc.text), e drawControleHeader já pedia centro nas colunas "Hora" e
+  // "Assinatura do funcionário". O tipo é que estava estreito demais, e o erro
+  // ficou invisível porque `automation/` não entra em nenhum tsconfig — ver
+  // "Testes" no CLAUDE.md. Nada muda no papel: já saía centralizado.
+  options: { align?: "left" | "right" | "center"; padding?: number } = {}
 ) {
   const padding = options.padding ?? 6;
   const textHeight = doc.heightOfString(text, { width: col.width - padding * 2 });
