@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabase";
 import {
   printPortariaNow,
   printOrderNow,
+  cancelPortariaPrint,
   confirmPortariaPrint,
   listarPedidosDaCanhoteira,
   printCanhoteira,
@@ -878,11 +879,18 @@ export default function AdminOrders() {
       );
 
       if (!confirmou) {
+        // Avisa o SERVIDOR que a resposta foi "não saiu". Sem isto o lote fica
+        // indistinguível de um que ninguém respondeu, e o varredor o carimba
+        // meia hora depois — justamente o pedido que precisa continuar na
+        // lista para ser reimpresso.
+        if (result.loteId) {
+          await cancelPortariaPrint(result.loteId).catch(() => null);
+        }
         alert("Nada foi marcado — os pedidos continuam na lista da portaria.");
         return;
       }
 
-      const confirmacao = await confirmPortariaPrint(result.pedidos);
+      const confirmacao = await confirmPortariaPrint(result.pedidos, result.loteId);
       alert(
         confirmacao?.message ||
           `${total} pedido(s) marcados como impressos e em separação.`

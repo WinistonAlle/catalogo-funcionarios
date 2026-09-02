@@ -1433,6 +1433,52 @@ entregue", e devolveu.
 único fato de fluxo que já acabou — a mercadoria saiu com o funcionário e ele
 assinou; folha de separação de pedido entregue é papel jogado fora.
 
+## 🔁 O LOTE QUE NINGUÉM FECHOU — a correção de raiz (02/09/2026)
+
+**Este problema foi consertado duas vezes e voltou as duas.** Quem for mexer
+aqui precisa saber por quê, para não fazer a terceira:
+
+| Quando | Sintoma | Conserto de então | Por que não bastou |
+|---|---|---|---|
+| 26/08 (`7d5d1cc`) | Pedido sumia sem papel sair | Dois passos: gerar não marca, confirmar marca | Criou o problema oposto |
+| 31/08 (`7aa02f9`) | Pedido entregue voltava na leva | `.neq("status","entregue")` | Só pega quem chegou até a entrega |
+| 02/09 (`1b6a62d`) | Pedido nem entregue nem confirmado voltava | Janela do dia na consulta | Resolve a folha, não o `printed_at` |
+
+Os três mexeram na CONSULTA. **A causa está no CARIMBO:** `printed_at` só é
+escrito por um `window.confirm` que aparece na aba de TRÁS — o PDF acabou de
+abrir numa aba nova e roubou o foco. Quem imprime pela aba do PDF e não volta
+nunca responde, e aquele lote fica pendente para sempre.
+
+**Agora o estado converge sozinho.** O lote tem três desfechos, não dois:
+
+- **confirmar** → carimba (como antes);
+- **cancelar** → `/print-portaria-cancel` fecha o lote no servidor. Antes era só
+  um `return` no navegador, e o servidor não distinguia "respondeu que não saiu"
+  de "fechou a aba" — é essa diferença que autoriza o passo seguinte;
+- **silêncio** → passados 30 min, `varrerLotesDaPortariaPendentes` carimba e
+  registra que foi automático.
+
+A lição de 26/08 continua de pé: nada é carimbado ANTES de dar ao faturamento a
+chance de dizer "não saiu". O que mudou é que **silêncio deixou de ser tratado
+como "não saiu"**.
+
+E o pedido carimbado à toa não some do radar — **troca de vigia**: sai da
+checagem 6 ("pago há mais de 24h e não impresso") e entra na 7 ("folha impressa
+há mais de 3 dias e não entregue"). As duas já existiam.
+
+⚠️ **`PORTARIA_LOTE_PISO` existe e não é decoração.** O varredor só olha lote
+gerado a partir dele. Sem o piso, a primeira varredura carimbaria o passivo
+inteiro do log — e, medido antes de ligar, incluía o lote de 02/09 gerado de
+manhã e nunca confirmado, com os 5 pedidos do dia ainda não impressos: a folha
+seguinte sairia VAZIA, que é o incidente de 26/08 de novo. Correção histórica é
+assunto de gente, uma vez, não de um temporizador de 10 em 10 minutos.
+
+**Passivo ainda aberto (02/09/2026):** dezenas de pedidos de 25/08 a 01/09 com
+`printed_at` nulo, a maioria já `entregue` (impressos e entregues sem ninguém
+confirmar). Os únicos NÃO entregues são GM-20260831-7023, GM-20260831-4716,
+GM-20260901-3146 e GM-20260901-7133. Carimbar o resto em bloco (como em 31/08)
+ainda não foi autorizado.
+
 ⚠️ **A JANELA DE DATA foi recusada em 31/08 e ACEITA em 02/09/2026.** A recusa
 original está preservada abaixo porque o risco que ela apontava continua real —
 mudou o que o compensa, não o risco.

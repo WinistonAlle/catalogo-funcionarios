@@ -158,6 +158,12 @@ export type PrintPortariaResult = {
    * confere que as folhas saíram. Vazio quando não teve leva.
    */
   pedidos: string[];
+  /**
+   * Id deste lote no log de operações. Vai junto no confirmar e no cancelar
+   * para FECHAR o lote no servidor — sem isso o varredor não distingue
+   * "responderam que não saiu" de "fecharam a aba", e carimba por conta.
+   */
+  loteId: string | null;
 };
 
 /**
@@ -204,6 +210,7 @@ export async function printPortariaNow(
       message: "Lista aberta numa aba nova — use o botão de imprimir do navegador.",
       baixou: true,
       pedidos,
+      loteId: response.headers.get("X-Portaria-Lote") || null,
     };
   }
 
@@ -218,23 +225,44 @@ export async function printPortariaNow(
     message: payload?.message || "Nenhum pedido pendente pra imprimir.",
     baixou: false,
     pedidos: [],
+    loteId: null,
   };
 }
 
 /**
- * Confirma que as folhas da leva saíram no papel — só aqui os pedidos ganham
- * `printed_at` e somem da lista da portaria. Chamado depois de o faturamento
- * olhar a impressora, nunca automaticamente.
+ * Confirma que as folhas da leva saíram no papel — os pedidos ganham
+ * `printed_at` e somem da lista da portaria.
+ *
+ * `loteId` fecha o lote no servidor, para o varredor de lotes sem resposta
+ * não voltar a carimbá-lo meia hora depois (ver
+ * varrerLotesDaPortariaPendentes em automation/operations-webhook.ts).
  */
-export async function confirmPortariaPrint(orderIds: string[]) {
+export async function confirmPortariaPrint(orderIds: string[], loteId?: string | null) {
   return requestWithAuth<{ ok: boolean; marcados: number; message?: string }>(
     ["/automation/print-portaria-confirm"],
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ orderIds }),
+      body: JSON.stringify({ orderIds, loteId: loteId ?? null }),
     }
   );
+}
+
+/**
+ * O faturamento diz que as folhas NÃO saíram: nada é carimbado e os pedidos
+ * continuam na lista.
+ *
+ * Antes isto era só um `return` no navegador. Precisou virar chamada porque o
+ * servidor não tinha como distinguir "respondeu que não saiu" de "fechou a aba
+ * sem responder" — e é essa diferença que decide se o varredor pode carimbar o
+ * lote sozinho depois da carência.
+ */
+export async function cancelPortariaPrint(loteId: string) {
+  return requestWithAuth<{ ok: boolean }>(["/automation/print-portaria-cancel"], {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ loteId }),
+  });
 }
 
 /**

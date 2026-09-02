@@ -1294,6 +1294,120 @@ async function runCigamAutoSync() {
 }
 
 /**
+ * O LOTE QUE NINGUÉM FECHOU — a correção de raiz de 02/09/2026.
+ *
+ * Este problema já foi consertado duas vezes e voltou as duas, porque os dois
+ * consertos mexeram na CONSULTA em vez de na causa:
+ *
+ * - 26/08 (7d5d1cc): gerar o PDF carimbava `printed_at` na leva inteira antes
+ *   de qualquer folha sair, e fechar a aba apagava a leva para sempre. Virou
+ *   um fluxo de dois passos — gerar não marca nada, confirmar marca.
+ * - 31/08 (7aa02f9): consequência do anterior — pedido impresso e ENTREGUE
+ *   sem ninguém confirmar voltava na leva para sempre. Conserto:
+ *   `.neq("status", "entregue")`, que só pega quem chegou até a entrega.
+ * - 02/09 (1b6a62d): voltou com pedido nem entregue nem confirmado. Conserto:
+ *   janela do dia na consulta — resolve a folha de hoje, mas não impede o
+ *   `printed_at` de continuar nulo para sempre.
+ *
+ * A causa é sempre a mesma: `printed_at` só é escrito por um `window.confirm`
+ * que aparece na aba de TRÁS, porque o PDF acabou de abrir numa aba nova e
+ * roubou o foco. Quem imprime pela aba do PDF e não volta nunca responde — e
+ * aquele lote fica pendente para sempre.
+ *
+ * Aqui o estado converge sozinho: passada a carência, um lote que ninguém
+ * confirmou NEM cancelou é carimbado pelo servidor, e `printed_at` volta a
+ * significar o que diz.
+ *
+ * A lição de 26/08 continua respeitada — nada é carimbado ANTES de dar ao
+ * faturamento a chance de dizer "não saiu". O que mudou é que o silêncio
+ * deixou de ser tratado como "não saiu": silêncio agora é silêncio, e quem
+ * viu papel de menos tem meia hora e um botão para dizer isso.
+ *
+ * E o pedido carimbado à toa não some do radar: ele troca de vigia. Sai do
+ * "pago há mais de 24h e não impresso" (checagem 6) e entra no "folha
+ * impressa há mais de 3 dias e não entregue" (checagem 7). Os dois já
+ * existiam antes desta função.
+ */
+const PORTARIA_LOTE_CARENCIA_MS = 30 * 60 * 1000;
+const PORTARIA_LOTE_VARREDURA_MS = 10 * 60 * 1000;
+
+/**
+ * O varredor NÃO olha para trás. Só lote gerado a partir daqui.
+ *
+ * Sem este piso, a primeira varredura carimbaria o passivo inteiro do log —
+ * medido antes de ligar: dezenas de lotes desde 25/08, e entre eles o lote de
+ * HOJE (02/09), gerado de manhã e nunca confirmado, com os 5 pedidos do dia
+ * que ainda não tinham sido impressos. A folha seguinte sairia VAZIA, que é
+ * exatamente o incidente de 26/08 que este arquivo inteiro existe para não
+ * repetir.
+ *
+ * O passivo é assunto de gente, uma vez, com o Winiston olhando — não de um
+ * temporizador que roda de dez em dez minutos. Mesma ideia do
+ * PRINTED_AT_DO_BACKFILL nas checagens de saúde: correção histórica não pode
+ * entrar como se fosse fluxo normal.
+ */
+const PORTARIA_LOTE_PISO = "2026-09-02T18:00:00.000Z";
+let portariaLoteVarrendo = false;
+
+async function varrerLotesDaPortariaPendentes() {
+  if (portariaLoteVarrendo) return;
+  portariaLoteVarrendo = true;
+  try {
+    const limite = new Date(Date.now() - PORTARIA_LOTE_CARENCIA_MS).toISOString();
+
+    const { data, error } = await supabase
+      .from("admin_operation_logs")
+      .select("id, metadata, created_at")
+      .eq("action", "print_portaria")
+      .eq("metadata->>marcados", "false")
+      .is("metadata->>resolvido", null)
+      .gte("created_at", PORTARIA_LOTE_PISO)
+      .lt("created_at", limite)
+      .order("created_at")
+      .limit(20);
+
+    if (error) throw error;
+
+    for (const lote of data ?? []) {
+      const pedidos = ((lote.metadata as any)?.pedidos ?? []) as { orderId?: string }[];
+      const ids = pedidos.map((p) => p?.orderId).filter((id): id is string => Boolean(id));
+
+      // Lote sem pedido não tem o que carimbar, mas precisa ser fechado do
+      // mesmo jeito — senão volta em toda varredura, para sempre, que é a
+      // própria doença que esta função existe para curar.
+      if (ids.length === 0) {
+        await resolverLotePortaria(lote.id, "automatico", { motivo: "lote sem pedidos" });
+        continue;
+      }
+
+      // marcarPortariaImpressa só toca em quem está com printed_at nulo, então
+      // carimbar de novo um pedido que a confirmação já pegou é inofensivo.
+      const { marcados } = await marcarPortariaImpressa(supabase, ids);
+      await resolverLotePortaria(lote.id, "automatico", { marcados });
+
+      console.log(
+        `🖨️ Lote da portaria ${lote.id} ficou ${PORTARIA_LOTE_CARENCIA_MS / 60000}min sem resposta — ` +
+          `${marcados.length} de ${ids.length} pedido(s) carimbados automaticamente.`
+      );
+
+      await insertOperationLog(supabase, {
+        action: "print_portaria",
+        status: "success",
+        message:
+          `Lote sem resposta há mais de ${PORTARIA_LOTE_CARENCIA_MS / 60000} minutos: ` +
+          `${marcados.length} pedido(s) marcados como impressos automaticamente. ` +
+          "Ninguém confirmou nem cancelou na tela.",
+        metadata: { loteId: lote.id, marcados, automatico: true },
+      }).catch(() => null);
+    }
+  } catch (err: any) {
+    console.error("🖨️ Varredura de lotes da portaria falhou:", err?.message ?? err);
+  } finally {
+    portariaLoteVarrendo = false;
+  }
+}
+
+/**
  * Lista de separação impressa na portaria: uma folha por pedido pago e ainda
  * não impresso, uma vez por dia útil às 13:40 (o resto das checagens no
  * mesmo dia não fazem nada além de retentar o que falhou — ver
@@ -1362,10 +1476,12 @@ app.post("/print-portaria-now", async (req, res) => {
     try {
       const { pdf, pedidos } = await gerarPdfPortaria({ supabase, ignoreCutoffGuard: true });
 
+      // `resolvido: null` é o que o varredor procura: lote gerado que ninguém
+      // confirmou NEM cancelou. Ver varrerLotesDaPortariaPendentes.
       await updateOperationLog(supabase, runningLog?.id, {
         status: "success",
         message: `PDF gerado com ${pedidos.length} pedido(s) — aguardando confirmação de impressão.`,
-        metadata: { total: pedidos.length, pedidos, marcados: false },
+        metadata: { total: pedidos.length, pedidos, marcados: false, resolvido: null },
       }).catch(() => null);
 
       if (pedidos.length === 0) {
@@ -1381,7 +1497,15 @@ app.post("/print-portaria-now", async (req, res) => {
       // devolve essa mesma lista em /print-portaria-confirm depois que o
       // faturamento diz que as folhas saíram — ver gerarPdfPortaria.
       res.setHeader("X-Portaria-Pedidos", pedidos.map((p) => p.orderId).join(","));
-      res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Portaria-Pedidos");
+      // O id do LOTE viaja junto para a tela poder dizer, depois, o que
+      // aconteceu com ESTE lote — confirmado ou cancelado. Sem ele o varredor
+      // não teria como distinguir "ninguém respondeu" de "responderam que não
+      // saiu", e acabaria carimbando um lote que o faturamento cancelou.
+      if (runningLog?.id) res.setHeader("X-Portaria-Lote", String(runningLog.id));
+      res.setHeader(
+        "Access-Control-Expose-Headers",
+        "Content-Disposition, X-Portaria-Pedidos, X-Portaria-Lote"
+      );
       return res.status(200).send(pdf);
     } catch (err: any) {
       await updateOperationLog(supabase, runningLog?.id, {
@@ -1409,6 +1533,74 @@ app.post("/print-portaria-now", async (req, res) => {
  * próxima tentativa. O preço de não confirmar é uma folha repetida; o preço de
  * marcar cedo demais era um pedido invisível.
  */
+/**
+ * Marca um lote como RESOLVIDO, para o varredor não mexer mais nele.
+ *
+ * Lê a linha antes de escrever porque `updateOperationLog` troca o metadata
+ * inteiro: sem o merge, confirmar apagaria a lista de pedidos do lote, que é
+ * justamente o que o varredor precisa para carimbar.
+ */
+async function resolverLotePortaria(
+  loteId: string | null | undefined,
+  resolvido: "confirmado" | "cancelado" | "automatico",
+  extra: Record<string, any> = {}
+) {
+  if (!loteId) return;
+  try {
+    const { data } = await supabase
+      .from("admin_operation_logs")
+      .select("metadata")
+      .eq("id", loteId)
+      .single();
+    const anterior = (data?.metadata ?? {}) as Record<string, any>;
+    await updateOperationLog(supabase, loteId, {
+      metadata: { ...anterior, ...extra, resolvido },
+    });
+  } catch {
+    // Resolver o lote é contabilidade do varredor, nunca o objetivo de quem
+    // chamou: falhar aqui não pode derrubar a confirmação que JÁ carimbou os
+    // pedidos. O pior caso é o varredor reencontrar o lote e tentar carimbar
+    // de novo — e marcarPortariaImpressa só toca em printed_at nulo.
+  }
+}
+
+/**
+ * O faturamento diz que as folhas NÃO saíram. Não carimba nada: só fecha o
+ * lote, para o varredor não carimbar por conta própria daqui a meia hora.
+ *
+ * Existe porque "cancelar" precisava virar um fato no servidor. Enquanto era
+ * só um `return` no navegador, não havia como diferenciar quem respondeu
+ * "não saiu" de quem fechou a aba sem responder — e é essa diferença que
+ * autoriza o varredor a agir.
+ */
+app.post("/print-portaria-cancel", async (req, res) => {
+  try {
+    const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
+    if (!auth.ok) {
+      return res.status(auth.status).json({ ok: false, message: auth.error });
+    }
+
+    const loteId = req.body?.loteId ? String(req.body.loteId) : null;
+    if (!loteId) {
+      return res.status(400).json({ ok: false, message: "loteId é obrigatório." });
+    }
+
+    await resolverLotePortaria(loteId, "cancelado", { canceladoPor: auth.actor?.fullName ?? null });
+
+    await insertOperationLog(supabase, {
+      action: "print_portaria",
+      status: "success",
+      actor: auth.actor,
+      message: "Impressão da lista da portaria cancelada — os pedidos continuam na lista.",
+      metadata: { loteId, cancelado: true },
+    }).catch(() => null);
+
+    return res.status(200).json({ ok: true });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, message: err?.message || "Unexpected error" });
+  }
+});
+
 app.post("/print-portaria-confirm", async (req, res) => {
   try {
     const auth = await authorizePrivilegedUser(supabase, getBearerToken(req.headers.authorization));
@@ -1423,6 +1615,8 @@ app.post("/print-portaria-confirm", async (req, res) => {
 
     try {
       const { marcados } = await marcarPortariaImpressa(supabase, orderIds);
+
+      await resolverLotePortaria(req.body?.loteId ? String(req.body.loteId) : null, "confirmado");
 
       await insertOperationLog(supabase, {
         action: "print_portaria",
@@ -2110,4 +2304,14 @@ app.listen(PORT, () => {
       "🖨️ Lista da portaria desligada (defina PORTARIA_PRINTER_HOST e PORTARIA_PRINT_INTERVAL_MS para ligar)."
     );
   }
+
+  // Roda SEMPRE, independente do disparo automático da impressora: o lote sem
+  // resposta nasce do botão manual do faturamento, que é o caminho em uso
+  // desde 24/08. Ver varrerLotesDaPortariaPendentes.
+  console.log(
+    `🧹 Varredura de lote da portaria LIGADA — a cada ${Math.round(PORTARIA_LOTE_VARREDURA_MS / 60000)}min, ` +
+      `carimbando lote sem resposta há mais de ${Math.round(PORTARIA_LOTE_CARENCIA_MS / 60000)}min ` +
+      `(só lotes a partir de ${PORTARIA_LOTE_PISO}).`
+  );
+  setInterval(varrerLotesDaPortariaPendentes, PORTARIA_LOTE_VARREDURA_MS);
 });
