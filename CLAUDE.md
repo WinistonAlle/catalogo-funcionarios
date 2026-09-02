@@ -1488,9 +1488,20 @@ junto com os de hoje. Medido no dia: **9 pedidos entravam na leva, e só 5 eram
 de hoje** — os outros 4 eram de 31/08 e 01/09, ainda em `pedido_feito`, voltando
 em toda impressão. Depois do recorte, a mesma consulta devolve exatamente os 5.
 
-**O recorte:** a leva normal virou uma janela FECHADA — do começo do dia em São
-Paulo (`janelaDoDiaEmSaoPaulo`) até o corte das 13:40. O limite de cima é o de
-sempre; o de baixo é o que impede o pedido de ontem de voltar.
+**O recorte:** a leva normal virou uma janela FECHADA — **de corte a corte**:
+do corte do dia útil ANTERIOR (`cutoffAnteriorEmSaoPaulo`) até o corte das
+13:40 de hoje. O limite de cima é o de sempre; o de baixo é o que impede o
+pedido velho de voltar.
+
+⚠️ **O limite de baixo nasceu ERRADO e foi corrigido no mesmo dia.** A primeira
+versão usou o começo do dia de HOJE (`janelaDoDiaEmSaoPaulo`) e cortou fora o
+pedido feito ontem depois das 13:40 — justamente o caso que a regra do corte
+existe para atender, e que o Checkout PROMETE ao funcionário ("depois das 13:40
+seu pedido sai amanhã"). A leva de um dia não é "os pedidos de hoje": é **tudo
+que entrou desde que a última folha saiu**. Na segunda-feira, o corte anterior é
+o da SEXTA, então sábado e domingo entram sozinhos. Testes:
+"pedido feito ontem DEPOIS do corte entra na leva de hoje" e "na segunda, a leva
+começa no corte da sexta".
 
 **O que segura o straggler, agora que ele não sai mais no papel** — as três
 saídas continuam abertas, e é por isso que o recorte deixou de ser perigoso:

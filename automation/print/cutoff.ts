@@ -5,6 +5,8 @@
  * (tsx) e não importa de src/ (bundle de navegador). Se o horário mudar,
  * mudar nos dois lugares.
  */
+import { isBusinessDayInSaoPaulo } from "../holidays";
+
 const TIMEZONE = "America/Sao_Paulo";
 const CUTOFF_HOUR = 13;
 const CUTOFF_MINUTE = 40;
@@ -61,6 +63,35 @@ export function diaEmSaoPaulo(agora: Date = new Date()): string {
     month: "2-digit",
     day: "2-digit",
   }).format(agora);
+}
+
+/**
+ * O corte do DIA ÚTIL ANTERIOR — o limite de baixo da leva de hoje.
+ *
+ * A leva de um dia não é "os pedidos de hoje": é **tudo que entrou desde a
+ * última folha**. Um pedido feito ontem às 15h (depois do corte de ontem)
+ * pertence à leva de HOJE, e é a regra que o funcionário vê na tela do
+ * Checkout quando pede depois das 13:40.
+ *
+ * Existe porque a primeira tentativa de recortar a leva por data, em
+ * 02/09/2026, usou o começo do dia de hoje como limite de baixo — e cortou
+ * fora exatamente esse pedido tardio de ontem, que é o caso que a regra do
+ * corte existe para atender. O recorte certo é de corte a corte.
+ *
+ * Anda para trás dia a dia até achar um dia útil, então a segunda-feira pega
+ * naturalmente o corte da sexta e recolhe o que entrou no fim de semana. O
+ * teto de 30 voltas é só para não girar para sempre se `isBusinessDayInSaoPaulo`
+ * um dia passar a dizer que nada é dia útil — nesse caso é melhor uma leva
+ * larga demais (papel a mais) que um laço infinito no servidor.
+ */
+export function cutoffAnteriorEmSaoPaulo(agora: Date = new Date()): Date {
+  const UM_DIA_MS = 24 * 60 * 60 * 1000;
+  let dia = new Date(agora.getTime());
+  for (let i = 0; i < 30; i++) {
+    dia = new Date(dia.getTime() - UM_DIA_MS);
+    if (isBusinessDayInSaoPaulo(dia)) return cutoffInstantForToday(dia);
+  }
+  return cutoffInstantForToday(new Date(agora.getTime() - 30 * UM_DIA_MS));
 }
 
 /**

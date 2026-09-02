@@ -1,6 +1,7 @@
 import { SupabaseClient } from "@supabase/supabase-js";
 import { isBusinessDayInSaoPaulo } from "../holidays";
 import {
+  cutoffAnteriorEmSaoPaulo,
   cutoffInstantForToday,
   diaEmSaoPaulo,
   isAfterCutoffInSaoPaulo,
@@ -89,7 +90,7 @@ export type PortariaPrintResult = {
 async function buscarPedidosParaImprimir(
   supabase: SupabaseClient,
   corte: Date,
-  inicioDoDia: Date,
+  inicioDaLeva: Date,
   limit: number,
   incluirLevaNormal: boolean
 ): Promise<OrderRow[]> {
@@ -139,15 +140,21 @@ async function buscarPedidosParaImprimir(
     // impressos" (AdminOrders.tsx). O código é que não cumpria.
     .neq("status", "entregue");
 
-  // A leva normal é uma JANELA FECHADA: do começo do dia em São Paulo até o
-  // corte das 13:40. O limite de cima é o corte de sempre; o de baixo é o que
-  // impede o pedido de ontem de voltar na folha de hoje.
+  // A leva normal é uma JANELA FECHADA, **de corte a corte**: do corte do dia
+  // útil anterior até o corte de hoje. Não é "os pedidos de hoje" — é tudo que
+  // entrou desde que a última folha saiu.
+  //
+  // O limite de baixo nasceu errado em 02/09/2026 (começo do dia de HOJE) e
+  // cortou fora o pedido feito ontem depois das 13:40 — justamente o caso que
+  // a regra do corte existe para atender, e que o Checkout promete ao
+  // funcionário ("seu pedido sai amanhã"). De corte a corte, ele volta, e o
+  // pedido velho que ninguém confirmou continua fora.
   //
   // O liberado pelo RH continua fora da janela, de propósito: ele é a exceção
   // explícita, e um pedido de ontem que o RH mandou sair hoje TEM de sair.
   q = incluirLevaNormal
     ? q.or(
-        `and(created_at.gte.${inicioDoDia.toISOString()},created_at.lt.${corte.toISOString()}),` +
+        `and(created_at.gte.${inicioDaLeva.toISOString()},created_at.lt.${corte.toISOString()}),` +
           `released_for_today_at.not.is.null`
       )
     : q.not("released_for_today_at", "is", null);
@@ -317,8 +324,8 @@ export async function gerarPdfPortaria(params: {
     isBusinessDayInSaoPaulo(now) && (ignoreCutoffGuard || isAfterCutoffInSaoPaulo(now));
 
   const corte = cutoffInstantForToday(now);
-  const { inicio: inicioDoDia } = janelaDoDiaEmSaoPaulo(diaEmSaoPaulo(now));
-  const pedidos = await buscarPedidosParaImprimir(supabase, corte, inicioDoDia, limit, incluirLevaNormal);
+  const inicioDaLeva = cutoffAnteriorEmSaoPaulo(now);
+  const pedidos = await buscarPedidosParaImprimir(supabase, corte, inicioDaLeva, limit, incluirLevaNormal);
 
   if (pedidos.length === 0) return { pdf: Buffer.alloc(0), pedidos: [] };
 
@@ -576,8 +583,8 @@ export async function printPortariaList(params: {
     isBusinessDayInSaoPaulo(now) && (ignoreCutoffGuard || isAfterCutoffInSaoPaulo(now));
 
   const corte = cutoffInstantForToday(now);
-  const { inicio: inicioDoDia } = janelaDoDiaEmSaoPaulo(diaEmSaoPaulo(now));
-  const pedidos = await buscarPedidosParaImprimir(supabase, corte, inicioDoDia, limit, incluirLevaNormal);
+  const inicioDaLeva = cutoffAnteriorEmSaoPaulo(now);
+  const pedidos = await buscarPedidosParaImprimir(supabase, corte, inicioDaLeva, limit, incluirLevaNormal);
 
   const resultados: PortariaPrintResult[] = [];
 

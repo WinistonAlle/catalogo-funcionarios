@@ -120,24 +120,64 @@ describe("gerarPdfPortaria: qual leva o pedido cai", () => {
    * eram de hoje; os outros 4 eram de 31/08 e 01/09, ainda em `pedido_feito`,
    * voltando em TODA impressão porque a consulta não tinha limite de baixo.
    */
-  it("a leva normal começa no início do dia em São Paulo, não em qualquer data", async () => {
+  it("a leva vai de CORTE A CORTE: começa no corte do dia útil anterior", async () => {
     const { supabase, chamadas } = fakeSupabase([]);
 
+    // Terça, 15:10. O limite de baixo é o corte de SEGUNDA, não a meia-noite
+    // de terça.
     await gerarPdfPortaria({ supabase, now: new Date("2026-08-25T15:10:00-03:00") });
 
-    expect(inicioUsado(chamadas).toISOString()).toBe("2026-08-25T03:00:00.000Z"); // 00:00 -03:00
+    expect(inicioUsado(chamadas).toISOString()).toBe("2026-08-24T16:40:00.000Z"); // 13:40 -03:00
   });
 
-  it("pedido de ontem não entra na leva de hoje", async () => {
-    const ontem = new Date("2026-08-24T10:00:00-03:00");
+  /**
+   * A REGRESSÃO de 02/09/2026, e o motivo deste teste existir.
+   *
+   * O primeiro recorte usou o começo do dia de HOJE como limite de baixo e
+   * cortou fora o pedido feito ontem depois das 13:40 — justamente o que a
+   * regra do corte promete ao funcionário no Checkout ("depois das 13:40 seu
+   * pedido sai amanhã").
+   */
+  it("pedido feito ontem DEPOIS do corte entra na leva de hoje", async () => {
+    const tardioDeOntem = new Date("2026-08-24T15:00:00-03:00"); // segunda, 15h
+    const { supabase, chamadas } = fakeSupabase([]);
+
+    await gerarPdfPortaria({ supabase, now: new Date("2026-08-25T15:10:00-03:00") }); // terça
+
+    expect(tardioDeOntem.getTime()).toBeGreaterThan(inicioUsado(chamadas).getTime());
+    expect(tardioDeOntem.getTime()).toBeLessThan(corteUsado(chamadas).getTime());
+  });
+
+  it("pedido feito ontem ANTES do corte já saiu ontem, e não volta hoje", async () => {
+    const cedoDeOntem = new Date("2026-08-24T10:00:00-03:00"); // segunda, 10h
     const { supabase, chamadas } = fakeSupabase([]);
 
     await gerarPdfPortaria({ supabase, now: new Date("2026-08-25T15:10:00-03:00") });
 
-    // Antes da janela ele passava: só o corte de hoje era olhado, e 10h de
-    // ontem é bem antes das 13:40 de hoje.
-    expect(ontem.getTime()).toBeLessThan(corteUsado(chamadas).getTime());
-    expect(ontem.getTime()).toBeLessThan(inicioUsado(chamadas).getTime());
+    expect(cedoDeOntem.getTime()).toBeLessThan(inicioUsado(chamadas).getTime());
+  });
+
+  // Segunda-feira recolhe o fim de semana inteiro: o corte anterior é o da
+  // SEXTA, então sábado e domingo caem na leva de segunda sozinhos.
+  it("na segunda, a leva começa no corte da sexta e pega o fim de semana", async () => {
+    const sabado = new Date("2026-08-29T11:00:00-03:00");
+    const domingo = new Date("2026-08-30T18:00:00-03:00");
+    const { supabase, chamadas } = fakeSupabase([]);
+
+    await gerarPdfPortaria({ supabase, now: new Date("2026-08-31T14:00:00-03:00") }); // segunda
+
+    expect(inicioUsado(chamadas).toISOString()).toBe("2026-08-28T16:40:00.000Z"); // sexta 13:40
+    expect(sabado.getTime()).toBeGreaterThan(inicioUsado(chamadas).getTime());
+    expect(domingo.getTime()).toBeGreaterThan(inicioUsado(chamadas).getTime());
+  });
+
+  it("pedido de dias atrás, que ninguém confirmou, continua fora da leva", async () => {
+    const antigo = new Date("2026-08-20T10:00:00-03:00");
+    const { supabase, chamadas } = fakeSupabase([]);
+
+    await gerarPdfPortaria({ supabase, now: new Date("2026-08-25T15:10:00-03:00") });
+
+    expect(antigo.getTime()).toBeLessThan(inicioUsado(chamadas).getTime());
   });
 
   // O straggler não some do sistema: o liberado pelo RH entra de QUALQUER
