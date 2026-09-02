@@ -89,6 +89,7 @@ export type PortariaPrintResult = {
 async function buscarPedidosParaImprimir(
   supabase: SupabaseClient,
   corte: Date,
+  inicioDoDia: Date,
   limit: number,
   incluirLevaNormal: boolean
 ): Promise<OrderRow[]> {
@@ -119,14 +120,36 @@ async function buscarPedidosParaImprimir(
     // separação de pedido entregue é papel jogado fora — a mesma regra que o
     // CLAUDE.md já dava para desfazer carimbo indevido.
     //
-    // Uma JANELA DE DATA foi considerada e recusada: esconderia calado um
-    // pedido pago de verdade que ninguém separou, que é o modo de falhar caro
-    // deste sistema. Straggler antigo continua aparecendo — e o vigia já
-    // alerta "pago e não impresso há mais de 24h".
+    // A JANELA DE DATA foi recusada em 31/08 e ACEITA em 02/09/2026, a pedido
+    // do Winiston: a folha estava saindo com pedido de dias anteriores junto
+    // com os de hoje. Medido no dia: 9 pedidos entravam, só 5 eram de hoje —
+    // os outros 4 eram de 31/08 e 01/09, ainda em `pedido_feito`.
+    //
+    // O que fez mudar de ideia foi o straggler não sumir de verdade:
+    //
+    // - o vigia de `operations-webhook.ts` alerta "pagos há mais de 24h e
+    //   ainda não impressos", que é exatamente o pedido que este recorte tira
+    //   da folha — ele passa a ser cobrado por alarme, e não por papel;
+    // - `gerarPdfPedidoUnico` (botão "Imprimir" de cada linha em AdminOrders)
+    //   imprime qualquer pedido antigo na hora, sem passar por estes filtros;
+    // - o RH pode liberar (`released_for_today_at`), e liberado entra sempre,
+    //   de qualquer data — é a porta oficial para "este antigo sai hoje".
+    //
+    // E a tela já PROMETIA isto: o botão diz "os pedidos de hoje ainda não
+    // impressos" (AdminOrders.tsx). O código é que não cumpria.
     .neq("status", "entregue");
 
+  // A leva normal é uma JANELA FECHADA: do começo do dia em São Paulo até o
+  // corte das 13:40. O limite de cima é o corte de sempre; o de baixo é o que
+  // impede o pedido de ontem de voltar na folha de hoje.
+  //
+  // O liberado pelo RH continua fora da janela, de propósito: ele é a exceção
+  // explícita, e um pedido de ontem que o RH mandou sair hoje TEM de sair.
   q = incluirLevaNormal
-    ? q.or(`created_at.lt.${corte.toISOString()},released_for_today_at.not.is.null`)
+    ? q.or(
+        `and(created_at.gte.${inicioDoDia.toISOString()},created_at.lt.${corte.toISOString()}),` +
+          `released_for_today_at.not.is.null`
+      )
     : q.not("released_for_today_at", "is", null);
 
   const { data, error } = await q
@@ -294,7 +317,8 @@ export async function gerarPdfPortaria(params: {
     isBusinessDayInSaoPaulo(now) && (ignoreCutoffGuard || isAfterCutoffInSaoPaulo(now));
 
   const corte = cutoffInstantForToday(now);
-  const pedidos = await buscarPedidosParaImprimir(supabase, corte, limit, incluirLevaNormal);
+  const { inicio: inicioDoDia } = janelaDoDiaEmSaoPaulo(diaEmSaoPaulo(now));
+  const pedidos = await buscarPedidosParaImprimir(supabase, corte, inicioDoDia, limit, incluirLevaNormal);
 
   if (pedidos.length === 0) return { pdf: Buffer.alloc(0), pedidos: [] };
 
@@ -540,8 +564,9 @@ export async function printPortariaList(params: {
    * pedido feito no meio da tarde antes da hora certa. O botão manual do
    * faturamento ("Imprimir pedidos da portaria" em AdminOrders) é o oposto:
    * intenção explícita de alguém, pode rodar a qualquer hora do dia útil.
-   * O filtro por `created_at < corte de hoje` continua valendo do mesmo
-   * jeito — só pula a checagem de HORÁRIO, não a de QUAIS pedidos entram.
+   * A janela de `created_at` (do começo do dia em São Paulo até o corte de
+   * 13:40) continua valendo do mesmo jeito — só pula a checagem de HORÁRIO,
+   * não a de QUAIS pedidos entram.
    */
   ignoreCutoffGuard?: boolean;
 }): Promise<PortariaPrintResult[]> {
@@ -551,7 +576,8 @@ export async function printPortariaList(params: {
     isBusinessDayInSaoPaulo(now) && (ignoreCutoffGuard || isAfterCutoffInSaoPaulo(now));
 
   const corte = cutoffInstantForToday(now);
-  const pedidos = await buscarPedidosParaImprimir(supabase, corte, limit, incluirLevaNormal);
+  const { inicio: inicioDoDia } = janelaDoDiaEmSaoPaulo(diaEmSaoPaulo(now));
+  const pedidos = await buscarPedidosParaImprimir(supabase, corte, inicioDoDia, limit, incluirLevaNormal);
 
   const resultados: PortariaPrintResult[] = [];
 

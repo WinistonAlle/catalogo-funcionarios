@@ -59,15 +59,28 @@ function fakeSupabase(linhas: unknown[] = []) {
  * consulta não olhou o corte (caso dos liberados pelo RH, que entram sem ele).
  *
  * Desde 27/08/2026 o corte não vai mais num `.lt()` solto: ele é um dos lados
- * do `.or(created_at.lt.<corte>,released_for_today_at.not.is.null)`.
+ * do `.or(...)`. E desde 02/09/2026 aquele lado virou uma JANELA fechada —
+ * `and(created_at.gte.<inicio>,created_at.lt.<corte>)` —, por isso o `)` entra
+ * no fim da classe negada: sem ele o parêntese vinha junto no valor e o Date
+ * saía inválido.
  */
-function corteUsadoOuNull(chamadas: Record<string, unknown[]>): Date | null {
+function limiteUsadoOuNull(chamadas: Record<string, unknown[]>, operador: "lt" | "gte"): Date | null {
   for (const arg of chamadas.or ?? []) {
-    const texto = String(arg);
-    const m = texto.match(/created_at\.lt\.([^,]+)/);
+    const m = String(arg).match(new RegExp(`created_at\\.${operador}\\.([^,)]+)`));
     if (m) return new Date(m[1]);
   }
   return null;
+}
+
+function corteUsadoOuNull(chamadas: Record<string, unknown[]>): Date | null {
+  return limiteUsadoOuNull(chamadas, "lt");
+}
+
+/** O começo do dia em São Paulo, o limite de baixo da janela. */
+function inicioUsado(chamadas: Record<string, unknown[]>): Date {
+  const inicio = limiteUsadoOuNull(chamadas, "gte");
+  expect(inicio).not.toBeNull();
+  return inicio as Date;
 }
 
 /** Idem, exigindo que o corte esteja lá. */
@@ -99,6 +112,48 @@ describe("gerarPdfPortaria: qual leva o pedido cai", () => {
     const amanha = fakeSupabase([]);
     await gerarPdfPortaria({ supabase: amanha.supabase, now: new Date("2026-08-26T13:45:00-03:00") });
     expect(pedidoTardio.getTime()).toBeLessThan(corteUsado(amanha.chamadas).getTime());
+  });
+
+  /**
+   * 02/09/2026, a pedido do Winiston: a folha saía com pedido de dias
+   * anteriores junto com os de hoje. Medido no dia — 9 pedidos entravam, só 5
+   * eram de hoje; os outros 4 eram de 31/08 e 01/09, ainda em `pedido_feito`,
+   * voltando em TODA impressão porque a consulta não tinha limite de baixo.
+   */
+  it("a leva normal começa no início do dia em São Paulo, não em qualquer data", async () => {
+    const { supabase, chamadas } = fakeSupabase([]);
+
+    await gerarPdfPortaria({ supabase, now: new Date("2026-08-25T15:10:00-03:00") });
+
+    expect(inicioUsado(chamadas).toISOString()).toBe("2026-08-25T03:00:00.000Z"); // 00:00 -03:00
+  });
+
+  it("pedido de ontem não entra na leva de hoje", async () => {
+    const ontem = new Date("2026-08-24T10:00:00-03:00");
+    const { supabase, chamadas } = fakeSupabase([]);
+
+    await gerarPdfPortaria({ supabase, now: new Date("2026-08-25T15:10:00-03:00") });
+
+    // Antes da janela ele passava: só o corte de hoje era olhado, e 10h de
+    // ontem é bem antes das 13:40 de hoje.
+    expect(ontem.getTime()).toBeLessThan(corteUsado(chamadas).getTime());
+    expect(ontem.getTime()).toBeLessThan(inicioUsado(chamadas).getTime());
+  });
+
+  // O straggler não some do sistema: o liberado pelo RH entra de QUALQUER
+  // data, e é a porta oficial para "este pedido antigo sai hoje".
+  it("liberado pelo RH entra sem passar pela janela do dia", async () => {
+    const { chamadas } = fakeSupabase([]);
+    void chamadas;
+    const { supabase, chamadas: c2 } = fakeSupabase([]);
+
+    await gerarPdfPortaria({ supabase, now: new Date("2026-08-25T15:10:00-03:00") });
+
+    const clausula = (c2.or ?? []).map(String).find((t) => t.includes("created_at.gte."));
+    // A janela fica DENTRO do and(...); o liberado é o outro lado do or, solto.
+    expect(clausula).toContain("and(created_at.gte.");
+    expect(clausula).toContain("released_for_today_at.not.is.null");
+    expect(clausula).not.toContain("and(released_for_today_at");
   });
 
   it("o botão manual pula a checagem de HORÁRIO, mas não a de QUAIS pedidos entram", async () => {

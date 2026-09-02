@@ -1433,11 +1433,38 @@ entregue", e devolveu.
 único fato de fluxo que já acabou — a mercadoria saiu com o funcionário e ele
 assinou; folha de separação de pedido entregue é papel jogado fora.
 
-⚠️ **Uma JANELA DE DATA foi considerada e recusada, de propósito.** Limitar a
-consulta aos últimos N dias esconderia calado um pedido pago de verdade que
-ninguém separou — que é o modo de falhar caro deste sistema. Straggler antigo
-continua aparecendo na lista, e o vigia já grita "pago e não impresso há mais de
-24h". Quem for mexer nisso: o filtro certo é o STATUS, não a data.
+⚠️ **A JANELA DE DATA foi recusada em 31/08 e ACEITA em 02/09/2026.** A recusa
+original está preservada abaixo porque o risco que ela apontava continua real —
+mudou o que o compensa, não o risco.
+
+**O que motivou:** o Winiston viu a folha sair com pedido de dias anteriores
+junto com os de hoje. Medido no dia: **9 pedidos entravam na leva, e só 5 eram
+de hoje** — os outros 4 eram de 31/08 e 01/09, ainda em `pedido_feito`, voltando
+em toda impressão. Depois do recorte, a mesma consulta devolve exatamente os 5.
+
+**O recorte:** a leva normal virou uma janela FECHADA — do começo do dia em São
+Paulo (`janelaDoDiaEmSaoPaulo`) até o corte das 13:40. O limite de cima é o de
+sempre; o de baixo é o que impede o pedido de ontem de voltar.
+
+**O que segura o straggler, agora que ele não sai mais no papel** — as três
+saídas continuam abertas, e é por isso que o recorte deixou de ser perigoso:
+
+1. O **vigia** de `operations-webhook.ts` alerta "pagos há mais de 24h e ainda
+   não impressos" — o pedido que este recorte tira da folha passa a ser cobrado
+   por alarme em vez de papel.
+2. O botão **"Imprimir"** de cada linha em `AdminOrders` (`gerarPdfPedidoUnico`)
+   imprime qualquer pedido antigo na hora, sem passar por estes filtros.
+3. O RH pode **liberar** (`released_for_today_at`), e liberado entra sempre, de
+   qualquer data — é a porta oficial para "este antigo sai hoje". O liberado
+   fica FORA da janela de propósito: ele é a exceção explícita.
+
+A tela, aliás, já prometia isto: o botão diz "os pedidos **de hoje** ainda não
+impressos". O código é que não cumpria.
+
+*Recusa original (31/08), para quem for reabrir a discussão:* limitar a consulta
+esconderia calado um pedido pago de verdade que ninguém separou — o modo de
+falhar caro deste sistema. Vale ainda: se algum dia as três saídas acima
+deixarem de existir, o recorte volta a ser perigoso.
 
 Os 6 pedidos de então foram carimbados retroativamente por
 `scripts/2026-08-31-carimba-entregues-sem-printed-at.sql` (entregue implica que
