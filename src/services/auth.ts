@@ -257,3 +257,71 @@ export async function logoutEmployee() {
   localStorage.removeItem("employee_session");
   await supabase.auth.signOut();
 }
+
+/**
+ * Revalida o papel do usuário contra o banco e regrava a sessão local.
+ *
+ * A sessão do app é montada no login e guardada em `localStorage`; todas as
+ * guardas de rota leem dali. Promover alguém no banco não tinha efeito
+ * nenhum enquanto a pessoa não fizesse logout e login: F5 não resolvia e
+ * fechar o navegador também não, porque `localStorage` sobrevive aos dois.
+ * Custou uma tarde de "o sistema está quebrado" em 10/09/2026, que era só
+ * sessão velha. Agora o app confere no boot.
+ *
+ * A política `employees_self_select` (`user_id = auth.uid()`) já garante que
+ * qualquer funcionário lê o próprio registro, então isto não depende de ser
+ * privilegiado.
+ *
+ * Falha de rede NÃO desloga ninguém: sem resposta, a sessão atual continua
+ * valendo, senão qualquer oscilação derrubaria o app inteiro. O único caso
+ * que encerra a sessão é o banco dizer que a pessoa foi desativada.
+ *
+ * @returns `true` quando algo mudou e a tela precisa ser redesenhada.
+ */
+export async function refreshEmployeeSession(): Promise<boolean> {
+  const raw = localStorage.getItem("employee_session");
+  if (!raw) return false;
+
+  let atual: EmployeeSession;
+  try {
+    atual = JSON.parse(raw) as EmployeeSession;
+  } catch {
+    return false;
+  }
+  if (!atual?.id) return false;
+
+  try {
+    const { data: auth } = await supabase.auth.getUser();
+    if (!auth?.user) return false;
+
+    const { data, error } = await supabase
+      .from("employees")
+      .select("id, full_name, cpf, role, is_active")
+      .eq("user_id", auth.user.id)
+      .maybeSingle();
+
+    if (error || !data) return false;
+
+    if (data.is_active === false) {
+      await logoutEmployee();
+      return true;
+    }
+
+    const novo: EmployeeSession = {
+      id: data.id,
+      full_name: data.full_name,
+      cpf: data.cpf,
+      role: data.role ?? "employee",
+    };
+
+    const mudou =
+      novo.role !== atual.role ||
+      novo.full_name !== atual.full_name ||
+      novo.cpf !== atual.cpf;
+
+    if (mudou) localStorage.setItem("employee_session", JSON.stringify(novo));
+    return mudou;
+  } catch {
+    return false;
+  }
+}

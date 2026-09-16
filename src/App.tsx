@@ -1,5 +1,5 @@
 // src/App.tsx
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -56,6 +56,7 @@ const IntegracaoCigam = lazy(() => import("./pages/IntegracaoCigam"));
 const Destaques = lazy(() => import("./pages/Destaques"));
 
 import { isSuperAdminSession } from "./lib/superAdmin";
+import { refreshEmployeeSession } from "./services/auth";
 
 const queryClient = new QueryClient();
 const MAINTENANCE_MODE = false;
@@ -129,6 +130,30 @@ function CatalogGate({ children }: { children: JSX.Element }) {
 -------------------------------------------------------- */
 
 function App() {
+  /* O papel fica guardado no localStorage desde o login, e as guardas de rota
+     leem dali. Sem esta revalidacao, promover alguem no banco so valia depois
+     de logout + login: F5 nao resolvia. Aqui o app confere no banco assim que
+     abre e, se o papel mudou, redesenha a arvore com a sessao nova.
+
+     Nao bloqueia a primeira pintura: a tela aparece com o que ja existe e se
+     corrige em seguida. Bloquear deixaria toda visita esperando uma ida ao
+     banco por causa de um caso raro. */
+  const [sessionVersion, setSessionVersion] = useState(0);
+
+  useEffect(() => {
+    let vivo = true;
+    refreshEmployeeSession()
+      .then((mudou) => {
+        if (vivo && mudou) setSessionVersion((v) => v + 1);
+      })
+      .catch(() => {
+        /* sessao atual continua valendo */
+      });
+    return () => {
+      vivo = false;
+    };
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
@@ -139,7 +164,7 @@ function App() {
           {MAINTENANCE_MODE ? (
             <Maintenance />
           ) : (
-          <BrowserRouter>
+          <BrowserRouter key={sessionVersion}>
             {/* Segura a espera das telas carregadas sob demanda. O fundo é o
                 mesmo `#F6F7FB` das telas de gestão de propósito: sem isso a
                 troca de rota pisca branco no meio do caminho. */}
