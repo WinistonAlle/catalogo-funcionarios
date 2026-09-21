@@ -507,12 +507,19 @@ export default function AdminOrders() {
   //
   // A seleção mora aqui, e não em `orders`, porque a lista do modal é OUTRA
   // consulta: `orders` obedece aos filtros da tela (que podem estar em
-  // qualquer período, com qualquer status), e a canhoteira é sempre um DIA
-  // fechado, de pedidos não entregues. Reaproveitar a tabela da tela faria a
-  // folha depender de onde o filtro por acaso estava.
+  // qualquer período, com qualquer status), e a canhoteira tem período e
+  // filtro próprios. Reaproveitar a tabela da tela faria a folha depender de
+  // onde o filtro por acaso estava.
+  //
+  // 21/09/2026 — de/até e filtro de saldo, a pedido do faturamento e do RH:
+  // a folha passou a servir também pra fechar o mês, não só pra portaria do
+  // dia. Abre em hoje/hoje e "Todos", que é o uso de todo dia.
   // ----------------------------------------------------------------
   const [canhoteiraOpen, setCanhoteiraOpen] = useState(false);
-  const [canhoteiraDia, setCanhoteiraDia] = useState(() => getTodayDateInput());
+  const [canhoteiraDe, setCanhoteiraDe] = useState(() => getTodayDateInput());
+  const [canhoteiraAte, setCanhoteiraAte] = useState(() => getTodayDateInput());
+  const [canhoteiraSomenteAbateram, setCanhoteiraSomenteAbateram] = useState(false);
+  const [canhoteiraTruncada, setCanhoteiraTruncada] = useState(false);
   const [canhoteiraPedidos, setCanhoteiraPedidos] = useState<PedidoDaCanhoteira[]>([]);
   const [canhoteiraSelecionados, setCanhoteiraSelecionados] = useState<string[]>([]);
   const [canhoteiraLoading, setCanhoteiraLoading] = useState(false);
@@ -910,34 +917,60 @@ export default function AdminOrders() {
   function abrirCanhoteira() {
     const hoje = getTodayDateInput();
     setCanhoteiraOpen(true);
-    setCanhoteiraDia(hoje);
-    void carregarCanhoteira(hoje);
+    setCanhoteiraDe(hoje);
+    setCanhoteiraAte(hoje);
+    setCanhoteiraSomenteAbateram(false);
+    void carregarCanhoteira({ de: hoje, ate: hoje, somenteAbateram: false });
   }
 
   /**
-   * Carrega os pedidos de um dia pro modal.
+   * Carrega os pedidos do período pro modal.
    *
-   * Vem TUDO marcado por padrão: o caso normal é a portaria querer a folha do
-   * dia inteiro, e obrigar a marcar 15 caixinhas pra chegar no caso comum é
-   * pedir pra alguém esquecer uma linha. Desmarcar o que não vai é o trabalho
-   * menor, e o erro que sobra (uma linha a mais na folha) é bem mais barato
-   * que o outro (funcionário retira sem assinar).
+   * O que vem MARCADO é quem ainda não retirou. No dia a dia isso é a lista
+   * inteira, que é o caso normal: obrigar a marcar 15 caixinhas pra chegar no
+   * comum é pedir pra alguém esquecer uma linha, e o erro que sobra (linha a
+   * mais na folha) é mais barato que o outro (funcionário retira sem assinar).
+   *
+   * Pedido ENTREGUE aparece na lista mas vem desmarcado: ele só existe aqui
+   * por causa da folha de conferência do mês (a do faturamento e do RH), e
+   * numa folha de portaria a linha dele convidaria a colher a segunda
+   * assinatura do mesmo pedido. Quem quer o mês inteiro clica em
+   * "Selecionar todos".
    */
-  async function carregarCanhoteira(dia: string) {
+  async function carregarCanhoteira(filtro: {
+    de: string;
+    ate: string;
+    somenteAbateram: boolean;
+  }) {
     setCanhoteiraLoading(true);
     setCanhoteiraErr(null);
     try {
-      const resposta = await listarPedidosDaCanhoteira(dia);
+      const resposta = await listarPedidosDaCanhoteira(filtro);
       const pedidos = resposta?.pedidos ?? [];
       setCanhoteiraPedidos(pedidos);
-      setCanhoteiraSelecionados(pedidos.map((p) => p.orderId));
+      setCanhoteiraSelecionados(
+        pedidos.filter((p) => p.status !== "entregue").map((p) => p.orderId)
+      );
+      setCanhoteiraTruncada(resposta?.truncada === true);
     } catch (e: any) {
       setCanhoteiraPedidos([]);
       setCanhoteiraSelecionados([]);
-      setCanhoteiraErr(e?.message || "Não foi possível carregar os pedidos do dia.");
+      setCanhoteiraTruncada(false);
+      setCanhoteiraErr(e?.message || "Não foi possível carregar os pedidos do período.");
     } finally {
       setCanhoteiraLoading(false);
     }
+  }
+
+  /** Recarrega com o período/filtro que a tela tem agora — o que todo
+   *  controle do topo do modal chama ao mudar. */
+  function recarregarCanhoteira(mudanca: Partial<{ de: string; ate: string; somenteAbateram: boolean }> = {}) {
+    const filtro = {
+      de: mudanca.de ?? canhoteiraDe,
+      ate: mudanca.ate ?? canhoteiraAte,
+      somenteAbateram: mudanca.somenteAbateram ?? canhoteiraSomenteAbateram,
+    };
+    void carregarCanhoteira(filtro);
   }
 
   function alternarPedidoCanhoteira(orderId: string) {
@@ -976,7 +1009,11 @@ export default function AdminOrders() {
     // botões de impressão desta tela.
     const aba = window.open("", "_blank");
     try {
-      const resultado = await printCanhoteira(canhoteiraSelecionados, canhoteiraDia, aba);
+      const resultado = await printCanhoteira(
+        canhoteiraSelecionados,
+        { de: canhoteiraDe, ate: canhoteiraAte, somenteAbateram: canhoteiraSomenteAbateram },
+        aba
+      );
       if (resultado?.message) {
         // Sem alert: a aba com o PDF já é a resposta visível, e um alert por
         // cima dela só atrasa o Ctrl+P.
@@ -2821,7 +2858,8 @@ export default function AdminOrders() {
               <div>
                 <div style={styles.modalTitle}>Canhoteira — controle de retirada</div>
                 <div style={styles.modalSub}>
-                  Marque quem entra na folha que a portaria usa pra colher assinatura
+                  Marque quem entra na folha. No dia, é a folha de assinatura da portaria;
+                  num período maior, a folha de conferência do faturamento e do RH
                 </div>
               </div>
 
@@ -2851,22 +2889,73 @@ export default function AdminOrders() {
                 }}
               >
                 <div style={styles.field}>
-                  <label style={styles.label}>Dia dos pedidos</label>
+                  <label style={styles.label}>De</label>
                   <input
                     type="date"
                     style={styles.input}
-                    value={canhoteiraDia}
+                    value={canhoteiraDe}
                     onChange={(e) => {
-                      const dia = e.target.value;
-                      setCanhoteiraDia(dia);
-                      if (dia) void carregarCanhoteira(dia);
+                      const de = e.target.value;
+                      setCanhoteiraDe(de);
+                      if (de) recarregarCanhoteira({ de });
                     }}
                   />
                 </div>
 
+                <div style={styles.field}>
+                  <label style={styles.label}>Até</label>
+                  <input
+                    type="date"
+                    style={styles.input}
+                    value={canhoteiraAte}
+                    onChange={(e) => {
+                      const ate = e.target.value;
+                      setCanhoteiraAte(ate);
+                      if (ate) recarregarCanhoteira({ ate });
+                    }}
+                  />
+                </div>
+
+                {/* Filtro que o faturamento e o RH pediram (21/09/2026): a
+                    folha de conferência deles é só do que saiu do crédito
+                    mensal, que é o que vira desconto em folha. */}
+                <div style={styles.field}>
+                  <label style={styles.label}>Pedidos</label>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button
+                      style={{
+                        ...styles.ghostBtn,
+                        ...(canhoteiraSomenteAbateram ? {} : styles.primaryBtn),
+                      }}
+                      onClick={() => {
+                        setCanhoteiraSomenteAbateram(false);
+                        recarregarCanhoteira({ somenteAbateram: false });
+                      }}
+                      disabled={canhoteiraLoading}
+                      title="Todos os pedidos pagos do período"
+                    >
+                      Todos
+                    </button>
+                    <button
+                      style={{
+                        ...styles.ghostBtn,
+                        ...(canhoteiraSomenteAbateram ? styles.primaryBtn : {}),
+                      }}
+                      onClick={() => {
+                        setCanhoteiraSomenteAbateram(true);
+                        recarregarCanhoteira({ somenteAbateram: true });
+                      }}
+                      disabled={canhoteiraLoading}
+                      title="Só os pedidos que abateram saldo do funcionário"
+                    >
+                      Só abateram saldo
+                    </button>
+                  </div>
+                </div>
+
                 <button
                   style={styles.ghostBtn}
-                  onClick={() => void carregarCanhoteira(canhoteiraDia)}
+                  onClick={() => recarregarCanhoteira()}
                   disabled={canhoteiraLoading}
                   title="Recarrega a lista — use depois de um pedido novo entrar"
                 >
@@ -2895,7 +2984,7 @@ export default function AdminOrders() {
                   <div style={styles.spinner} />
                   <div>
                     <div style={styles.stateTitle}>Carregando…</div>
-                    <div style={styles.stateText}>Buscando os pedidos do dia.</div>
+                    <div style={styles.stateText}>Buscando os pedidos do período.</div>
                   </div>
                 </div>
               )}
@@ -2910,12 +2999,25 @@ export default function AdminOrders() {
                 </div>
               )}
 
+              {canhoteiraTruncada && !canhoteiraLoading && !canhoteiraErr && (
+                <div style={{ ...styles.stateBox, borderColor: "rgba(245,158,11,0.45)" }}>
+                  <div>
+                    <div style={styles.stateTitle}>Período grande demais</div>
+                    <div style={styles.stateText}>
+                      A lista bateu no teto de pedidos e pode estar cortada. Puxe em pedaços
+                      menores (por quinzena, por exemplo) pra ter certeza de que não ficou
+                      pedido de fora.
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {!canhoteiraLoading && !canhoteiraErr && canhoteiraPedidos.length === 0 && (
                 <div style={styles.emptyBox}>
-                  <div style={styles.emptyTitle}>Nenhum pedido para retirada neste dia</div>
+                  <div style={styles.emptyTitle}>Nenhum pedido neste período</div>
                   <div style={styles.emptyText}>
-                    A lista traz os pedidos pagos do dia que ainda não foram entregues. Pedido
-                    já entregue não entra — a assinatura dele já aconteceu.
+                    A lista traz os pedidos pagos e não cancelados do período
+                    {canhoteiraSomenteAbateram ? " que abateram saldo do funcionário" : ""}.
                   </div>
                 </div>
               )}
@@ -2923,9 +3025,13 @@ export default function AdminOrders() {
               {!canhoteiraLoading && !canhoteiraErr && canhoteiraPedidos.length > 0 && (
                 <div style={styles.tableCard}>
                   <div style={styles.tableHeader}>
-                    <div style={styles.tableTitle}>Pedidos do dia</div>
+                    <div style={styles.tableTitle}>
+                      {canhoteiraDe === canhoteiraAte ? "Pedidos do dia" : "Pedidos do período"}
+                    </div>
                     <div style={styles.tableSub}>
                       A folha sai na ordem em que os pedidos foram feitos
+                      {canhoteiraDe === canhoteiraAte ? "" : ", com a data em cada linha"}
+                      . Pedido já entregue vem desmarcado.
                     </div>
                   </div>
 

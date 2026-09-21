@@ -23,6 +23,11 @@ export interface OrderSheetData {
   cigamOrderId?: string | null;
   employeeName: string;
   items: OrderSheetItem[];
+  /** Quando o pedido foi feito (ISO). Só a canhoteira de PERÍODO usa: numa
+   *  folha que cobre vários dias, sem a data a linha não diz de que dia é.
+   *  A folha do pedido não mostra este campo, e a canhoteira de um dia só
+   *  também não — lá o dia está no cabeçalho. */
+  createdAt?: string | null;
 }
 
 /**
@@ -539,14 +544,15 @@ export function buildOrderSheetsPdf(
  * leva inteira, e aí ou levava um bolo de folha de separação repetida junto,
  * ou não levava nada.
  *
- * `hoje` é a data que sai na caixa do cabeçalho: quando a tela pede a
+ * `periodo` é o que sai na caixa do cabeçalho: quando a tela pede a
  * canhoteira de um dia passado, é o dia DOS PEDIDOS que tem que aparecer no
  * papel, não a data em que alguém clicou — senão a folha arquivada mente
- * sobre quando aquela retirada aconteceu.
+ * sobre quando aquela retirada aconteceu. Uma `Date` sozinha continua
+ * valendo e significa "um dia só", que é como esta folha nasceu.
  */
 export function buildControleDeRetiradaPdf(
   pedidos: OrderSheetData[],
-  hoje: Date = new Date()
+  periodo: Date | PeriodoDoControle = new Date()
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: "A4", margin: PAGE_MARGIN });
@@ -559,7 +565,7 @@ export function buildControleDeRetiradaPdf(
     // folha de controle em branco é papel jogado fora. Quem chama trata a
     // lista vazia antes de chegar aqui; isto é só a rede.
     if (pedidos.length > 0) {
-      drawControleDeRetirada(doc, pedidos, hoje);
+      drawControleDeRetirada(doc, pedidos, periodo);
     }
 
     doc.end();
@@ -604,48 +610,124 @@ export interface LinhaControleRetirada {
    *  da folha do pedido. */
   itens: number;
   total: number;
+  /** Dia do pedido (dd/MM), só preenchido quando a folha cobre mais de um
+   *  dia — ver `PeriodoDoControle`. Nulo quando o pedido não trouxe data. */
+  data: string | null;
 }
 
-export function linhasDoControle(pedidos: readonly OrderSheetData[]): LinhaControleRetirada[] {
+/**
+ * O que a caixa do cabeçalho da canhoteira cobre. Um dia só é `inicio` e
+ * `fim` no mesmo dia, que é o caso normal (a folha da portaria de hoje);
+ * vários dias é a folha de conferência que o faturamento e o RH pediram pra
+ * fechar o mês.
+ */
+export interface PeriodoDoControle {
+  inicio: Date;
+  fim: Date;
+  /** Só pedido que abateu saldo entrou nesta folha. Sai escrito no papel:
+   *  duas folhas do mesmo mês com totais diferentes, sem dizer qual filtro
+   *  gerou cada uma, viram discussão no arquivo. */
+  somenteAbateram?: boolean;
+}
+
+function normalizaPeriodo(periodo: Date | PeriodoDoControle): {
+  inicio: Date;
+  fim: Date;
+  somenteAbateram: boolean;
+} {
+  if (periodo instanceof Date) {
+    return { inicio: periodo, fim: periodo, somenteAbateram: false };
+  }
+  return {
+    inicio: periodo.inicio,
+    fim: periodo.fim,
+    somenteAbateram: periodo.somenteAbateram ?? false,
+  };
+}
+
+/**
+ * O dia do pedido para a coluna "Data".
+ *
+ * Aqui o fuso é pedido explicitamente, e nas datas do cabeçalho não: o
+ * cabeçalho recebe do chamador um instante já escolhido ao MEIO-DIA do dia
+ * certo (ver `gerarPdfCanhoteira`), enquanto isto aqui é o `created_at` cru
+ * do banco — um instante real, que sem fuso cairia no dia anterior sempre
+ * que o pedido for feito de noite.
+ */
+function diaDaLinha(createdAt: string | null | undefined): string | null {
+  if (!createdAt) return null;
+  const quando = new Date(createdAt);
+  if (Number.isNaN(quando.getTime())) return null;
+  return quando.toLocaleDateString("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+  });
+}
+
+export function linhasDoControle(
+  pedidos: readonly OrderSheetData[],
+  opcoes: { comData?: boolean } = {}
+): LinhaControleRetirada[] {
   return pedidos.map((pedido) => ({
     pedido: pedido.cigamOrderId ?? pedido.orderNumber,
     funcionario: pedido.employeeName,
     itens: pedido.items.length,
     total: pedido.items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0),
+    data: opcoes.comData ? diaDaLinha(pedido.createdAt) : null,
   }));
 }
 
 interface ControleColumns {
+  /** Só existe na folha de período — ver `PeriodoDoControle`. */
+  data?: Column;
   pedido: Column;
   funcionario: Column;
   itens: Column;
   total: Column;
   hora: Column;
   assinatura: Column;
+  /** As colunas na ordem em que saem, pra régua vertical e cabeçalho não
+   *  precisarem saber se a coluna de data está lá. */
+  ordem: Column[];
 }
 
-function buildControleColumns(contentLeft: number, contentRight: number): ControleColumns {
+function buildControleColumns(
+  contentLeft: number,
+  contentRight: number,
+  comData = false
+): ControleColumns {
   // 78pt e não 58: pedido ainda não sincronizado com o CIGAM sai com o
   // número interno inteiro ("GM-20260825-9596"), não com os 6 dígitos do
   // CIGAM. Em 58pt ele quebrava no meio da data.
   const pedidoW = 78;
   const itensW = 40;
   const totalW = 64;
-  const horaW = 58;
+  const dataW = comData ? 48 : 0;
+  // Na folha de período a hora encolhe pra pagar a coluna de data: quem
+  // escreve ali escreve "14:30", que cabe folgado em 44pt. O corte sai da
+  // hora e não da assinatura de propósito.
+  const horaW = comData ? 44 : 58;
   // A maior coluna da folha, de longe: é onde alguém assina À MÃO, e
   // assinatura apertada é assinatura ilegível — não adianta a folha existir
   // como prova se não dá pra ler quem assinou.
   const assinaturaW = 122;
-  const funcionarioW = contentRight - contentLeft - pedidoW - itensW - totalW - horaW - assinaturaW;
+  const funcionarioW =
+    contentRight - contentLeft - dataW - pedidoW - itensW - totalW - horaW - assinaturaW;
 
-  const pedido = { x: contentLeft, width: pedidoW };
+  const data = comData ? { x: contentLeft, width: dataW } : undefined;
+  const pedido = { x: contentLeft + dataW, width: pedidoW };
   const funcionario = { x: pedido.x + pedido.width, width: funcionarioW };
   const itens = { x: funcionario.x + funcionario.width, width: itensW };
   const total = { x: itens.x + itens.width, width: totalW };
   const hora = { x: total.x + total.width, width: horaW };
   const assinatura = { x: hora.x + hora.width, width: assinaturaW };
 
-  return { pedido, funcionario, itens, total, hora, assinatura };
+  const ordem = [data, pedido, funcionario, itens, total, hora, assinatura].filter(
+    (col): col is Column => !!col
+  );
+
+  return { data, pedido, funcionario, itens, total, hora, assinatura, ordem };
 }
 
 // Alta o bastante pra caber assinatura de caneta (~12mm). A folha do pedido
@@ -671,16 +753,24 @@ const CONTROLE_HEADER_H = 24;
 function drawControleDeRetirada(
   doc: PDFKit.PDFDocument,
   pedidos: readonly OrderSheetData[],
-  hoje: Date = new Date()
+  periodo: Date | PeriodoDoControle = new Date()
 ): void {
   const contentLeft = PAGE_MARGIN;
   const contentRight = doc.page.width - PAGE_MARGIN;
   const contentWidth = contentRight - contentLeft;
   const pageBottom = doc.page.height - PAGE_MARGIN;
 
-  const linhas = linhasDoControle(pedidos);
-  const dataHoje = hoje.toLocaleDateString("pt-BR");
-  const cols = buildControleColumns(contentLeft, contentRight);
+  const { inicio, fim, somenteAbateram } = normalizaPeriodo(periodo);
+  const dataInicio = inicio.toLocaleDateString("pt-BR");
+  const dataFim = fim.toLocaleDateString("pt-BR");
+  // Vários dias muda a folha em dois pontos e em mais nenhum: a caixa do
+  // cabeçalho passa a dizer o período e cada linha ganha a data do pedido.
+  // Num dia só, a folha continua exatamente a que a portaria já conhece.
+  const variosDias = dataInicio !== dataFim;
+  const periodoNoPapel = variosDias ? `${dataInicio} a ${dataFim}` : dataInicio;
+
+  const linhas = linhasDoControle(pedidos, { comData: variosDias });
+  const cols = buildControleColumns(contentLeft, contentRight, variosDias);
 
   // ------------------------------------------------------------------
   // Cabeçalho — mesmo desenho da folha do pedido (logo à esquerda, caixa à
@@ -689,7 +779,9 @@ function drawControleDeRetirada(
   // ------------------------------------------------------------------
   let y = PAGE_MARGIN;
   const HEADER_HEIGHT = 47;
-  const INFO_BOX_W = 100;
+  // Duas datas não cabem em 100pt no corpo 13 da caixa, e diminuir a fonte
+  // deixaria o período ilegível de longe — a caixa é que cresce.
+  const INFO_BOX_W = variosDias ? 130 : 100;
 
   if (existsSync(LOGO_PATH)) {
     doc.image(LOGO_PATH, contentLeft, y, { fit: [96, HEADER_HEIGHT] });
@@ -701,12 +793,23 @@ function drawControleDeRetirada(
     .font("Helvetica-Bold")
     .fontSize(FONT.boxLabel)
     .fillColor(MUTED)
-    .text("DATA", infoBoxX, y + 10, { width: INFO_BOX_W, align: "center", characterSpacing: 0.5 });
-  doc
-    .font("Helvetica-Bold")
-    .fontSize(FONT.boxValue)
-    .fillColor(INK)
-    .text(dataHoje, infoBoxX + 6, y + 22, { width: INFO_BOX_W - 12, align: "center" });
+    .text(variosDias ? "PERÍODO" : "DATA", infoBoxX, y + 8, {
+      width: INFO_BOX_W,
+      align: "center",
+      characterSpacing: 0.5,
+    });
+
+  if (variosDias) {
+    doc.font("Helvetica-Bold").fontSize(FONT.fieldValue).fillColor(INK);
+    doc.text(dataInicio, infoBoxX + 6, y + 19, { width: INFO_BOX_W - 12, align: "center" });
+    doc.text(`a ${dataFim}`, infoBoxX + 6, y + 31, { width: INFO_BOX_W - 12, align: "center" });
+  } else {
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(FONT.boxValue)
+      .fillColor(INK)
+      .text(dataInicio, infoBoxX + 6, y + 22, { width: INFO_BOX_W - 12, align: "center" });
+  }
 
   y += HEADER_HEIGHT + 12;
 
@@ -729,7 +832,10 @@ function drawControleDeRetirada(
     .fontSize(FONT.itemsSummary)
     .fillColor(INK)
     .text(
-      `${linhas.length} pedido${linhas.length === 1 ? "" : "s"} para retirada · Total geral ${formatBRL(totalGeral)}`,
+      // "para retirada" só na folha de um dia: a folha de período leva
+      // também pedido já entregue, e chamar aquilo de fila de retirada
+      // seria mentira em cima de um papel de conferência.
+      `${linhas.length} pedido${linhas.length === 1 ? "" : "s"}${variosDias ? " no período" : " para retirada"} · Total geral ${formatBRL(totalGeral)}`,
       contentLeft,
       y,
       { width: contentWidth }
@@ -745,6 +851,21 @@ function drawControleDeRetirada(
       y,
       { width: contentWidth }
     );
+  y += 12;
+  // Qual filtro gerou esta folha, escrito nela: duas folhas do mesmo período
+  // com totais diferentes, sem isto, viram discussão na hora de conferir.
+  doc
+    .font("Helvetica")
+    .fontSize(FONT.boxLabel + 1.5)
+    .fillColor(MUTED)
+    .text(
+      somenteAbateram
+        ? `Filtro: ${periodoNoPapel} · só pedidos que abateram saldo do funcionário.`
+        : `Filtro: ${periodoNoPapel} · todos os pedidos pagos do período.`,
+      contentLeft,
+      y,
+      { width: contentWidth }
+    );
   y += 20;
 
   // ------------------------------------------------------------------
@@ -754,6 +875,7 @@ function drawControleDeRetirada(
   function drawControleHeader(topY: number): number {
     doc.rect(contentLeft, topY, contentWidth, CONTROLE_HEADER_H).fill(TABLE_HEADER_BG);
     doc.font("Helvetica-Bold").fontSize(FONT.tableHeader).fillColor("#FFFFFF");
+    if (cols.data) cellText(doc, "Data", cols.data, topY, CONTROLE_HEADER_H);
     cellText(doc, "Pedido", cols.pedido, topY, CONTROLE_HEADER_H);
     cellText(doc, "Funcionário", cols.funcionario, topY, CONTROLE_HEADER_H);
     cellText(doc, "Itens", cols.itens, topY, CONTROLE_HEADER_H, { align: "right" });
@@ -765,7 +887,9 @@ function drawControleDeRetirada(
 
   function closeControleSegment(topY: number, bottomY: number) {
     doc.lineWidth(0.5).strokeColor(RULE);
-    for (const col of [cols.funcionario, cols.itens, cols.total, cols.hora, cols.assinatura]) {
+    // A régua sai no x de cada coluna MENOS a primeira: ali a linha é a
+    // borda da tabela, desenhada logo abaixo em corpo cheio.
+    for (const col of cols.ordem.slice(1)) {
       doc.moveTo(col.x, topY).lineTo(col.x, bottomY).stroke();
     }
     doc.lineWidth(1).strokeColor(INK).rect(contentLeft, topY, contentWidth, bottomY - topY).stroke();
@@ -807,7 +931,7 @@ function drawControleDeRetirada(
         .font("Helvetica")
         .fontSize(FONT.continuation)
         .fillColor(MUTED)
-        .text(`Controle de retirada ${dataHoje} — continuação`, contentLeft, y);
+        .text(`Controle de retirada ${periodoNoPapel} — continuação`, contentLeft, y);
       y += 18;
       y = drawControleHeader(y);
       segmentTop = y - CONTROLE_HEADER_H;
@@ -822,6 +946,11 @@ function drawControleDeRetirada(
     // sai no corpo da tabela; o interno, de pedido ainda não sincronizado,
     // tem 16 caracteres e só cabe numa linha se encolher — encolhido ainda
     // é melhor que quebrado no meio da data.
+    if (cols.data) {
+      doc.font("Helvetica").fontSize(FONT.tableCell).fillColor(INK);
+      cellText(doc, linha.data ?? "—", cols.data, y, CONTROLE_ROW_H);
+    }
+
     const pedidoComprido = linha.pedido.length > 8;
     doc.font("Helvetica-Bold").fontSize(pedidoComprido ? 7.5 : FONT.tableCell).fillColor(INK);
     cellText(doc, linha.pedido, cols.pedido, y, CONTROLE_ROW_H, { padding: pedidoComprido ? 4 : 6 });
@@ -864,5 +993,9 @@ function drawControleDeRetirada(
     .font("Helvetica")
     .fontSize(FONT.boxLabel + 1)
     .fillColor(MUTED)
-    .text(`Folha gerada em ${dataHoje}.`, contentLeft, y + 8, { width: sigWidth });
+    // A data de quem IMPRIMIU, não a dos pedidos: o período está na caixa do
+    // cabeçalho, e numa folha de mês as duas coisas são mesmo diferentes.
+    .text(`Folha gerada em ${new Date().toLocaleDateString("pt-BR")}.`, contentLeft, y + 8, {
+      width: sigWidth,
+    });
 }

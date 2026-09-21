@@ -347,22 +347,41 @@ export type PedidoDaCanhoteira = {
   createdAt: string;
 };
 
+/** O período e o filtro que o modal da canhoteira pede ao servidor. */
+export type FiltroDaCanhoteira = {
+  /** YYYY-MM-DD no fuso de São Paulo. Sem período nenhum, o servidor usa hoje. */
+  de?: string;
+  ate?: string;
+  /** Só pedidos que abateram saldo do funcionário (desconto em folha). */
+  somenteAbateram?: boolean;
+};
+
 /**
- * Os pedidos que o modal da canhoteira oferece pra marcar: os de um dia,
- * pagos, não cancelados e ainda NÃO ENTREGUES — pedido em separação é
- * justamente quem vai retirar e precisa da linha pra assinar; entregue já
- * assinou.
+ * Os pedidos que o modal da canhoteira oferece pra marcar: os do período,
+ * pagos e não cancelados.
  *
- * `dia` no formato YYYY-MM-DD (fuso de São Paulo). Sem ele, o dia corrente.
+ * Entregue VEM na lista (o faturamento e o RH puxam a folha do mês pra
+ * conferir, e num mês quase tudo já foi retirado), mas quem decide o que vem
+ * marcado é a tela: entregue entra desmarcado, pra folha do dia continuar
+ * saindo como sempre saiu e ninguém colher assinatura repetida.
  */
-export async function listarPedidosDaCanhoteira(dia?: string) {
+export async function listarPedidosDaCanhoteira(filtro: FiltroDaCanhoteira = {}) {
   const params = new URLSearchParams();
-  if (dia) params.set("dia", dia);
+  if (filtro.de) params.set("de", filtro.de);
+  if (filtro.ate) params.set("ate", filtro.ate);
+  if (filtro.somenteAbateram) params.set("somenteAbateram", "1");
   const query = params.toString();
 
-  return requestWithAuth<{ ok: boolean; dia: string; pedidos: PedidoDaCanhoteira[] }>([
-    `/automation/canhoteira/pedidos${query ? `?${query}` : ""}`,
-  ]);
+  return requestWithAuth<{
+    ok: boolean;
+    dia: string;
+    de: string;
+    ate: string;
+    somenteAbateram: boolean;
+    /** Bateu no teto de pedidos — a tela avisa em vez de mostrar período cortado. */
+    truncada: boolean;
+    pedidos: PedidoDaCanhoteira[];
+  }>([`/automation/canhoteira/pedidos${query ? `?${query}` : ""}`]);
 }
 
 /**
@@ -376,7 +395,7 @@ export async function listarPedidosDaCanhoteira(dia?: string) {
  */
 export async function printCanhoteira(
   orderIds: string[],
-  dia: string | undefined,
+  filtro: FiltroDaCanhoteira,
   targetWindow?: Window | null
 ): Promise<{ message: string }> {
   const accessToken = await getAccessToken();
@@ -386,16 +405,27 @@ export async function printCanhoteira(
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ orderIds, dia }),
+    body: JSON.stringify({
+      orderIds,
+      de: filtro.de,
+      ate: filtro.ate,
+      somenteAbateram: filtro.somenteAbateram === true,
+    }),
   });
 
   const contentType = response.headers.get("content-type") || "";
 
   if (contentType.includes("application/pdf")) {
     const blob = await response.blob();
+    const hoje = new Date().toISOString().slice(0, 10);
+    const inicio = filtro.de ?? hoje;
+    const fim = filtro.ate ?? inicio;
     abrirOuBaixarPdf(
       blob,
-      nomeDoArquivo(response, `canhoteira-${dia ?? new Date().toISOString().slice(0, 10)}.pdf`),
+      nomeDoArquivo(
+        response,
+        `canhoteira-${inicio}${fim !== inicio ? `-a-${fim}` : ""}.pdf`
+      ),
       targetWindow
     );
     return { message: "Canhoteira aberta numa aba nova — use o botão de imprimir do navegador." };

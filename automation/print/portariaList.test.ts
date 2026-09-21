@@ -523,15 +523,138 @@ describe("a leva não repesca pedido já entregue", () => {
  * nada é escrito no banco.
  */
 describe("canhoteira avulsa", () => {
-  it("lista o dia pedido em São Paulo, sem entregue e sem cancelado", async () => {
+  it("lista o dia pedido em São Paulo, sem cancelado", async () => {
     const { supabase, chamadas } = fakeSupabase([]);
 
     await listarPedidosDaCanhoteira({ supabase, dia: "2026-08-28" });
 
     expect(chamadas.gte).toEqual(["created_at", "2026-08-28T03:00:00.000Z"]);
     expect(chamadas.lt).toEqual(["created_at", "2026-08-29T03:00:00.000Z"]);
-    expect(chamadas.neq).toEqual(["status", "entregue"]);
     expect(chamadas.is).toEqual(["cancelled_at", null]);
+    // Entregue NÃO é mais cortado na consulta (21/09/2026): quem decide é a
+    // tela, que traz o entregue desmarcado. Cortar aqui devolvia lista vazia
+    // pra folha do mês, que é justamente o que o faturamento e o RH pediram.
+    expect(chamadas.neq).toBeUndefined();
+  });
+
+  /**
+   * O PERÍODO (21/09/2026). A janela vai do 00:00 de São Paulo do primeiro dia
+   * ao 00:00 do dia seguinte ao último — o último dia INTEIRO entra, senão a
+   * folha do mês perderia tudo que foi pedido no dia 30.
+   */
+  it("monta a janela do primeiro ao último dia do período", async () => {
+    const { supabase, chamadas } = fakeSupabase([]);
+
+    await listarPedidosDaCanhoteira({ supabase, de: "2026-09-01", ate: "2026-09-30" });
+
+    expect(chamadas.gte).toEqual(["created_at", "2026-09-01T03:00:00.000Z"]);
+    expect(chamadas.lt).toEqual(["created_at", "2026-10-01T03:00:00.000Z"]);
+  });
+
+  it("endireita período invertido em vez de devolver nada", async () => {
+    const { supabase, chamadas } = fakeSupabase([]);
+
+    await listarPedidosDaCanhoteira({ supabase, de: "2026-09-30", ate: "2026-09-01" });
+
+    expect(chamadas.gte).toEqual(["created_at", "2026-09-01T03:00:00.000Z"]);
+    expect(chamadas.lt).toEqual(["created_at", "2026-10-01T03:00:00.000Z"]);
+  });
+
+  /** Aba aberta com o bundle anterior manda só `dia` — não pode quebrar no
+   *  minuto do deploy. */
+  it("o `dia` sozinho continua valendo e significa um dia só", async () => {
+    const { supabase } = fakeSupabase([]);
+
+    const listagem = await listarPedidosDaCanhoteira({ supabase, dia: "2026-08-28" });
+
+    expect(listagem.de).toBe("2026-08-28");
+    expect(listagem.ate).toBe("2026-08-28");
+    expect(listagem.dia).toBe("2026-08-28");
+  });
+
+  it("traz o pedido já entregue na lista — a folha do mês depende disso", async () => {
+    const { supabase } = fakeSupabase([
+      {
+        id: "a",
+        order_number: "GM-1",
+        employee_name: "FULANO",
+        status: "entregue",
+        created_at: "2026-09-02T12:00:00Z",
+        wallet_debited: true,
+        wallet_used_cents: 1000,
+        order_items: [{ product_name: "PAO", quantity: 1, unit_price: 10, products: null }],
+      },
+    ]);
+
+    const { pedidos } = await listarPedidosDaCanhoteira({
+      supabase,
+      de: "2026-09-01",
+      ate: "2026-09-30",
+    });
+
+    expect(pedidos).toHaveLength(1);
+    expect(pedidos[0].status).toBe("entregue");
+  });
+
+  it("`somenteAbateram` deixa de fora o que foi pago na retirada", async () => {
+    const { supabase } = fakeSupabase([
+      {
+        id: "saldo",
+        order_number: "GM-1",
+        employee_name: "FULANO",
+        status: "entregue",
+        created_at: "2026-09-02T12:00:00Z",
+        wallet_debited: true,
+        wallet_used_cents: 1000,
+        pay_on_pickup_cents: 0,
+        order_items: [{ product_name: "PAO", quantity: 1, unit_price: 10, products: null }],
+      },
+      {
+        id: "retirada",
+        order_number: "GM-2",
+        employee_name: "CICLANO",
+        status: "entregue",
+        created_at: "2026-09-03T12:00:00Z",
+        wallet_debited: false,
+        wallet_used_cents: 0,
+        pay_on_pickup_cents: 2000,
+        order_items: [{ product_name: "PAO", quantity: 2, unit_price: 10, products: null }],
+      },
+    ]);
+
+    const { pedidos } = await listarPedidosDaCanhoteira({
+      supabase,
+      de: "2026-09-01",
+      ate: "2026-09-30",
+      somenteAbateram: true,
+    });
+
+    expect(pedidos.map((p) => p.orderId)).toEqual(["saldo"]);
+  });
+
+  /** Lista cortada em silêncio é pior que lista curta: quem fecha o mês
+   *  acharia que conferiu tudo. */
+  it("avisa quando a lista bate no teto", async () => {
+    const linha = {
+      id: "a",
+      order_number: "GM-1",
+      employee_name: "FULANO",
+      status: "entregue",
+      created_at: "2026-09-02T12:00:00Z",
+      wallet_debited: true,
+      wallet_used_cents: 1000,
+      order_items: [],
+    };
+    const { supabase } = fakeSupabase([linha, { ...linha, id: "b" }]);
+
+    const listagem = await listarPedidosDaCanhoteira({
+      supabase,
+      de: "2026-09-01",
+      ate: "2026-09-30",
+      limit: 2,
+    });
+
+    expect(listagem.truncada).toBe(true);
   });
 
   it("mantém o pedido cuja folha JÁ saiu — em separação é quem vai retirar", async () => {

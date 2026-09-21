@@ -1545,19 +1545,19 @@ precisar sair de novo (folha molhada, pedido que entrou depois, retirada que
 virou o dia). Antes, a única saída era reimprimir a leva inteira e levar junto
 um bolo de folha de separação repetida.
 
-O botão abre um modal com os pedidos **de um dia**, um checkbox por linha,
-seletor de data (abre em hoje) e um "Selecionar todos" que alterna. Vem **tudo
-marcado por padrão**: o caso normal é querer a folha do dia inteiro, e obrigar a
-marcar 15 caixinhas pra chegar no caso comum é pedir pra alguém esquecer uma
-linha. O erro que sobra (linha a mais na folha) é bem mais barato que o outro
-(funcionário retira sem assinar).
+O botão abre um modal com os pedidos do período, um checkbox por linha, os
+seletores de data (abrem em hoje) e um "Selecionar todos" que alterna. Vem
+**marcado por padrão quem ainda não retirou**: o caso normal é querer a folha
+do dia inteiro, e obrigar a marcar 15 caixinhas pra chegar no caso comum é
+pedir pra alguém esquecer uma linha. O erro que sobra (linha a mais na folha)
+é bem mais barato que o outro (funcionário retira sem assinar).
 
-**Quais pedidos entram:** os do dia, pagos, não cancelados e **ainda não
-entregues**. Pedido em separação — folha já impressa, mercadoria sendo juntada —
-é justamente quem vai retirar e PRECISA da linha; filtrar por `printed_at`
-deixaria de fora a maioria da lista. Entregue não entra porque a assinatura dele
-já aconteceu, e repetir a linha convida a colher duas assinaturas do mesmo
-pedido.
+**Quais pedidos entram:** os do período, pagos e não cancelados. Pedido em
+separação — folha já impressa, mercadoria sendo juntada — é justamente quem
+vai retirar e PRECISA da linha; filtrar por `printed_at` deixaria de fora a
+maioria da lista. Entregue entra na lista mas **vem desmarcado** — ver
+"Período e filtro de saldo na canhoteira (21/09/2026)" logo abaixo, que é onde
+essa regra mudou de lugar.
 
 ⚠️ **Não escreve NADA no banco, e é assim de propósito.** Quem manda em
 `printed_at` é a leva de separação, com os dois passos e a confirmação. Um
@@ -1571,7 +1571,7 @@ folha arquivada mentiria sobre quando aquela retirada aconteceu.
 
 | onde | o quê |
 |---|---|
-| `GET /canhoteira/pedidos?dia=YYYY-MM-DD` | a lista do modal (só leitura, sem log) |
+| `GET /canhoteira/pedidos?dia=YYYY-MM-DD` | a lista do modal (só leitura, sem log) — hoje também aceita `de`/`ate` |
 | `POST /canhoteira/pdf` | a folha com os ids marcados; loga `print_canhoteira` |
 | `buildControleDeRetiradaPdf` (`pdfBuilder.ts`) | a canhoteira sem as folhas de pedido |
 | `listarPedidosDaCanhoteira` / `gerarPdfCanhoteira` (`portariaList.ts`) | a seleção |
@@ -1581,6 +1581,54 @@ folha arquivada mentiria sobre quando aquela retirada aconteceu.
 `.catch(() => null)`, então ação nova sem migration não dá erro — só não deixa
 rastro. É a mesma armadilha de 26/08. Ver
 `scripts/2026-08-31-admin-logs-aceita-print-canhoteira.sql`.
+
+### Período e filtro de saldo na canhoteira (21/09/2026)
+
+**Pedido do faturamento junto com o RH.** A canhoteira passou a servir duas
+coisas: a folha de assinatura da portaria (de sempre) e a folha de
+CONFERÊNCIA de um período — tipicamente o mês fechado. O modal ganhou **De** e
+**Até** (os dois abrindo em hoje) e dois botões, **Todos** | **Só abateram
+saldo**, abrindo em "Todos".
+
+**A regra de quem entra mudou de lugar, não de valor.** A consulta não filtra
+mais `status != entregue`: num mês inteiro quase todo pedido já foi retirado e
+a lista voltava vazia. Quem cuida de não colher assinatura duas vezes agora é a
+TELA — pedido entregue aparece na lista **desmarcado**. Efeito prático: a folha
+do dia sai exatamente como saía, sem ninguém precisar lembrar de nada, e quem
+quer o mês clica em "Selecionar todos". Trocar isso por "entregue entra só
+quando o período tem mais de um dia" foi descartado de propósito: regra que
+muda sozinha conforme o tamanho do período é regra que ninguém lembra na hora
+de conferir.
+
+**"Só abateram saldo" = `wallet_used_cents > 0` ou `wallet_debited`** — o que
+vira desconto em folha. Deixa de fora o pago na retirada. Não é o mesmo que
+"tem recibo no CIGAM" (`erp_external_id`), e a diferença importa: pedido que
+debitou saldo e travou na integração ainda aparece nesta lista, que é onde o
+RH quer vê-lo.
+
+**No papel**, vários dias mudam duas coisas e mais nada: a caixa do cabeçalho
+vira `PERÍODO` com as duas datas, e a tabela ganha a coluna **Data** (a hora
+encolhe de 58 para 44pt pra pagar por ela; a assinatura não encolhe). Uma
+linha abaixo do aviso diz qual filtro gerou a folha — sem isso, duas folhas do
+mesmo mês com totais diferentes viram discussão no arquivo. A data da coluna
+sai no fuso de São Paulo (`created_at` é instante real; sem fuso, pedido da
+noite cairia no dia seguinte), enquanto as datas do cabeçalho continuam vindo
+prontas do chamador ao MEIO-DIA do dia certo, pelo mesmo motivo de sempre.
+
+**Teto de 1000 pedidos** (era 300) e a listagem devolve `truncada` — a tela
+avisa em vez de mostrar um mês cortado como se fosse o mês inteiro.
+
+⚠️ **`?dia=` continua aceito** nas duas rotas, e não é herança esquecida: no
+minuto do deploy existe aba aberta com o bundle anterior, que só sabe pedir
+assim. Equivale a `de` e `ate` no mesmo dia. O log `print_canhoteira` agora
+grava `de`, `ate` e `somenteAbateram` no metadata.
+
+| onde | o quê |
+|---|---|
+| `GET /canhoteira/pedidos?de=&ate=&somenteAbateram=1` | a lista do modal (só leitura, sem log) |
+| `POST /canhoteira/pdf` | `{ orderIds, de, ate, somenteAbateram }` |
+| `PeriodoDoControle` (`pdfBuilder.ts`) | `{ inicio, fim, somenteAbateram }`; uma `Date` sozinha ainda vale e quer dizer "um dia" |
+| `linhasDoControle(pedidos, { comData })` | a coluna Data |
 
 ### A canhoteira: folha de controle de retirada (25/08/2026)
 

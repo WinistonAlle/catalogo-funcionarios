@@ -1650,14 +1650,17 @@ app.post("/print-portaria-confirm", async (req, res) => {
 });
 
 /**
- * A LISTA que o modal da canhoteira mostra pra marcar: pedidos de um dia,
- * pagos, não cancelados e ainda não entregues (ver `listarPedidosDaCanhoteira`
- * para o porquê de "não entregues" e não "não impressos").
+ * A LISTA que o modal da canhoteira mostra pra marcar: pedidos do período,
+ * pagos e não cancelados (ver `listarPedidosDaCanhoteira` para o porquê de
+ * entregue entrar na lista e não vir marcado).
  *
- * `?dia=YYYY-MM-DD` opcional — sem ele, o dia corrente em São Paulo. É GET e
- * não escreve nada: abrir o modal não pode ter efeito colateral nenhum, e por
- * isso também não vai pro log de operações (encheria o histórico de ruído sem
- * dizer nada sobre papel que saiu).
+ * `?de=YYYY-MM-DD&ate=YYYY-MM-DD`, ou `?dia=` sozinho, ou nada (= hoje em São
+ * Paulo). `?somenteAbateram=1` corta pra quem abateu saldo. O `dia` continua
+ * aceito de propósito: na hora do deploy existe aba aberta com o bundle
+ * anterior, e ela só sabe pedir assim. É GET e não escreve nada: abrir o
+ * modal não pode ter efeito colateral nenhum, e por isso também não vai pro
+ * log de operações (encheria o histórico de ruído sem dizer nada sobre papel
+ * que saiu).
  */
 app.get("/canhoteira/pedidos", async (req, res) => {
   try {
@@ -1666,11 +1669,15 @@ app.get("/canhoteira/pedidos", async (req, res) => {
       return res.status(auth.status).json({ ok: false, message: auth.error });
     }
 
-    const dia = typeof req.query?.dia === "string" ? req.query.dia.trim() : undefined;
+    const texto = (valor: unknown) => (typeof valor === "string" ? valor.trim() : undefined);
+    const dia = texto(req.query?.dia);
+    const de = texto(req.query?.de);
+    const ate = texto(req.query?.ate);
+    const somenteAbateram = req.query?.somenteAbateram === "1" || req.query?.somenteAbateram === "true";
 
     try {
-      const { dia: diaUsado, pedidos } = await listarPedidosDaCanhoteira({ supabase, dia });
-      return res.status(200).json({ ok: true, dia: diaUsado, pedidos });
+      const listagem = await listarPedidosDaCanhoteira({ supabase, dia, de, ate, somenteAbateram });
+      return res.status(200).json({ ok: true, ...listagem });
     } catch (err: any) {
       return res
         .status(400)
@@ -1698,7 +1705,11 @@ app.post("/canhoteira/pdf", async (req, res) => {
     }
 
     const orderIds = Array.isArray(req.body?.orderIds) ? req.body.orderIds.map(String) : [];
-    const dia = typeof req.body?.dia === "string" ? req.body.dia.trim() : undefined;
+    const texto = (valor: unknown) => (typeof valor === "string" ? valor.trim() : undefined);
+    const dia = texto(req.body?.dia);
+    const de = texto(req.body?.de) ?? dia;
+    const ate = texto(req.body?.ate) ?? dia;
+    const somenteAbateram = req.body?.somenteAbateram === true;
 
     if (orderIds.length === 0) {
       return res
@@ -1707,20 +1718,36 @@ app.post("/canhoteira/pdf", async (req, res) => {
     }
 
     try {
-      const { pdf, pedidos } = await gerarPdfCanhoteira({ supabase, orderIds, dia });
+      const { pdf, pedidos } = await gerarPdfCanhoteira({
+        supabase,
+        orderIds,
+        de,
+        ate,
+        somenteAbateram,
+      });
 
       await insertOperationLog(supabase, {
         action: "print_canhoteira",
         status: "success",
         actor: auth.actor,
         message: `Canhoteira gerada com ${pedidos.length} pedido(s).`,
-        metadata: { dia: dia ?? null, pedidos, solicitados: orderIds.length },
+        metadata: {
+          dia: de ?? null,
+          de: de ?? null,
+          ate: ate ?? null,
+          somenteAbateram,
+          pedidos,
+          solicitados: orderIds.length,
+        },
       }).catch(() => null);
 
+      const hoje = new Date().toISOString().slice(0, 10);
+      const inicioArquivo = de ?? hoje;
+      const fimArquivo = ate ?? inicioArquivo;
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader(
         "Content-Disposition",
-        `attachment; filename="canhoteira-${dia ?? new Date().toISOString().slice(0, 10)}.pdf"`
+        `attachment; filename="canhoteira-${inicioArquivo}${fimArquivo !== inicioArquivo ? `-a-${fimArquivo}` : ""}.pdf"`
       );
       return res.status(200).send(pdf);
     } catch (err: any) {
@@ -1729,7 +1756,14 @@ app.post("/canhoteira/pdf", async (req, res) => {
         status: "failed",
         actor: auth.actor,
         message: "Falha ao gerar a canhoteira.",
-        metadata: { dia: dia ?? null, solicitados: orderIds.length, error: err?.message ?? String(err) },
+        metadata: {
+          dia: de ?? null,
+          de: de ?? null,
+          ate: ate ?? null,
+          somenteAbateram,
+          solicitados: orderIds.length,
+          error: err?.message ?? String(err),
+        },
       }).catch(() => null);
 
       return res

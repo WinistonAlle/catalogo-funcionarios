@@ -60,6 +60,8 @@ type OrderRow = {
   employee_name: string | null;
   erp_external_id: string | null;
   released_for_today_at: string | null;
+  /** Só a canhoteira de período usa, pra coluna "Data" — ver `OrderSheetData`. */
+  created_at?: string | null;
   order_items: ItemRow[];
 };
 
@@ -176,6 +178,7 @@ function paraOrderSheetData(pedido: OrderRow): OrderSheetData {
     orderNumber: pedido.order_number,
     cigamOrderId: pedido.erp_external_id,
     employeeName: pedido.employee_name ?? "Funcionário",
+    createdAt: pedido.created_at ?? null,
     items: pedido.order_items.map((item) => ({
       cigamCode: item.products?.cigam_code ?? null,
       productName: item.product_name,
@@ -386,29 +389,85 @@ function totalEmCents(itens: readonly ItemRow[]): number {
   return itens.reduce((soma, item) => soma + Math.round(item.unit_price * 100) * item.quantity, 0);
 }
 
+/** Pedido que abateu o crédito mensal do funcionário — o que vira desconto
+ *  em folha. Pago na retirada não conta: sai dinheiro no caixa, não saldo. */
+function abateuSaldo(pedido: {
+  wallet_debited?: boolean | null;
+  wallet_used_cents?: number | null;
+}): boolean {
+  return Number(pedido.wallet_used_cents ?? 0) > 0 || pedido.wallet_debited === true;
+}
+
 /**
- * Os pedidos que a tela oferece pra marcar na canhoteira: os de UM DIA, pagos,
- * não cancelados e AINDA NÃO ENTREGUES.
+ * O período pedido pela tela, tolerando as três formas de pedir: `de`/`ate`,
+ * o `dia` sozinho do jeito antigo, ou nada (= hoje).
  *
- * Por que ainda não entregues, e não "ainda não impressos" (31/08/2026): a
- * canhoteira não é papel de separação, é o papel onde o funcionário assina ao
- * RETIRAR. Um pedido em separação — folha já impressa, mercadoria sendo
- * juntada — é justamente quem vai retirar hoje e PRECISA de uma linha na
- * folha; filtrar por `printed_at` deixaria de fora a maioria da lista. Já o
- * entregue não entra porque a assinatura dele já aconteceu, e repetir a linha
- * convida a coletar duas assinaturas do mesmo pedido.
+ * Datas invertidas são endireitadas em vez de recusadas: quem digita 30 no
+ * "de" e 01 no "até" quer o mês, não um erro na cara.
+ */
+function periodoPedido(params: { dia?: string; de?: string; ate?: string }): {
+  de: string;
+  ate: string;
+} {
+  const hoje = diaEmSaoPaulo();
+  const dia = params.dia?.trim();
+  const de = params.de?.trim() || dia || hoje;
+  const ate = params.ate?.trim() || dia || de;
+  return de <= ate ? { de, ate } : { de: ate, ate: de };
+}
+
+export type CanhoteiraListagem = {
+  /** Primeiro dia do período. Mantido com o nome antigo pra não quebrar
+   *  quem já lia `dia` — hoje é sinônimo de `de`. */
+  dia: string;
+  de: string;
+  ate: string;
+  somenteAbateram: boolean;
+  truncada: boolean;
+  pedidos: PedidoDaCanhoteira[];
+};
+
+/**
+ * Os pedidos que a tela oferece pra marcar na canhoteira: os do PERÍODO,
+ * pagos e não cancelados. Entregue entra na LISTA — mas a tela não o marca
+ * sozinho (ver `AdminOrders`).
  *
- * O dia é o de São Paulo, não o do servidor, e a janela é [00:00, 00:00 do dia
- * seguinte) — ver `janelaDoDiaEmSaoPaulo`.
+ * Por que a lista traz entregue desde 21/09/2026: o faturamento e o RH
+ * passaram a puxar a folha do mês pra conferir, e num mês inteiro quase todo
+ * pedido já foi retirado — filtrar entregue aqui devolvia lista vazia. O
+ * cuidado que existia (não colher duas assinaturas do mesmo pedido) continua
+ * de pé no lugar certo: entregue vem DESMARCADO, então a folha do dia sai
+ * igual à de sempre e ninguém precisa lembrar de nada.
+ *
+ * Por que não filtra por `printed_at` (31/08/2026): a canhoteira não é papel
+ * de separação, é onde o funcionário assina ao RETIRAR. Pedido em separação —
+ * folha já impressa, mercadoria sendo juntada — é justamente quem vai retirar
+ * e PRECISA da linha.
+ *
+ * `somenteAbateram` é o filtro que o faturamento e o RH pediram: só o que
+ * saiu do crédito mensal, que é o que eles conferem contra a folha.
+ *
+ * O dia é o de São Paulo, não o do servidor, e a janela é [00:00 do `de`,
+ * 00:00 do dia seguinte ao `ate`) — ver `janelaDoDiaEmSaoPaulo`.
  */
 export async function listarPedidosDaCanhoteira(params: {
   supabase: SupabaseClient;
+  /** Um dia só — o jeito antigo de chamar. Continua valendo: aba aberta com
+   *  o bundle anterior manda só isto, e não pode quebrar na hora do deploy. */
   dia?: string;
+  de?: string;
+  ate?: string;
+  /** Só pedidos que abateram saldo do funcionário (pedido do faturamento e
+   *  do RH, 21/09/2026). Deixa de fora o que foi pago na retirada. */
+  somenteAbateram?: boolean;
   limit?: number;
-}): Promise<{ dia: string; pedidos: PedidoDaCanhoteira[] }> {
-  const { supabase, limit = 300 } = params;
-  const dia = params.dia?.trim() || diaEmSaoPaulo();
-  const { inicio, fim } = janelaDoDiaEmSaoPaulo(dia);
+}): Promise<CanhoteiraListagem> {
+  // 1000 e não 300: um mês inteiro passa de 300 em mês cheio (jun/2026 teve
+  // 124, mas o teto precisa caber um pico sem cortar a folha em silêncio).
+  const { supabase, limit = 1000, somenteAbateram = false } = params;
+  const { de, ate } = periodoPedido(params);
+  const inicio = janelaDoDiaEmSaoPaulo(de).inicio;
+  const fim = janelaDoDiaEmSaoPaulo(ate).fim;
 
   const { data, error } = await supabase
     .from("orders")
@@ -416,7 +475,6 @@ export async function listarPedidosDaCanhoteira(params: {
       "id, order_number, employee_name, erp_external_id, status, printed_at, released_for_today_at, created_at, wallet_debited, wallet_used_cents, pay_on_pickup_cents, order_items(product_name, quantity, unit_price, products(cigam_code, cigam_unit, weight))"
     )
     .is("cancelled_at", null)
-    .neq("status", "entregue")
     .gte("created_at", inicio.toISOString())
     .lt("created_at", fim.toISOString())
     .order("created_at", { ascending: true })
@@ -428,6 +486,7 @@ export async function listarPedidosDaCanhoteira(params: {
 
   const pedidos = ((data ?? []) as any[])
     .filter(foiPago)
+    .filter((linha) => !somenteAbateram || abateuSaldo(linha))
     .map((linha) => ({
       orderId: linha.id as string,
       pedido: (linha.erp_external_id ?? linha.order_number) as string,
@@ -442,7 +501,16 @@ export async function listarPedidosDaCanhoteira(params: {
       createdAt: linha.created_at as string,
     }));
 
-  return { dia, pedidos };
+  return {
+    dia: de,
+    de,
+    ate,
+    somenteAbateram,
+    // A tela precisa saber que a lista bateu no teto pra avisar, em vez de
+    // mostrar um mês cortado como se fosse o mês inteiro.
+    truncada: (data ?? []).length >= limit,
+    pedidos,
+  };
 }
 
 /**
@@ -466,8 +534,14 @@ export async function listarPedidosDaCanhoteira(params: {
 export async function gerarPdfCanhoteira(params: {
   supabase: SupabaseClient;
   orderIds: string[];
-  /** Dia dos pedidos (YYYY-MM-DD em São Paulo) — vira a DATA do cabeçalho. */
+  /** Dia dos pedidos (YYYY-MM-DD em São Paulo) — o jeito antigo de pedir,
+   *  equivale a `de` e `ate` no mesmo dia. */
   dia?: string;
+  de?: string;
+  ate?: string;
+  /** Só pra registrar no papel qual filtro gerou a folha — a seleção de
+   *  quem entra já veio pronta em `orderIds`. */
+  somenteAbateram?: boolean;
 }): Promise<{ pdf: Buffer; pedidos: { orderId: string; orderNumber: string }[] }> {
   const { supabase } = params;
 
@@ -502,10 +576,15 @@ export async function gerarPdfCanhoteira(params: {
   // Meio-dia do dia escolhido, não 00:00: `drawControleDeRetirada` formata a
   // data com o fuso do processo, e a meia-noite de São Paulo cai no dia
   // anterior em qualquer fuso a oeste — a folha sairia com a data errada.
-  const dia = params.dia?.trim() || diaEmSaoPaulo();
-  const dataDoCabecalho = new Date(janelaDoDiaEmSaoPaulo(dia).inicio.getTime() + 12 * 60 * 60 * 1000);
+  const { de, ate } = periodoPedido(params);
+  const meioDiaDe = (dia: string) =>
+    new Date(janelaDoDiaEmSaoPaulo(dia).inicio.getTime() + 12 * 60 * 60 * 1000);
 
-  const pdf = await buildControleDeRetiradaPdf(pedidos.map(paraOrderSheetData), dataDoCabecalho);
+  const pdf = await buildControleDeRetiradaPdf(pedidos.map(paraOrderSheetData), {
+    inicio: meioDiaDe(de),
+    fim: meioDiaDe(ate),
+    somenteAbateram: params.somenteAbateram === true,
+  });
 
   return {
     pdf,

@@ -1,6 +1,13 @@
 // automation/print/pdfBuilder.test.ts
 import { describe, expect, it } from "vitest";
-import { buildOrderSheetPdf, buildOrderSheetsPdf, linhasDoControle, sequenciaDeFolhas, VIAS_PADRAO } from "./pdfBuilder";
+import {
+  buildControleDeRetiradaPdf,
+  buildOrderSheetPdf,
+  buildOrderSheetsPdf,
+  linhasDoControle,
+  sequenciaDeFolhas,
+  VIAS_PADRAO,
+} from "./pdfBuilder";
 
 describe("buildOrderSheetPdf", () => {
   it("produz um PDF não vazio, com a assinatura %PDF", async () => {
@@ -138,6 +145,32 @@ describe("linhasDoControle", () => {
     expect(linhas.map((l) => l.pedido)).toEqual(["015046", "GM-20260825-9591"]);
   });
 
+  /**
+   * A coluna "Data" (21/09/2026) só existe na folha de PERÍODO: num dia só, a
+   * data está no cabeçalho e repetir em toda linha seria ruído. O dia é o de
+   * São Paulo, não o do processo — pedido feito às 21h daqui é 00h em UTC, e
+   * sem fuso a linha sairia com o dia seguinte.
+   */
+  it("só preenche a data quando a folha é de período, e no fuso de São Paulo", () => {
+    const pedido = {
+      orderNumber: "GM-1",
+      employeeName: "ANA",
+      items: [],
+      createdAt: "2026-09-03T02:30:00Z",
+    };
+
+    expect(linhasDoControle([pedido])[0].data).toBeNull();
+    expect(linhasDoControle([pedido], { comData: true })[0].data).toBe("02/09");
+  });
+
+  it("linha sem data conhecida não inventa dia", () => {
+    const [linha] = linhasDoControle([{ orderNumber: "GM-1", employeeName: "ANA", items: [] }], {
+      comData: true,
+    });
+
+    expect(linha.data).toBeNull();
+  });
+
   it("total da linha é a soma de preço × quantidade, igual ao TOTAL da folha do pedido", () => {
     const [linha] = linhasDoControle([
       {
@@ -152,6 +185,35 @@ describe("linhasDoControle", () => {
 
     expect(linha.itens).toBe(2);
     expect(linha.total).toBeCloseTo(2 * 14.85 + 3 * 3.5, 2);
+  });
+});
+
+describe("buildControleDeRetiradaPdf", () => {
+  it("a folha de um dia continua saindo com uma Date sozinha", async () => {
+    const buffer = await buildControleDeRetiradaPdf(
+      [pedidoDeTeste("GM-1")],
+      new Date("2026-09-21T15:00:00Z")
+    );
+
+    expect(buffer.subarray(0, 4).toString("ascii")).toBe("%PDF");
+  });
+
+  it("a folha do mês sai inteira, com as duas datas no cabeçalho", async () => {
+    const pedidos = Array.from({ length: 120 }, (_, i) => ({
+      ...pedidoDeTeste(`GM-${i + 1}`),
+      createdAt: "2026-09-03T14:00:00Z",
+    }));
+
+    const buffer = await buildControleDeRetiradaPdf(pedidos, {
+      inicio: new Date("2026-09-01T15:00:00Z"),
+      fim: new Date("2026-09-30T15:00:00Z"),
+      somenteAbateram: true,
+    });
+
+    expect(buffer.subarray(0, 4).toString("ascii")).toBe("%PDF");
+    // 120 linhas não cabem numa folha: a paginação da canhoteira tem que
+    // seguir valendo com a coluna de data no meio.
+    expect(contarPaginas(buffer)).toBeGreaterThan(1);
   });
 });
 
