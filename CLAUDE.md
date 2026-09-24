@@ -125,6 +125,61 @@ pm2 logs webhook --lines 30 --nostream | grep -E "auto-sync|Estoque sync"
 
 ---
 
+## Fila do CIGAM zerada e os três buracos que a enchiam (24/09/2026)
+
+O vigia gritava 11 pedidos em ERROR. Todos resolvidos, sem duplicar nada no
+ERP, e cada causa ganhou uma trava para não voltar:
+
+**1. Timeout com o pedido já criado (8 pedidos, 02/09 a 17/09).** O corte de
+30s é do nosso lado: o CIGAM termina de criar o pedido e para em controle 20.
+Concluídos com o script de 16/09 (nunca tinha sido aplicado), conferidos
+depois em controle 40: 017388, 017978, 018077, 019775, 020194, 020604, 020818,
+021422. **Trava:** `automation/cigam/conclui-pedido-existente.ts` faz o mesmo
+sozinho a cada 15 min, dentro de `runCigamAutoSync`, com as mesmas guardas
+(existe, cliente 009752, total batendo em 1 centavo, controle 20/30/40).
+Dúvida PULA e o motivo vai para `erp_error`. O script de 16/09 virou a porta
+manual para esse mesmo código.
+
+**2. Falha de login no portal (2 pedidos de 02/09, sem número).** Conferido
+que não existiam no CIGAM (varridos os 94 pedidos do cliente 009752 desde
+02/09) e reenfileirados: 9979 → 022967, 7175 → 022968. **Trava:**
+`processPendingOrders` loga ANTES de tocar em pedido; se o login falha,
+ninguém é marcado e a próxima varredura tenta de novo. Falha de login no meio,
+antes de o pedido ter número, também fica em PENDING (`ehFalhaDeLogin`).
+Timeout NÃO entra nessa regra: nele o CIGAM pode ter criado sem devolver o
+número.
+
+**3. Produto oculto e sem código pago no checkout (GM-20260918-2219).** O
+`place_order_with_wallet_v2` não olhava `is_hidden`, `active` nem
+`cigam_code`. **Trava:** `scripts/2026-09-24-checkout-recusa-produto-fora-do-catalogo.sql`
+recusa com "Produto indisponível no catálogo: <nome>". Testado em transação
+desfeita: oculto recusa, vitrine passa. Os 8 alhos OMG ganharam o código
+avulso (`002001000001`..`008`, unidade UN) e o 2219 subiu como 022969.
+⚠️ O alho Calabresa Bisnaga tinha sido ligado de manhã, pelo seletor do
+Admin, a `002001000016`, que é a **caixa com 10**. O seletor lista caixa e
+unidade lado a lado com nomes parecidos: conferir a unidade ao escolher.
+Seguem sem código (e ocultos) o OMG Misto caixa com 4 e o Pão de Queijo
+Gourmet 1kg: não existe material equivalente no CIGAM.
+
+**Saldo maior que o direito (RAFAEL PRADO).** Direito de R$ 1.000 na recarga
+de 27/08, baixado para R$ 300 na planilha, saldo parado em R$ 940. Corrigido
+para R$ 240 (backup em `~/backups/employees-20260924-antes-saldo-rafael.csv`).
+**Trava:** `gm_reduz_direito_e_saldo` (`scripts/2026-09-24-reduz-saldo-quando-direito-cai.sql`)
+e `calcularReducoesDeDireito` no sync: direito que CAI leva o saldo junto, na
+mesma diferença, sem ficar negativo; atômico e idempotente. Aumento de direito
+continua esperando a recarga. Redução em massa (mais de 20% da planilha) é
+barrada como planilha quebrada; escape `SYNC_REDUCAO_EM_MASSA=1`. Cada
+redução fica em `admin_operation_logs.metadata.saldosReduzidos`. ⚠️ Isso
+muda o que o comentário do crontab diz ("cadastro nunca toca em saldo"):
+agora toca, só para reduzir.
+
+**Ficou de fora de propósito:** os 4 pedidos de 31/08 e 01/09 em
+`pedido_feito` (7023, 4716, 3146, 7133). Estão certos no CIGAM (016968,
+016969, 017330, 017331); o usuário confirmou que foram entregues e pediu para
+não mexer no status. O vigia continua listando os quatro.
+
+---
+
 ## Backup do banco — diário, verificado e vigiado (31/08/2026)
 
 Até 31/08 **não havia backup nenhum agendado**. Os arquivos em `~/backups` eram
