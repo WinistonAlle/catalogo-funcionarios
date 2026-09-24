@@ -252,6 +252,53 @@ export function montarLevasDeUpsert({ sheetEmployees, cpfsInDbSet, syncCredit })
   return { comCadastroApenas, comSaldoTambem };
 }
 
+/**
+ * DIREITO QUE CAI NO MEIO DO CICLO LEVA O SALDO JUNTO (24/09/2026).
+ *
+ * A rodada de cadastro grava o direito novo mas, de propósito, não encosta no
+ * saldo. Quando a planilha BAIXA o direito de alguém no meio do ciclo, o saldo
+ * carregado na recarga continuava valendo até o dia 27: o RAFAEL PRADO ficou
+ * com R$ 940 de saldo e R$ 300 de direito por quase um mês.
+ *
+ * Devolve só quem teve o direito REDUZIDO, e só na leva de cadastro (na
+ * recarga e no funcionário novo o saldo já vai igual ao direito). Quem aplica
+ * é `gm_reduz_direito_e_saldo`, que desconta a diferença do saldo sem deixar
+ * negativo, numa operação só. Aumento de direito não entra: fica para a
+ * recarga, como sempre foi.
+ *
+ * `atuaisPorCpf`: cpf normalizado -> { cpf (como está no banco), direito }.
+ */
+export function calcularReducoesDeDireito({ comCadastroApenas, atuaisPorCpf }) {
+  const reducoes = [];
+  for (const e of comCadastroApenas) {
+    const atual = atuaisPorCpf.get(e.cpf);
+    const novo = e.credito_direito_cents;
+    if (!atual || !Number.isInteger(novo) || novo < 0) continue;
+    if (!Number.isInteger(atual.direito) || atual.direito <= novo) continue;
+    reducoes.push({
+      cpf: atual.cpf,
+      full_name: e.full_name,
+      direitoAtual: atual.direito,
+      novoDireito: novo,
+    });
+  }
+  return reducoes;
+}
+
+/**
+ * Trava contra planilha quebrada. Se a coluna do crédito sumir ou vier vazia,
+ * todo mundo leria 0 e a redução zeraria o saldo de todos de uma vez. Redução
+ * em massa não acontece numa planilha real preenchida, então é tratada como
+ * sinal de problema. Escape: SYNC_REDUCAO_EM_MASSA=1.
+ */
+function formatCents(cents) {
+  return (Number(cents ?? 0) / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+export function reducaoPareceEmMassa(reducoes, totalNaPlanilha) {
+  return reducoes.length > Math.max(10, Math.ceil(totalNaPlanilha * 0.2));
+}
+
 export function inicioDoCicloAtual(agora = new Date()) {
   const partes = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Sao_Paulo",
@@ -423,7 +470,7 @@ async function syncEmployees() {
     console.log("🔎 Buscando funcionários atuais no Supabase...");
     const { data: dbEmployees, error: dbError } = await supabase
       .from("employees")
-      .select("id, cpf");
+      .select("id, cpf, credito_direito_cents");
 
     if (dbError) {
       failSync("❌ Erro ao buscar employees no Supabase:", dbError);
@@ -434,6 +481,7 @@ async function syncEmployees() {
         id: e.id,
         cpf_raw: e.cpf,
         cpf_normalized: normalizeCpf(e.cpf),
+        direito: e.credito_direito_cents,
       }))
       .filter((e) => e.cpf_normalized);
 
@@ -455,7 +503,7 @@ async function syncEmployees() {
     console.log(
       syncCredit
         ? "📅 Hoje é rodada MENSAL: vai recarregar o SALDO de todos (saldo := direito)."
-        : "🗓️ Rodada DIÁRIA: cadastro + direito; o SALDO só é tocado para funcionários NOVOS."
+        : "🗓️ Rodada DIÁRIA: cadastro + direito; o SALDO só é tocado para funcionários NOVOS ou com direito REDUZIDO."
     );
 
     // Trava de segurança pra rodada MENSAL: ela sobrescreve o SALDO
@@ -509,6 +557,50 @@ async function syncEmployees() {
       cpfsInDbSet,
       syncCredit,
     });
+
+    // Direito reduzido no meio do ciclo: desconta a diferença do saldo ANTES do
+    // upsert. A função grava o direito novo junto, então o upsert em seguida
+    // reescreve o mesmo valor, e uma rodada repetida não desconta duas vezes.
+    // Ver calcularReducoesDeDireito.
+    const atuaisPorCpf = new Map(
+      dbEmployeesNormalized.map((e) => [e.cpf_normalized, { cpf: e.cpf_raw, direito: e.direito }])
+    );
+    const reducoes = calcularReducoesDeDireito({ comCadastroApenas, atuaisPorCpf });
+    const saldosReduzidos = [];
+
+    if (reducoes.length > 0 && reducaoPareceEmMassa(reducoes, sheetEmployees.length) && process.env.SYNC_REDUCAO_EM_MASSA !== "1") {
+      console.error(
+        `🛑 ${reducoes.length} funcionários teriam o direito REDUZIDO de uma vez. Isso parece planilha quebrada ` +
+          "(coluna de crédito sumida ou vazia), não decisão do RH. Nenhum saldo foi reduzido nesta rodada. " +
+          "Se a redução for de verdade, rode com SYNC_REDUCAO_EM_MASSA=1."
+      );
+    } else {
+      for (const r of reducoes) {
+        const { data, error } = await supabase.rpc("gm_reduz_direito_e_saldo", {
+          p_cpf: r.cpf,
+          p_novo_direito_cents: r.novoDireito,
+        });
+        if (error) {
+          // Segue a rodada: o upsert grava o direito novo e o vigia aponta
+          // "saldo maior que direito" para alguém conferir.
+          console.error(`❌ Falha ao reduzir o saldo de ${r.full_name}:`, error.message);
+          continue;
+        }
+        const linha = Array.isArray(data) ? data[0] : data;
+        if (!linha) continue;
+        saldosReduzidos.push({
+          nome: r.full_name,
+          direitoDe: r.direitoAtual,
+          direitoPara: r.novoDireito,
+          saldoDe: linha.saldo_antes,
+          saldoPara: linha.saldo_depois,
+        });
+        console.log(
+          `📉 ${r.full_name}: direito ${formatCents(r.direitoAtual)} → ${formatCents(r.novoDireito)}, ` +
+            `saldo ${formatCents(linha.saldo_antes)} → ${formatCents(linha.saldo_depois)}.`
+        );
+      }
+    }
 
     console.log(
       `⬆️ Fazendo upsert dos funcionários da planilha... ` +
@@ -600,6 +692,9 @@ async function syncEmployees() {
           total: sheetEmployees.length,
           removidos: cpfsToDelete.length,
           creditoSincronizado: syncCredit,
+          // Rastro de dinheiro: sem isto, uma redução de saldo não deixaria
+          // registro nenhum fora do log do pm2.
+          ...(saldosReduzidos.length > 0 ? { saldosReduzidos } : {}),
         }
       );
     }
