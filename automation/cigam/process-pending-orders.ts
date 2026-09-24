@@ -108,6 +108,14 @@ export type ProcessResult = {
  * ⚠️ Não copiar esta tolerância para o PDV: lá a série é CF1/NFE e o envio ao
  * fisco é justamente o objetivo, então o mesmo erro é uma falha de verdade.
  */
+/**
+ * Erro de autenticação no CIGAM: o portal não devolveu token, ou a sessão caiu
+ * e o relogin falhou. Nesses casos a chamada é recusada antes de gravar nada.
+ */
+export function ehFalhaDeLogin(mensagem: string | undefined): boolean {
+  return /login no portal falhou|CGPortal_Token|CSRF n[ãa]o encontrado|n[ãa]o autenticado|login no cigam falhou/i.test(mensagem ?? "");
+}
+
 export function efetivacaoConcluiu(erro: string | undefined): boolean {
   return /efetiva[çc][ãa]o\s+conclu[íi]da/i.test(erro ?? "");
 }
@@ -270,7 +278,25 @@ export async function processPendingOrders(options: {
   const cigam = new CigamClient();
   const results: ProcessResult[] = [];
 
+  // Login ANTES de encostar em qualquer pedido. Antes o login acontecia dentro
+  // do primeiro pedido, e uma falha dele (portal fora, senha, instabilidade)
+  // virava ERROR permanente num pedido que nunca chegou ao CIGAM: foi o que
+  // prendeu GM-20260902-9979 e GM-20260902-7175 por três semanas. Falhando
+  // aqui, ninguém é marcado e a próxima varredura (2 min) tenta de novo; se
+  // persistir, o vigia grita pela fila parada.
+  if (!dryRun) {
+    try {
+      await cigam.autenticar();
+    } catch (err: any) {
+      throw new Error(
+        `Login no CIGAM falhou; ${rows.length} pedido(s) continuam na fila: ${String(err?.message ?? err).slice(0, 300)}`
+      );
+    }
+  }
+
   for (const order of rows) {
+    // Número que o CIGAM devolveu NESTA tentativa (ver onCreated abaixo).
+    let numeroCriadoAgora: string | null = null;
     try {
       const itens = buildItens(order);
       const pedido = {
@@ -317,6 +343,7 @@ export async function processPendingOrders(options: {
         // Persiste o número do CIGAM ANTES de lançar os itens: se cair no meio, a
         // próxima varredura enxerga o erp_external_id e não cria pedido duplicado.
         async (id) => {
+          numeroCriadoAgora = id;
           await supabase.from("orders").update({ erp_external_id: id }).eq("id", order.id);
         }
       );
@@ -381,6 +408,21 @@ export async function processPendingOrders(options: {
       });
     } catch (err: any) {
       const message = String(err?.message ?? err).slice(0, 500);
+
+      // Falha de login antes de o pedido ganhar número: nada foi gravado no
+      // CIGAM (a chamada foi recusada por falta de sessão), então é seguro
+      // deixar em PENDING para a próxima varredura, em vez de prender em ERROR.
+      // Timeout NÃO entra aqui: nele o CIGAM pode ter criado o pedido sem nos
+      // devolver o número, e tentar de novo duplicaria.
+      if (!dryRun && !numeroCriadoAgora && !order.erp_external_id && ehFalhaDeLogin(message)) {
+        results.push({
+          orderId: order.id,
+          orderNumber: order.order_number,
+          status: "ERROR",
+          error: `${message} (continua na fila, nova tentativa automática)`,
+        });
+        continue;
+      }
 
       if (!dryRun) {
         await supabase

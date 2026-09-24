@@ -7,6 +7,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
 import { processPendingOrders, isEligibleForCigamEntry } from "./cigam/process-pending-orders";
+import { concluirPedidosComNumero } from "./cigam/conclui-pedido-existente";
 import { syncEstoque } from "./cigam/sync-estoque";
 import {
   gerarPdfCanhoteira,
@@ -1279,19 +1280,47 @@ async function runCigamAutoSync() {
   if (cigamAutoSyncRunning) return; // evita sobreposição de execuções
   cigamAutoSyncRunning = true;
   try {
-    const results = await processPendingOrders({ supabase, limit: 50, dryRun: false });
-    if (results.length > 0) {
-      const done = results.filter((r) => r.status === "DONE").length;
-      const errors = results.filter((r) => r.status === "ERROR");
-      console.log(`🧾 CIGAM auto-sync: ${done} enviado(s), ${errors.length} com erro.`);
-      for (const e of errors) console.log(`   ⚠️ ${e.orderNumber}: ${e.error}`);
+    try {
+      const results = await processPendingOrders({ supabase, limit: 50, dryRun: false });
+      if (results.length > 0) {
+        const done = results.filter((r) => r.status === "DONE").length;
+        const errors = results.filter((r) => r.status === "ERROR");
+        console.log(`🧾 CIGAM auto-sync: ${done} enviado(s), ${errors.length} com erro.`);
+        for (const e of errors) console.log(`   ⚠️ ${e.orderNumber}: ${e.error}`);
+      }
+    } catch (err: any) {
+      console.error("🧾 CIGAM auto-sync falhou:", err?.message ?? err);
     }
-  } catch (err: any) {
-    console.error("🧾 CIGAM auto-sync falhou:", err?.message ?? err);
+
+    // Pedido que o CIGAM já tem inteiro mas ficou em ERROR aqui (timeout do
+    // nosso lado, ver conclui-pedido-existente.ts). Roda depois da varredura,
+    // sob a mesma trava, para as duas nunca disputarem a sessão do SIST.FUNC.
+    // A cada 15 min basta: é conserto de retaguarda, não caminho normal.
+    if (Date.now() - ultimaConclusaoDePedidosComNumero >= CONCLUSAO_PEDIDOS_COM_NUMERO_MS) {
+      ultimaConclusaoDePedidosComNumero = Date.now();
+      try {
+        const concluidos = await concluirPedidosComNumero({ supabase, exec: true });
+        if (concluidos.length > 0) {
+          const n = (s: string) => concluidos.filter((r) => r.status === s).length;
+          console.log(
+            `🧾 CIGAM conclusão automática: ${n("DONE")} concluído(s), ${n("PULADO")} pulado(s), ${n("FALHOU")} com falha.`
+          );
+          for (const r of concluidos.filter((x) => x.status !== "DONE")) {
+            console.log(`   ⚠️ ${r.orderNumber} (CIGAM ${r.cigamCode}): ${r.motivo}`);
+          }
+        }
+      } catch (err: any) {
+        console.error("🧾 CIGAM conclusão automática falhou:", err?.message ?? err);
+      }
+    }
   } finally {
     cigamAutoSyncRunning = false;
   }
 }
+
+const CONCLUSAO_PEDIDOS_COM_NUMERO_MS = 15 * 60_000;
+// Zero: a primeira varredura depois de subir já confere.
+let ultimaConclusaoDePedidosComNumero = 0;
 
 /**
  * O LOTE QUE NINGUÉM FECHOU — a correção de raiz de 02/09/2026.
