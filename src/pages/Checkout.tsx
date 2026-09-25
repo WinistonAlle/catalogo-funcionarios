@@ -135,7 +135,10 @@ const Checkout: React.FC = () => {
     const readEmployee = () => {
       const e = safeGetEmployee();
       if (!alive) return;
-      if (e) setEmployee(e);
+      // Só troca o objeto se o conteúdo mudou. Um objeto novo com os mesmos
+      // dados recria o loadWallet e dispara outra carga de saldo (ver o
+      // comentário do onAuthStateChange abaixo).
+      if (e) setEmployee((prev: any) => (JSON.stringify(prev) === JSON.stringify(e) ? prev : e));
       // se não tiver nada, mantém o que já tinha (não derruba pra {})
     };
 
@@ -148,7 +151,14 @@ const Checkout: React.FC = () => {
     };
     window.addEventListener("storage", onStorage);
 
-    const { data: sub } = supabase.auth.onAuthStateChange(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
+      // Renovação de token não muda quem está logado, então não relê nada.
+      // Celular com relógio adiantado (1h ou mais) acha que todo token novo já
+      // venceu e renova a CADA consulta. Reagir a TOKEN_REFRESHED fechava o
+      // laço: renova → relê employee → nova carga de saldo → renova de novo, e
+      // a tela ficava em "Carregando saldo…" para sempre (25/09/2026: um
+      // iPhone fez 2.600 renovações em 3h assim).
+      if (event === "TOKEN_REFRESHED") return;
       // auth mudou: tenta re-ler o employee_session (se sua app atualiza ele no login)
       readEmployee();
     });
@@ -172,6 +182,12 @@ const Checkout: React.FC = () => {
   // 🔒 evita corridas: resposta antiga não pode sobrescrever estado novo
   const loadIdRef = useRef(0);
 
+  // O loadWallet depende destes dois textos, não do objeto employee: trocar
+  // o objeto sem mudar quem é não pode disparar outra carga de saldo.
+  const sessionCpf = (employee?.cpf ?? "").toString().trim();
+  const sessionEmployeeId: string | null =
+    employee?.user_id || employee?.id || employee?.employee_id || null;
+
   const loadWallet = useCallback(async () => {
     const loadId = ++loadIdRef.current;
 
@@ -180,9 +196,8 @@ const Checkout: React.FC = () => {
     setWalletError(null);
 
     try {
-      const employeeCpf = (employee?.cpf ?? "").toString().trim();
-      const employeeIdFromSession =
-        employee?.user_id || employee?.id || employee?.employee_id || null;
+      const employeeCpf = sessionCpf;
+      const employeeIdFromSession = sessionEmployeeId;
 
       // Se ainda não tem cpf, não “zera”; apenas sinaliza e espera
       if (!employeeCpf) {
@@ -238,7 +253,7 @@ const Checkout: React.FC = () => {
     } finally {
       if (loadId === loadIdRef.current) setWalletLoading(false);
     }
-  }, [employee, monthKey]);
+  }, [sessionCpf, sessionEmployeeId, monthKey]);
 
   // carrega quando employee mudar (agora ele é reativo)
   useEffect(() => {
