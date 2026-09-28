@@ -601,8 +601,15 @@ export class CigamClient {
    * - `CodigoTabela` vem preenchido com espaços à direita numa largura fixa que
    *   não dá pra reproduzir com segurança num `eq` do OData, então o filtro por
    *   tabela é feito aqui, no cliente, e não na query.
+   *
+   * Se o mesmo material aparecer mais de uma vez na tabela com preços
+   * diferentes, o Map guarda o último e o código vai para `opts.conflitos` —
+   * quem grava preço (sync-precos.ts) não deve escolher um dos dois no escuro.
    */
-  async buscarPrecosTabela(codigoTabela: string): Promise<Map<string, number>> {
+  async buscarPrecosTabela(
+    codigoTabela: string,
+    opts: { conflitos?: Set<string> } = {}
+  ): Promise<Map<string, number>> {
     const PAGE = 500;
     const alvo = codigoTabela.trim();
     const precos = new Map<string, number>();
@@ -631,7 +638,10 @@ export class CigamClient {
         if (String(linha?.CodigoTabela ?? "").trim() !== alvo) continue;
         const codigo = String(linha?.Elemento ?? "").trim();
         const preco = Number(linha?.PrecoUnitario);
-        if (codigo && Number.isFinite(preco)) precos.set(codigo, preco);
+        if (!codigo || !Number.isFinite(preco)) continue;
+        const anterior = precos.get(codigo);
+        if (anterior !== undefined && anterior !== preco) opts.conflitos?.add(codigo);
+        precos.set(codigo, preco);
       }
 
       if (linhas.length < PAGE) break;

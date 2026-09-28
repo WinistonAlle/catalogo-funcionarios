@@ -9,6 +9,7 @@ import { createClient } from "@supabase/supabase-js";
 import { processPendingOrders, isEligibleForCigamEntry } from "./cigam/process-pending-orders";
 import { concluirPedidosComNumero } from "./cigam/conclui-pedido-existente";
 import { syncEstoque } from "./cigam/sync-estoque";
+import { syncPrecos } from "./cigam/sync-precos";
 import {
   gerarPdfCanhoteira,
   gerarPdfPortaria,
@@ -1204,6 +1205,33 @@ app.get("/estoque", async (req, res) => {
 });
 
 /**
+ * Sync periódico de preço (tabela 005 do CIGAM → products.employee_price).
+ * Desligado por padrão; liga com PRICE_SYNC_INTERVAL_MS > 0. É uma consulta
+ * paginada só (não uma por material como o estoque), então é barato, mas preço
+ * muda pouco: 1h basta. Toda mudança sai no log; o que o sync se recusa a gravar
+ * sozinho (salto grande, preço zerado, duplicado) sai com 🚨 — ver sync-precos.ts.
+ */
+const PRICE_SYNC_INTERVAL_MS = Number(process.env.PRICE_SYNC_INTERVAL_MS ?? 0);
+let priceSyncRunning = false;
+
+async function runPriceSync() {
+  if (priceSyncRunning) return;
+  priceSyncRunning = true;
+  try {
+    const r = await syncPrecos({ supabase, dryRun: false });
+    console.log(
+      `💲 Preço sync: ${r.gravados} alterado(s), ${r.iguais} iguais, ${r.semPreco.length} sem preço na tabela.`
+    );
+    for (const m of r.mudancas) console.log(`   💲 ${m}`);
+    for (const a of r.alertas) console.error(`   🚨 Preço não aplicado: ${a}`);
+  } catch (err: any) {
+    console.error("💲 Preço sync falhou:", err?.message ?? err);
+  } finally {
+    priceSyncRunning = false;
+  }
+}
+
+/**
  * Sync periódico de estoque CIGAM → Supabase. Desligado por padrão; liga com
  * STOCK_SYNC_INTERVAL_MS > 0 (ex.: 300000 = 5 min).
  */
@@ -2351,6 +2379,15 @@ app.listen(PORT, () => {
     void runStockSync(); // primeira carga logo ao subir
   } else {
     console.log("📦 Estoque sync desligado (defina STOCK_SYNC_INTERVAL_MS para ligar).");
+  }
+
+  if (PRICE_SYNC_INTERVAL_MS > 0) {
+    const minutos = Math.round(PRICE_SYNC_INTERVAL_MS / 60000);
+    console.log(`💲 Preço sync LIGADO — alinhando com a tabela 005 a cada ${minutos} min.`);
+    setInterval(runPriceSync, PRICE_SYNC_INTERVAL_MS);
+    void runPriceSync();
+  } else {
+    console.log("💲 Preço sync desligado (defina PRICE_SYNC_INTERVAL_MS para ligar).");
   }
 
   if (HEALTH_CHECK_INTERVAL_MS > 0) {

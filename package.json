@@ -16,6 +16,7 @@
     "cigam:check": "tsx automation/cigam/check.ts",
     "cigam:pending": "tsx automation/cigam/process-pending-orders.ts",
     "cigam:estoque": "tsx automation/cigam/sync-estoque.ts",
+    "cigam:precos": "tsx automation/cigam/sync-precos.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

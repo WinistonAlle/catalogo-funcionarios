@@ -1874,9 +1874,29 @@ nem `$expand` funciona nele. O peso só existe dentro da descrição.
 `genericos/ge/PrecosTabela/Buscar`. Dos 172 produtos, **169 batem centavo a
 centavo** e nenhum ficou sem preço. As 3 divergências viraram as PARTES 2C e 2D.
 
-Como a tabela 005 se mostrou confiável, vale considerar um `sync-precos.ts` nos
-moldes do `sync-estoque.ts` para manter `employee_price` alinhado sozinho — o
-método do client que faltava já existe.
+Como a tabela 005 se mostrou confiável, virou o `sync-precos.ts` (28/09/2026).
+
+### Sync de preço (28/09/2026)
+
+`automation/cigam/sync-precos.ts` — `npm run cigam:precos` (simulação) /
+`PRICE_EXEC=1` (real). No webhook: `PRICE_SYNC_INTERVAL_MS` (off por padrão).
+Grava `employee_price` direto do `PrecoUnitario` da tabela 005, sem converter
+(os dois já são R$/unidade de medida). **Ligar o sync muda o que o funcionário
+paga** — o RPC do checkout lê `employee_price` do banco.
+
+Não grava sozinho, só grita com 🚨 no log: material sem preço na tabela (mantém
+o atual, nunca zera), preço <= 0, material duplicado na tabela com preços
+diferentes, e variação acima de 50% (`SALTO_MAXIMO`, pega o preço do pacote
+digitado no lugar do R$/kg). Tabela vazia é tratada como falha, não como "todo
+mundo sem preço".
+
+⚠️ Com o sync ligado, preço editado à mão no Admin em produto COM `cigam_code`
+é desfeito na rodada seguinte. Reajuste passa a ser no CIGAM.
+
+Primeira simulação (28/09): 183 produtos, 172 iguais, 4 diferentes (3 pastelões
+27,45 → 30,20; Alho c/ Pimenta Pote 200g 8,50 → 12,00), 5 alhos sem preço na
+005, e 2 alhos segurados pelo salto (8,50 → 25,00 e 8,50 → 297,50 — o de
+297,50 é erro de cadastro no CIGAM).
 
 ## Regra geral: o `/api/help` mente
 
