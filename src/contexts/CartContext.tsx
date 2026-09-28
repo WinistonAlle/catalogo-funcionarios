@@ -1,8 +1,11 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from "react";
 import { Product, CartItem } from "../types/products";
 import { FREE_SHIPPING_THRESHOLD } from "../data/shipping";
 import { MIN_PACKAGES, MIN_WEIGHT_KG } from "@/data/products";
 import { getLineSubtotal, getProductWeight } from "@/lib/pricing";
+import { aplicarPrecosAtuais, descreverMudancas, MudancaDePreco } from "@/lib/cartPrices";
+import { supabase } from "@/lib/supabase";
+import { toast } from "@/components/ui/sonner";
 
 interface CartContextType {
   cartItems: CartItem[];
@@ -24,6 +27,8 @@ interface CartContextType {
   addMultipleToCart: (products: { product: Product; quantity: number }[]) => void;
   animateCartIcon: number;
   showFreeShippingAnimation: boolean;
+  /** Troca preço/peso do carrinho pelos do banco e devolve o que mudou. */
+  refreshCartPrices: () => Promise<MudancaDePreco[]>;
 }
 
 const CartContext = createContext<CartContextType | undefined>(undefined);
@@ -256,6 +261,44 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
+  // O carrinho guarda o preço de quando o item entrou, e quem cobra é o banco
+  // (ver src/lib/cartPrices.ts). Falha de rede não bloqueia nada: o RPC cobra o
+  // preço certo de qualquer jeito, isto aqui só conserta o que a tela mostra.
+  const cartItemsRef = useRef(cartItems);
+  cartItemsRef.current = cartItems;
+
+  const refreshCartPrices = useCallback(async (): Promise<MudancaDePreco[]> => {
+    const ids = cartItemsRef.current.map((item) => item.product.id).filter(Boolean);
+    if (ids.length === 0) return [];
+    try {
+      const { data, error } = await supabase
+        .from("products")
+        .select("id, employee_price, weight")
+        .in("id", ids);
+      if (error || !data) return [];
+      const { mudancas } = aplicarPrecosAtuais(cartItemsRef.current, data);
+      if (mudancas.length > 0) {
+        setCartItems((prev) => aplicarPrecosAtuais(prev, data).itens);
+      }
+      return mudancas;
+    } catch {
+      return [];
+    }
+  }, []);
+
+  // Abrir o carrinho confere o preço: é ali que a pessoa olha o total.
+  useEffect(() => {
+    if (!isCartOpen) return;
+    refreshCartPrices().then((mudancas) => {
+      if (mudancas.length > 0) {
+        toast.info("Preço atualizado no carrinho", {
+          description: descreverMudancas(mudancas),
+          duration: 10000,
+        });
+      }
+    });
+  }, [isCartOpen, refreshCartPrices]);
+
   const toggleCart = () => setIsCartOpen((prev) => !prev);
   const openCart = () => setIsCartOpen(true);
   const closeCart = () => setIsCartOpen(false);
@@ -295,6 +338,7 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({
     addMultipleToCart,
     animateCartIcon,
     showFreeShippingAnimation,
+    refreshCartPrices,
   };
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;

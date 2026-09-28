@@ -63,6 +63,8 @@ type OrderItem = {
 
 type RawOrder = {
   id: string;
+  order_number?: string | null;
+  erp_external_id?: string | null;
   employee_cpf: string | null;
   employee_name?: string | null;
   total_items: number | null;
@@ -113,11 +115,18 @@ const shortenLabel = (name: string, max = 16) => {
   return name.length > max ? name.slice(0, max) + "…" : name;
 };
 
+// O número que todo mundo usa é o do CIGAM; o GM-... só enquanto o pedido
+// ainda não chegou lá. O `id` é UUID interno e não serve pra ninguém procurar.
+const numeroDoPedido = (o: { id: string; order_number?: string | null; erp_external_id?: string | null }) =>
+  o.erp_external_id || o.order_number || o.id;
+
 const EMPLOYEE_COLORS = ["#ef4444", "#f97316", "#22c55e", "#3b82f6", "#a855f7"];
 const PRODUCT_COLORS = ["#0ea5e9", "#22c55e", "#facc15", "#fb923c", "#f97373"];
 
 type SimpleOrder = {
   id: string;
+  order_number?: string | null;
+  erp_external_id?: string | null;
   created_at: string;
   total_items: number | null;
   total_value: number | null;
@@ -297,6 +306,8 @@ const ReportsPage: React.FC = () => {
           .select(
             `
             id,
+            order_number,
+            erp_external_id,
             employee_cpf,
             employee_name,
             total_items,
@@ -612,7 +623,7 @@ const ReportsPage: React.FC = () => {
     if (!ordersRaw || ordersRaw.length === 0) return;
 
     const header = [
-      "id",
+      "pedido",
       "data",
       "hora",
       "funcionario_nome",
@@ -631,7 +642,7 @@ const ReportsPage: React.FC = () => {
       });
 
       return [
-        o.id,
+        numeroDoPedido(o),
         dataStr,
         horaStr,
         o.employee_name ?? "",
@@ -785,7 +796,7 @@ const ReportsPage: React.FC = () => {
     try {
       let query = supabase
         .from("orders")
-        .select("id, total_items, total_value, status, created_at")
+        .select("id, order_number, erp_external_id, total_items, total_value, status, created_at")
         .gte("created_at", currentRange.start)
         .lt("created_at", currentRange.end)
         .order("created_at", { ascending: false });
@@ -1653,7 +1664,7 @@ const ReportsPage: React.FC = () => {
                         <td className="px-3 py-2">{dataStr}</td>
                         <td className="px-3 py-2">{horaStr}</td>
                         <td className="px-3 py-2 font-mono text-[10px] text-gray-700">
-                          {o.id}
+                          {numeroDoPedido(o)}
                         </td>
                         <td className="px-3 py-2 text-right">
                           {o.total_items ?? 0}

@@ -8,6 +8,7 @@ import { createOrder } from "@/services/orders";
 import { supabase } from "@/lib/supabase";
 import { getLineSubtotal, getUnitPrice } from "@/lib/pricing";
 import { checkStockLive } from "@/lib/stock";
+import { descreverMudancas } from "@/lib/cartPrices";
 import { getSaoPauloPayCycleKey } from "@/lib/payCycle";
 import { deriveWallet, WALLET_VIEW_COLUMNS } from "@/lib/wallet";
 
@@ -63,7 +64,7 @@ function isWeekendInSaoPaulo(now = new Date()) {
 type PurchaseFlowNotice = "insufficient_balance" | "physical_store_only";
 
 const Checkout: React.FC = () => {
-  const { cartItems, cartTotal, clearCart } = useCart();
+  const { cartItems, cartTotal, clearCart, refreshCartPrices } = useCart();
   const navigate = useNavigate();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [outOfStockIds, setOutOfStockIds] = useState<Set<string>>(new Set());
@@ -115,6 +116,22 @@ const Checkout: React.FC = () => {
     if (!canPayWithWallet) return availableCents;
     return Math.max(availableCents - totalCents, 0);
   }, [canPayWithWallet, availableCents, totalCents]);
+
+  // Carrinho de dias atrás chega aqui com o preço de dias atrás. Confere uma
+  // vez ao abrir a revisão, pra o total da tela ser o que vai ser cobrado.
+  const conferiuPrecosRef = useRef(false);
+  useEffect(() => {
+    if (conferiuPrecosRef.current || cartItems.length === 0) return;
+    conferiuPrecosRef.current = true;
+    refreshCartPrices().then((mudancas) => {
+      if (mudancas.length > 0) {
+        toast.warning("Alguns preços mudaram desde que você montou o carrinho", {
+          description: `${descreverMudancas(mudancas)}. O total já está atualizado.`,
+          duration: 15000,
+        });
+      }
+    });
+  }, [cartItems.length, refreshCartPrices]);
 
   useEffect(() => {
     if (isLateOrder) {
@@ -318,6 +335,17 @@ const Checkout: React.FC = () => {
       return;
     }
 
+    // Última conferência de preço antes de cobrar. Se mudou com a tela aberta,
+    // não fecha: a pessoa confirmaria um total que não é o cobrado.
+    const mudancasDePreco = await refreshCartPrices();
+    if (mudancasDePreco.length > 0) {
+      toast.warning("O preço mudou agora há pouco", {
+        description: `${descreverMudancas(mudancasDePreco)}. Confira o novo total e confirme de novo.`,
+        duration: 15000,
+      });
+      return;
+    }
+
     // Reconsulta de estoque ao vivo: bloqueia se algum item ficou sem estoque.
     // Fail-open: se o CIGAM não responder, checkStockLive volta vazio e não bloqueia.
     setCheckingStock(true);
@@ -393,8 +421,10 @@ const Checkout: React.FC = () => {
       clearCart();
 
       const descParts: string[] = [];
-      descParts.push(`Pago com saldo: ${formatBRLFromCents(totalCents)}`);
-      descParts.push(`Saldo após: ${formatBRLFromCents(afterOrderAvailableCents)}`);
+      // O valor da mensagem é o que o banco descontou, não a conta da tela.
+      const cobradoCents = Number(row?.total_cents ?? totalCents) || totalCents;
+      descParts.push(`Pago com saldo: ${formatBRLFromCents(cobradoCents)}`);
+      descParts.push(`Saldo após: ${formatBRLFromCents(Math.max(availableCents - cobradoCents, 0))}`);
 
       toast.success("Pedido confirmado!", {
         description: `Enviado para separação. ${descParts.join(
