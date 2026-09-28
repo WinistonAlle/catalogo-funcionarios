@@ -1893,6 +1893,10 @@ mundo sem preço".
 ⚠️ Com o sync ligado, preço editado à mão no Admin em produto COM `cigam_code`
 é desfeito na rodada seguinte. Reajuste passa a ser no CIGAM.
 
+**LIGADO em 28/09/2026** (`PRICE_SYNC_INTERVAL_MS=3600000` no `.env`, backup
+`.env.bak-20260928-preco`). A primeira rodada real aplicou os 4 preços abaixo;
+os 2 alhos segurados continuam gritando a cada hora até o CIGAM ser corrigido.
+
 Primeira simulação (28/09): 183 produtos, 172 iguais, 4 diferentes (3 pastelões
 27,45 → 30,20; Alho c/ Pimenta Pote 200g 8,50 → 12,00), 5 alhos sem preço na
 005, e 2 alhos segurados pelo salto (8,50 → 25,00 e 8,50 → 297,50 — o de
