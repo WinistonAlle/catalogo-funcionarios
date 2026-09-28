@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import styled, { keyframes } from "styled-components";
 import { Bg, Card } from "../components/ui/app-surface";
 import logo from "../images/logop.jpg";
@@ -404,8 +404,22 @@ const Login: React.FC = () => {
     };
   }, []);
 
+  // O botão desabilitado espera o React repintar; toque duplo ou "Ir" do
+  // teclado + toque chegam antes disso e mandavam o formulário duas vezes.
+  const enviandoRef = useRef(false);
+
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (enviandoRef.current) return;
+    enviandoRef.current = true;
+    try {
+      await enviar();
+    } finally {
+      enviandoRef.current = false;
+    }
+  }
+
+  async function enviar() {
     setErr("");
 
     // Etapa final: a conta precisa definir uma senha própria antes de seguir.

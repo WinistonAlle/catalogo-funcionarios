@@ -89,7 +89,9 @@ export async function isFirstAccessPending(rawCpf: string): Promise<boolean> {
 /** Cria a senha do primeiro acesso e já devolve a sessão logada. */
 export async function createFirstPassword(
   rawCpf: string,
-  newPassword: string
+  newPassword: string,
+  // Injetável só para teste; em produção é sempre o login normal.
+  login: (cpf: string, senha: string) => Promise<LoginResult> = checkCpfLogin
 ): Promise<LoginResult> {
   const cpf = normalizeCpf(rawCpf);
 
@@ -105,12 +107,26 @@ export async function createFirstPassword(
 
   const body = await response.json().catch(() => ({}));
 
+  // 409 = a conta já tem senha. Pode ser OUTRA pessoa, mas o caso real
+  // (JOAO VITOR, 28/09/2026) foi o segundo envio da mesma tela: o primeiro
+  // salvou a senha às 18:17:12 e o segundo voltou com "Este acesso já tem
+  // senha", em vermelho, para quem tinha acabado de conseguir. Se a senha
+  // digitada abre a conta, ela é a senha que vale: entra. Se não abre, a
+  // mensagem é a de sempre, e a pessoa não descobre nada que não soubesse.
+  if (response.status === 409) {
+    try {
+      return await login(cpf, newPassword);
+    } catch {
+      throw new Error(body?.error || "Este acesso já tem senha. Entre com a sua senha.");
+    }
+  }
+
   if (!response.ok) {
     throw new Error(body?.error || "Não foi possível criar a senha.");
   }
 
   // A senha acabou de existir: entra por ela, pelo caminho normal.
-  return checkCpfLogin(cpf, newPassword);
+  return login(cpf, newPassword);
 }
 
 export async function checkCpfLogin(
