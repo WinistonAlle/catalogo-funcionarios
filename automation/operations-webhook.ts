@@ -2084,7 +2084,13 @@ async function runHealthCheck() {
         .eq("action", "sync_employees")
         .eq("status", "success")
         .gte("created_at", inicioDoDia)
-        .limit(50);
+        // Mesma lição da trava do sync (jaRecarregouNesteCiclo): 24h de
+        // cadastro de 20 em 20 min passam de 50 linhas, e sem filtrar a
+        // recarga no banco ela ficava de fora. Em 27/09/2026 o vigia gritou
+        // "recarga NÃO rodou" das 19:59 às 23:59 com a recarga feita às 03:00.
+        .eq("metadata->>creditoSincronizado", "true")
+        .order("created_at", { ascending: false })
+        .limit(1);
 
       const recarregou = (data ?? []).some(
         (linha: any) => linha?.metadata?.creditoSincronizado === true

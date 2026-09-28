@@ -353,7 +353,15 @@ async function jaRecarregouNesteCiclo(agora = new Date()) {
     .eq("action", "sync_employees")
     .eq("status", "success")
     .gte("created_at", inicio)
-    .limit(200);
+    // Filtra a recarga NO BANCO. Antes vinham 200 linhas quaisquer do ciclo e a
+    // procura era feita aqui; como o cadastro roda de 20 em 20 min (72 linhas
+    // por dia), do 3º dia do ciclo em diante a linha da recarga do dia 27
+    // podia ficar de fora, e o botão "Restaurar saldo" (aberto até o dia 2)
+    // recarregaria todo mundo de novo. Visto em 28/09/2026: no dia 27 a linha
+    // da recarga já era a 94ª da janela.
+    .eq("metadata->>creditoSincronizado", "true")
+    .order("created_at", { ascending: false })
+    .limit(1);
 
   if (error) {
     // Sem conseguir ler o log não dá pra afirmar que NÃO recarregou. Entre
