@@ -11,7 +11,6 @@ import {
   buildControleDeRetiradaPdf,
   buildOrderSheetPdf,
   buildOrderSheetsPdf,
-  VIAS_PADRAO,
   type OrderSheetData,
 } from "./pdfBuilder";
 import { printOrderSheet } from "./printClient";
@@ -270,10 +269,10 @@ export async function gerarPdfPedidoUnico(params: {
     );
   }
 
-  // Duas vias como na leva do dia: a avulsa é o caminho de recuperação
-  // (folha atolou, pedido entrou depois), e nesse caso o RH e a portaria
-  // precisam da cópia deles tanto quanto na impressão normal.
-  const pdf = await buildOrderSheetPdf(paraOrderSheetData(pedido), VIAS_PADRAO);
+  // Via única, como na leva do dia (02/10/2026: faturamento e portaria
+  // pediram o fim da segunda via). A avulsa é o caminho de recuperação
+  // (folha atolou, pedido entrou depois) e sai igual à impressão normal.
+  const pdf = await buildOrderSheetPdf(paraOrderSheetData(pedido));
   const jaImpresso = !!pedido.printed_at;
 
   if (!jaImpresso) {
@@ -337,7 +336,10 @@ export async function gerarPdfPortaria(params: {
   // assina na entrega. Só sai aqui, no PDF da leva: num pedido avulso
   // (gerarPdfPedidoUnico) uma folha de controle de UMA linha não controla
   // nada — lá a assinatura do rodapé da própria folha já resolve.
-  const pdf = await buildOrderSheetsPdf(pedidos.map(paraOrderSheetData), VIAS_PADRAO, {
+  //
+  // Uma folha por pedido, sem marca de via: até 02/10/2026 saíam duas (RH e
+  // portaria), e o faturamento e a portaria pediram para acabar com a segunda.
+  const pdf = await buildOrderSheetsPdf(pedidos.map(paraOrderSheetData), undefined, {
     controleDeRetirada: true,
   });
 

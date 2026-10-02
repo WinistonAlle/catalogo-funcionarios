@@ -181,17 +181,16 @@ function cellText(
 }
 
 /**
- * Quem fica com cada cópia da folha. O faturamento imprime as duas e
- * entrega: uma vai para o RH (que arquiva, mesmo tendo o pedido no sistema)
- * e a outra para a portaria (que separa a mercadoria e colhe a assinatura).
- * Era assim que funcionava antes deste sistema existir, e voltou a ser em
- * 24/08/2026 — o disparo automático direto na impressora da portaria saiu de
- * cena junto.
+ * A marca de quem fica com a cópia da folha, para quando sai mais de uma.
+ *
+ * De 24/08 a 02/10/2026 o faturamento imprimia duas vias de cada pedido:
+ * uma para o RH (que arquivava) e outra para a portaria (que separa a
+ * mercadoria e colhe a assinatura). Em 02/10/2026 o faturamento e a portaria
+ * pediram o fim da segunda via, e a impressão da tela passou a sair em folha
+ * única, sem marca. O mecanismo ficou: basta passar as vias de novo para
+ * buildOrderSheetPdf/buildOrderSheetsPdf se um dia a segunda cópia voltar.
  */
 export type Via = "RH" | "PORTARIA";
-
-/** As duas vias, na ordem em que saem do PDF. Ver buildOrderSheetsPdf. */
-export const VIAS_PADRAO: readonly Via[] = ["RH", "PORTARIA"];
 
 /**
  * Desenha uma folha de pedido a partir da página ATUAL de um doc já aberto —
@@ -460,10 +459,9 @@ function drawOrderSheet(doc: PDFKit.PDFDocument, pedido: OrderSheetData, via?: V
  * Uma folha A4 por pedido — separada de propósito, porque a câmara fria
  * grampeia cada uma antes de separar.
  *
- * `vias` decide quantas folhas saem e como cada uma é marcada: passar
- * VIAS_PADRAO dá as duas cópias (RH e portaria) do fluxo do faturamento,
- * e o padrão — uma folha sem marca de via — é o que serve para quem
- * imprime direto numa impressora só, sem ninguém para entregar a segunda.
+ * `vias` decide quantas folhas saem e como cada uma é marcada. O padrão —
+ * uma folha sem marca de via — é o que a tela usa desde 02/10/2026; passar
+ * ["RH", "PORTARIA"] devolve as duas cópias marcadas, como era antes.
  */
 export function buildOrderSheetPdf(
   pedido: OrderSheetData,
@@ -491,12 +489,12 @@ export function buildOrderSheetPdf(
  * está pendente, em vez de um PDF por pedido, e imprime como imprime
  * qualquer documento — sem precisar de IP de impressora nenhum.
  *
- * As vias saem em BLOCOS, não intercaladas: todos os pedidos marcados
- * "VIA RH" e, só depois, todos de novo marcados "VIA PORTARIA". Assim
- * uma impressão só devolve duas pilhas prontas — corta no meio, uma vai
- * inteira pro RH e a outra pra portaria. Intercalar (RH, portaria, RH,
- * portaria...) obrigaria a folhear o bolo inteiro separando folha a folha,
- * que é exatamente o trabalho manual que este formato existe pra evitar.
+ * Hoje a tela pede via única (o padrão). Quando alguém passa mais de uma
+ * via, elas saem em BLOCOS, não intercaladas: todos os pedidos da primeira
+ * e, só depois, todos de novo da segunda. Assim uma impressão só devolve
+ * as pilhas prontas — corta no meio e entrega. Intercalar (RH, portaria,
+ * RH, portaria...) obrigaria a folhear o bolo inteiro separando folha a
+ * folha.
  *
  * `opcoes.controleDeRetirada` acrescenta a canhoteira no fim de tudo — a
  * folha onde a portaria colhe a assinatura de quem retira. Ver
@@ -519,7 +517,7 @@ export function buildOrderSheetsPdf(
       drawOrderSheet(doc, pedido, via);
     });
 
-    // A canhoteira vai por ÚLTIMO, depois do bloco da portaria — ver
+    // A canhoteira vai por ÚLTIMO, depois das folhas de pedido — ver
     // drawControleDeRetirada. Sem pedido nenhum ela não sai: folha de
     // controle vazia é papel jogado fora.
     if (opcoes.controleDeRetirada && pedidos.length > 0) {

@@ -261,6 +261,21 @@ describe("gerarPdfPortaria: qual leva o pedido cai", () => {
     expect(r.pdf.length).toBeGreaterThan(0);
   });
 
+  /**
+   * Via única desde 02/10/2026 (pedido do faturamento e da portaria): uma
+   * folha por pedido e a canhoteira no fim. Antes eram duas por pedido.
+   */
+  it("sai UMA folha por pedido, mais a canhoteira", async () => {
+    const { supabase } = fakeSupabase([
+      pedidoDeMentira("id-1", "GM-20260825-0001"),
+      pedidoDeMentira("id-2", "GM-20260825-0002"),
+    ]);
+
+    const r = await gerarPdfPortaria({ supabase, now: new Date("2026-08-25T15:10:00-03:00") });
+
+    expect(contarPaginas(r.pdf)).toBe(3);
+  });
+
   it("só busca pedido ainda não impresso e não cancelado", async () => {
     const { supabase, chamadas } = fakeSupabase([]);
     await gerarPdfPortaria({ supabase, now: new Date("2026-08-25T15:10:00-03:00") });
@@ -446,6 +461,14 @@ describe("gerarPdfPedidoUnico: imprimir é entrar em separação", () => {
     };
     expect(payload.status).toBe("em_separacao");
     expect(Number.isNaN(Date.parse(payload.printed_at))).toBe(false);
+  });
+
+  it("a avulsa sai em uma folha só, sem segunda via", async () => {
+    const { supabase } = fakeSupabasePedidoUnico(pedidoAvulso());
+
+    const r = await gerarPdfPedidoUnico({ supabase, orderId: "id-avulso" });
+
+    expect(contarPaginas(r.pdf)).toBe(1);
   });
 
   it("reimpressão não recarimba: pedido já impresso sai em papel sem UPDATE nenhum", async () => {
@@ -745,3 +768,7 @@ describe("canhoteira avulsa", () => {
     ).rejects.toThrow(/cancelados ou não constam como pagos/i);
   });
 });
+
+function contarPaginas(buffer: Buffer): number {
+  return (buffer.toString("latin1").match(/\/Type\s*\/Page[^s]/g) ?? []).length;
+}

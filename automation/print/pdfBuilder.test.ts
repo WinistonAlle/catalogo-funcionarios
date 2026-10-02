@@ -6,8 +6,12 @@ import {
   buildOrderSheetsPdf,
   linhasDoControle,
   sequenciaDeFolhas,
-  VIAS_PADRAO,
+  type Via,
 } from "./pdfBuilder";
+
+// As duas vias de antes de 02/10/2026. A tela não pede mais, mas o
+// mecanismo continua existindo e continua coberto aqui.
+const DUAS_VIAS: readonly Via[] = ["RH", "PORTARIA"];
 
 describe("buildOrderSheetPdf", () => {
   it("produz um PDF não vazio, com a assinatura %PDF", async () => {
@@ -68,7 +72,7 @@ describe("buildOrderSheetPdf", () => {
   });
 
   it("sai em duas folhas, uma por via, quando pedem as duas", async () => {
-    const buffer = await buildOrderSheetPdf(pedidoDeTeste("GM-1"), VIAS_PADRAO);
+    const buffer = await buildOrderSheetPdf(pedidoDeTeste("GM-1"), DUAS_VIAS);
     expect(contarPaginas(buffer)).toBe(2);
   });
 });
@@ -80,13 +84,13 @@ describe("buildOrderSheetsPdf", () => {
   });
 
   /**
-   * O que garante as duas PILHAS do faturamento: 3 pedidos × 2 vias = 6
-   * folhas, e não 3. Se alguém trocar o laço por um intercalado, a
-   * contagem continua 6 — por isso o teste seguinte, que olha a ORDEM.
+   * Com duas vias saem duas PILHAS: 3 pedidos × 2 vias = 6 folhas, e não
+   * 3. Se alguém trocar o laço por um intercalado, a contagem continua 6 —
+   * por isso o teste seguinte, que olha a ORDEM.
    */
   it("com as duas vias, dobra o número de folhas", async () => {
     const pedidos = [pedidoDeTeste("GM-1"), pedidoDeTeste("GM-2"), pedidoDeTeste("GM-3")];
-    const buffer = await buildOrderSheetsPdf(pedidos, VIAS_PADRAO);
+    const buffer = await buildOrderSheetsPdf(pedidos, DUAS_VIAS);
     expect(contarPaginas(buffer)).toBe(6);
   });
 
@@ -97,13 +101,13 @@ describe("buildOrderSheetsPdf", () => {
    */
   it("com controle de retirada, sai UMA folha a mais no fim", async () => {
     const pedidos = [pedidoDeTeste("GM-1"), pedidoDeTeste("GM-2"), pedidoDeTeste("GM-3")];
-    const buffer = await buildOrderSheetsPdf(pedidos, VIAS_PADRAO, { controleDeRetirada: true });
+    const buffer = await buildOrderSheetsPdf(pedidos, DUAS_VIAS, { controleDeRetirada: true });
     expect(contarPaginas(buffer)).toBe(7);
   });
 
   it("sem pedido nenhum, não gera folha de controle em branco", async () => {
-    const semControle = await buildOrderSheetsPdf([], VIAS_PADRAO);
-    const comControle = await buildOrderSheetsPdf([], VIAS_PADRAO, { controleDeRetirada: true });
+    const semControle = await buildOrderSheetsPdf([], DUAS_VIAS);
+    const comControle = await buildOrderSheetsPdf([], DUAS_VIAS, { controleDeRetirada: true });
     expect(contarPaginas(comControle)).toBe(contarPaginas(semControle));
   });
 
@@ -226,7 +230,7 @@ describe("sequenciaDeFolhas", () => {
   it("é em blocos por via — todos os pedidos do RH, depois todos da portaria", () => {
     const pedidos = [pedidoDeTeste("GM-1"), pedidoDeTeste("GM-2"), pedidoDeTeste("GM-3")];
 
-    const ordem = sequenciaDeFolhas(pedidos, VIAS_PADRAO).map(
+    const ordem = sequenciaDeFolhas(pedidos, DUAS_VIAS).map(
       ({ pedido, via }) => `${pedido.orderNumber}/${via}`
     );
 

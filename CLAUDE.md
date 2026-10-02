@@ -19,7 +19,8 @@ Os pedidos são lançados no ERP **CIGAM**.
 >    primeiro pedido real é o teste.
 > 2. **A impressão da portaria virou manual, por decisão de processo.** Ver a
 >    seção da lista de separação abaixo.
-> 3. **A folha sai em duas vias** (RH e portaria).
+> 3. **A folha sai em duas vias** (RH e portaria). *(Deixou de valer em
+>    02/10/2026: hoje é via única. Ver "Via única".)*
 >
 > Pendência que atravessa o dia: **6 das 7 contas admin/RH ainda não criaram
 > senha** — enquanto não criam, quem souber o CPF assume a conta. Ver
@@ -52,7 +53,8 @@ Os pedidos são lançados no ERP **CIGAM**.
 O passo a passo de deploy que ficava aqui saiu: foi executado, a feature entrou
 na `main` e rodou com o disparo automático ligado. Em **24/08/2026 o disparo
 automático foi desligado por decisão de processo** — não é bug nem regressão.
-Quem imprime agora é o **faturamento**, em duas vias, pelo botão da tela. A
+Quem imprime agora é o **faturamento**, pelo botão da tela (em via única desde
+02/10/2026). A
 explicação completa está em "Lista de separação impressa na portaria", mais
 abaixo neste arquivo.
 
@@ -1377,10 +1379,10 @@ antes**. Detalhes que valem a pena não desfazer:
 ## Lista de separação impressa na portaria (18/08/2026)
 
 > ⚠️ **24/08/2026 — o disparo automático está DESLIGADO, de propósito.** Quem
-> imprime e entrega é o **faturamento**, em duas vias (uma pro RH, uma pra
-> portaria), pelo botão da tela — era assim que funcionava antes deste sistema
-> existir, e o Winiston voltou a esse fluxo. Ver "Duas vias" e "O disparo
-> automático" logo abaixo. O resto desta seção (corte das 13:40, quais pedidos
+> imprime e entrega é o **faturamento**, pelo botão da tela — era assim que
+> funcionava antes deste sistema existir, e o Winiston voltou a esse fluxo.
+> Saía em duas vias (RH e portaria) até 02/10/2026; hoje é **via única**. Ver
+> "Via única" e "O disparo automático" logo abaixo. O resto desta seção (corte das 13:40, quais pedidos
 > entram, idempotência) **continua valendo**: é a mesma seleção de pedidos, só
 > muda quem manda pro papel. Desde 26/08 o botão manual só tira o pedido da
 > lista depois que o faturamento confirma na tela que a folha saiu — ver "O
@@ -1439,33 +1441,37 @@ Para desfazer um carimbo indevido de antes desta correção, o modelo está em
 devolva pedido já `entregue`**: folha de separação de pedido entregue é papel
 jogado fora.
 
-### Duas vias: RH e portaria (24/08/2026)
+### Via única (02/10/2026) — antes eram duas, RH e portaria
 
-O faturamento imprime **duas cópias de cada folha**: uma vai pro RH (que
-arquiva, mesmo tendo o pedido no sistema) e a outra pra portaria (que separa a
-mercadoria e colhe a assinatura). A via aparece na ponta direita da faixa preta
-do topo — `VIA RH` / `VIA PORTARIA`.
+**Hoje sai UMA folha por pedido, sem marca de via.** O faturamento e a portaria
+pediram o fim da segunda cópia em 02/10/2026. Vale para os dois botões da tela:
+a leva do dia ("Imprimir pedidos de hoje") e a impressão avulsa de um pedido só
+(Admin Pedidos). A canhoteira continua saindo uma vez, no fim do PDF da leva.
 
-**A ordem das páginas é o requisito, não um detalhe:** o PDF sai em **blocos**
-— todos os pedidos marcados `VIA RH`, depois todos de novo marcados
-`VIA PORTARIA`. Uma impressão só devolve duas pilhas prontas: corta no meio e
-entrega. Intercalar (RH, portaria, RH, portaria…) obrigaria a folhear o bolo
-inteiro separando folha a folha.
+**Como era, de 24/08 a 02/10/2026:** o faturamento imprimia duas cópias de cada
+folha, uma pro RH (que arquivava, mesmo tendo o pedido no sistema) e outra pra
+portaria (que separa a mercadoria e colhe a assinatura), marcadas `VIA RH` /
+`VIA PORTARIA` na ponta direita da faixa preta do topo. O PDF saía em blocos —
+todos os pedidos do RH, depois todos de novo da portaria — pra uma impressão só
+devolver duas pilhas prontas.
 
-Quem quiser mexer nisso: a ordem é construída por `sequenciaDeFolhas`
-(`automation/print/pdfBuilder.ts`), separada do desenho de propósito — o pdfkit
-embute a fonte como subconjunto e escreve o texto como índice de glifo, então
-**o nome do funcionário não existe como texto legível dentro do PDF gerado** e
-não dá pra afirmar a ordem lendo o arquivo. O teste olha a sequência como dado.
+**O mecanismo das vias não foi apagado**, só deixou de ser usado pela tela:
+`buildOrderSheetPdf` e `buildOrderSheetsPdf` (`automation/print/pdfBuilder.ts`)
+ainda aceitam a lista de vias, e `sequenciaDeFolhas` ainda monta os blocos. Se a
+segunda cópia voltar, é passar `["RH", "PORTARIA"]` nas duas chamadas de
+`automation/print/portariaList.ts` (`gerarPdfPortaria` e `gerarPdfPedidoUnico`).
+Os testes de `pdfBuilder.test.ts` seguem cobrindo as duas vias, e os de
+`portariaList.test.ts` travam a via única ("sai UMA folha por pedido, mais a
+canhoteira" e "a avulsa sai em uma folha só").
 
-A impressão avulsa (um pedido só, na tela de Admin Pedidos) sai nas **mesmas
-duas vias**: é o caminho de recuperação (folha atolou, pedido entrou depois da
-leva) e nesse caso os dois lados precisam da cópia igual.
+Sobre verificar ordem de folha: o pdfkit embute a fonte como subconjunto e
+escreve o texto como índice de glifo, então **o nome do funcionário não existe
+como texto legível dentro do PDF gerado** e não dá pra afirmar a ordem lendo o
+arquivo. Por isso `sequenciaDeFolhas` é separada do desenho e o teste olha a
+sequência como dado.
 
 O caminho que imprime **direto** numa impressora (`printPortariaList`, hoje
-desligado) continua saindo em **via única marcada `VIA PORTARIA`** — lá não
-existe ninguém no meio pra entregar a segunda via, ela só ficaria esquecida na
-bandeja.
+desligado) não mudou: sempre foi via única, marcada `VIA PORTARIA`.
 
 ### Pedido ENTREGUE não volta mais pra leva (31/08/2026)
 
@@ -1699,9 +1705,9 @@ se perde. Numa folha só, **o que não foi retirado é a linha em branco** — d
 pra ver de relance o que sobrou no fim do dia, e o papel vai inteiro pro
 arquivo.
 
-**Onde ela cai na pilha:** por último, depois do bloco `VIA PORTARIA`. Como as
-folhas saem em blocos (ver "Duas vias"), o faturamento corta o bolo no meio e
-ela já vai junto da pilha certa, sem ninguém precisar separar nada.
+**Onde ela cai na pilha:** por último, depois das folhas de pedido. (Quando a
+folha saía em duas vias, até 02/10/2026, ela vinha depois do bloco
+`VIA PORTARIA` e ia junto da pilha da portaria. Ver "Via única".)
 
 **Onde ela NÃO sai:**
 
