@@ -3,7 +3,7 @@ import { Product, CartItem } from "../types/products";
 import { FREE_SHIPPING_THRESHOLD } from "../data/shipping";
 import { MIN_PACKAGES, MIN_WEIGHT_KG } from "@/data/products";
 import { getLineSubtotal, getProductWeight } from "@/lib/pricing";
-import { aplicarPrecosAtuais, descreverMudancas, MudancaDePreco } from "@/lib/cartPrices";
+import { aplicarPrecosAtuais, descreverMudancas, itensForaDoCatalogo, MudancaDePreco } from "@/lib/cartPrices";
 import { supabase } from "@/lib/supabase";
 import { toast } from "@/components/ui/sonner";
 
@@ -29,6 +29,8 @@ interface CartContextType {
   showFreeShippingAnimation: boolean;
   /** Troca preço/peso do carrinho pelos do banco e devolve o que mudou. */
   refreshCartPrices: () => Promise<MudancaDePreco[]>;
+  /** Tira do carrinho o que saiu do catálogo e devolve os nomes tirados. */
+  removeUnavailableItems: () => Promise<string[]>;
 }
 
 const CartContext = createContext<CartContextType | undefined>(undefined);
@@ -286,9 +288,36 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }, []);
 
+  const removeUnavailableItems = useCallback(async (): Promise<string[]> => {
+    const ids = cartItemsRef.current.map((item) => item.product.id).filter(Boolean);
+    if (ids.length === 0) return [];
+    try {
+      const { data, error } = await supabase
+        .from("products")
+        .select("id, active, is_hidden, cigam_code")
+        .in("id", ids);
+      if (error || !data) return [];
+      const fora = itensForaDoCatalogo(cartItemsRef.current, data);
+      if (fora.length === 0) return [];
+      const idsFora = new Set(fora.map((item) => String(item.product.id)));
+      setCartItems((prev) => prev.filter((item) => !idsFora.has(String(item.product.id))));
+      return fora.map((item) => item.product.name);
+    } catch {
+      return [];
+    }
+  }, []);
+
   // Abrir o carrinho confere o preço: é ali que a pessoa olha o total.
   useEffect(() => {
     if (!isCartOpen) return;
+    removeUnavailableItems().then((nomes) => {
+      if (nomes.length > 0) {
+        toast.warning("Item fora do catálogo saiu do carrinho", {
+          description: `${nomes.join(", ")} não está mais disponível.`,
+          duration: 10000,
+        });
+      }
+    });
     refreshCartPrices().then((mudancas) => {
       if (mudancas.length > 0) {
         toast.info("Preço atualizado no carrinho", {
@@ -297,7 +326,7 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({
         });
       }
     });
-  }, [isCartOpen, refreshCartPrices]);
+  }, [isCartOpen, refreshCartPrices, removeUnavailableItems]);
 
   const toggleCart = () => setIsCartOpen((prev) => !prev);
   const openCart = () => setIsCartOpen(true);
@@ -339,6 +368,7 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({
     animateCartIcon,
     showFreeShippingAnimation,
     refreshCartPrices,
+    removeUnavailableItems,
   };
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;

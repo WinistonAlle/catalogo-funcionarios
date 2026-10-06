@@ -64,7 +64,7 @@ function isWeekendInSaoPaulo(now = new Date()) {
 type PurchaseFlowNotice = "insufficient_balance" | "physical_store_only";
 
 const Checkout: React.FC = () => {
-  const { cartItems, cartTotal, clearCart, refreshCartPrices } = useCart();
+  const { cartItems, cartTotal, clearCart, refreshCartPrices, removeUnavailableItems } = useCart();
   const navigate = useNavigate();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [outOfStockIds, setOutOfStockIds] = useState<Set<string>>(new Set());
@@ -335,6 +335,18 @@ const Checkout: React.FC = () => {
       return;
     }
 
+    // Produto que saiu do catálogo com o carrinho montado sai daqui, antes de
+    // existir pedido: o RPC recusaria a cobrança e o pedido criado ficaria
+    // para trás sem pagamento (CARLA, 06/10/2026).
+    const foraDoCatalogo = await removeUnavailableItems();
+    if (foraDoCatalogo.length > 0) {
+      toast.warning("Item fora do catálogo saiu do carrinho", {
+        description: `${foraDoCatalogo.join(", ")} não está mais disponível. Confira o carrinho e confirme de novo.`,
+        duration: 15000,
+      });
+      return;
+    }
+
     // Última conferência de preço antes de cobrar. Se mudou com a tela aberta,
     // não fecha: a pessoa confirmaria um total que não é o cobrado.
     const mudancasDePreco = await refreshCartPrices();
@@ -393,6 +405,11 @@ const Checkout: React.FC = () => {
 
       if (error) {
         console.error("Erro ao aplicar pagamento (RPC v2):", error);
+        // Cobrança recusada: o pedido já existe e não pode ficar para trás
+        // sem pagamento, aparecendo como "N/D" no Admin. Melhor esforço; o
+        // banco só apaga se ele nunca foi pago nem enviado ao CIGAM.
+        const { error: descarteErro } = await supabase.rpc("descartar_pedido_nao_pago", { p_order_id: orderId });
+        if (descarteErro) console.error("Falha ao descartar o pedido não pago:", descarteErro);
         throw error;
       }
 

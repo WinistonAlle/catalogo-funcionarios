@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aplicarPrecosAtuais } from "./cartPrices";
+import { aplicarPrecosAtuais, itensForaDoCatalogo } from "./cartPrices";
 import type { CartItem } from "@/types/products";
 
 const item = (id: string, employee_price: number, weight: number, quantity = 1): CartItem =>
@@ -36,5 +36,35 @@ describe("aplicarPrecosAtuais", () => {
   it("ruído de centavo quebrado não conta como mudança", () => {
     const r = aplicarPrecosAtuais([item("a", 6.4, 7)], [{ id: "a", employee_price: 6.400000001, weight: 7 }]);
     expect(r.mudancas).toEqual([]);
+  });
+});
+
+describe("itensForaDoCatalogo", () => {
+  const situacao = (id: string, extra: Partial<{ active: boolean; is_hidden: boolean; cigam_code: string | null }> = {}) => ({
+    id,
+    active: true,
+    is_hidden: false,
+    cigam_code: "002001000004",
+    ...extra,
+  });
+
+  it("aponta o produto oculto que ficou no carrinho (alho OMG da CARLA, 06/10)", () => {
+    const fora = itensForaDoCatalogo(
+      [item("alho", 8.5, 0), item("mini", 27.75, 0)],
+      [situacao("alho", { is_hidden: true }), situacao("mini")]
+    );
+    expect(fora.map((i) => i.product.id)).toEqual(["alho"]);
+  });
+
+  it("aponta inativo, sem código CIGAM e o que não voltou do banco", () => {
+    const fora = itensForaDoCatalogo(
+      [item("a", 1, 1), item("b", 1, 1), item("c", 1, 1), item("d", 1, 1)],
+      [situacao("a", { active: false }), situacao("b", { cigam_code: "  " }), situacao("d")]
+    );
+    expect(fora.map((i) => i.product.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("não tira nada quando a consulta não enxergou produto nenhum", () => {
+    expect(itensForaDoCatalogo([item("a", 1, 1)], [])).toEqual([]);
   });
 });

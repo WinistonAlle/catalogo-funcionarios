@@ -70,7 +70,25 @@ export async function createOrder({
     throw orderError ?? new Error("Erro ao criar pedido.");
   }
 
-  // 2) Cria os itens do pedido
+  // 2) Cria os itens do pedido. Qualquer falha daqui em diante deixaria o
+  // pedido criado acima para trás, vazio e sem pagamento ("N/D" no Admin),
+  // então ele é descartado antes de o erro subir (06/10/2026).
+  try {
+    await insertOrderItems(order.id, items);
+  } catch (err) {
+    const { error: descarteErro } = await supabase.rpc("descartar_pedido_nao_pago", { p_order_id: order.id });
+    if (descarteErro) console.error("Falha ao descartar o pedido sem itens:", descarteErro);
+    throw err;
+  }
+
+  return {
+    orderId: order.id,
+    orderNumber: order.order_number ?? orderNumber,
+    total: totalValue,
+  };
+}
+
+async function insertOrderItems(orderId: string, items: CreateOrderParams["items"]) {
   // ❗ NÃO enviamos subtotal porque sua coluna é gerada no banco
   const itemsPayload = items.map((item) => {
     const unitPrice = getUnitPrice(item.product);
@@ -85,7 +103,7 @@ export async function createOrder({
     }
 
     return {
-      order_id: order.id,                                     // uuid do pedido
+      order_id: orderId,                                      // uuid do pedido
       product_id: item.product.id,
       product_old_id: (item.product as any).old_id ?? null,   // 👈 old_id
       product_name: item.product.name,
@@ -102,10 +120,4 @@ export async function createOrder({
     console.error("Erro ao inserir em order_items:", itemsError);
     throw itemsError;
   }
-
-  return {
-    orderId: order.id,
-    orderNumber: order.order_number ?? orderNumber,
-    total: totalValue,
-  };
 }

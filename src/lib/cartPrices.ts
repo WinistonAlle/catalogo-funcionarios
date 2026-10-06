@@ -59,3 +59,32 @@ const reais = (v: number) =>
 export function descreverMudancas(mudancas: MudancaDePreco[]): string {
   return mudancas.map((m) => `${m.nome}: ${reais(m.antes)} → ${reais(m.depois)}`).join(" • ");
 }
+
+/**
+ * O mesmo carrinho guardado por dias também segura produto que saiu do
+ * catálogo depois de entrar nele. Em 06/10/2026 a CARLA tinha dois potes de
+ * alho OMG ocultos no carrinho: o place_order_with_wallet_v2 recusou a
+ * cobrança, mas o pedido já tinha sido criado e ficou no Admin como "N/D",
+ * duas vezes. A regra é a mesma do RPC (ver
+ * scripts/2026-09-24-checkout-recusa-produto-fora-do-catalogo.sql): inativo,
+ * oculto ou sem código CIGAM não pode ser pago.
+ */
+export type SituacaoNoCatalogo = {
+  id: string;
+  active: boolean | null;
+  is_hidden: boolean | null;
+  cigam_code: string | null;
+};
+
+export function itensForaDoCatalogo(itens: CartItem[], atuais: SituacaoNoCatalogo[]): CartItem[] {
+  // Lista vazia com carrinho cheio é consulta que não enxergou nada (sessão,
+  // permissão), não catálogo vazio: aí quem decide é o RPC, como antes.
+  if (atuais.length === 0) return [];
+  const porId = new Map(atuais.map((p) => [String(p.id), p]));
+  return itens.filter((item) => {
+    const atual = porId.get(String(item.product.id));
+    // Não voltou do banco: apagado, ou escondido pela política de leitura.
+    if (!atual) return true;
+    return atual.active === false || atual.is_hidden === true || !String(atual.cigam_code ?? "").trim();
+  });
+}
